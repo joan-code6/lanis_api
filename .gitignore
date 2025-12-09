@@ -1,0 +1,11 @@
+CLI/sph_config.json
+functions/__pycache__/
+functions/applets/__pycache__/
+functions/applets/mein_unterricht/__pycache__/
+functions/applets/nachrichten/__pycache__/
+main.pyc
+main.pyo
+playground.py
+main.py 
+test_meinunterricht.py
+test_nachrichten.py

@@ -1,0 +1,1 @@
+"""Mein Unterricht Detailed module for Schulportal Hessen API."""

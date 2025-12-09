@@ -1,0 +1,1 @@
+"""Login module for Schulportal Hessen API."""

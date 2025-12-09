@@ -1,0 +1,1 @@
+"""Nachrichten (Messages) module for Schulportal Hessen API."""
