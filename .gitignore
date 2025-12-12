@@ -18,3 +18,4 @@ functions/applets/mein_unterricht/__pycache__/
 functions/applets/mein_unterricht_detailed/__pycache__/
 functions/applets/nachrichten/__pycache__/
 __pycache__/
+.env

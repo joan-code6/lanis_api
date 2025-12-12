@@ -58,7 +58,7 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
             # Extract course name and link
             name_span = row.find('span', {'class': 'name'})
             if name_span:
-                entry['name'] = name_span.get_text(strip=True)
+                entry['name'] = name_span.get_text(separator='\n')
                 course_link = name_span.find_parent('a')
                 if course_link:
                     entry['course_link'] = course_link.get('href', '')
@@ -67,7 +67,7 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
             teacher_button = row.find('button', {'class': 'btn-primary'})
             if teacher_button:
                 # Short name from button text
-                teacher_short = teacher_button.get_text(strip=True)
+                teacher_short = teacher_button.get_text(separator='\n')
                 entry['teacher_short'] = teacher_short.replace('↓', '').strip()
 
                 # Full name from title attribute
@@ -83,19 +83,19 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
             # Extract topic (thema)
             thema_tag = row.find('b', {'class': 'thema'})
             if thema_tag:
-                entry['thema'] = thema_tag.get_text(strip=True)
+                entry['thema'] = thema_tag.get_text(separator='\n')
 
             # Extract date
             datum_span = row.find('span', {'class': 'datum'})
             if datum_span:
-                entry['datum'] = datum_span.get_text(strip=True)
+                entry['datum'] = datum_span.get_text(separator='\n')
 
             # Extract homework
             homework_div = row.find('div', {'class': 'homework'})
             if homework_div:
                 real_homework = homework_div.find('div', {'class': 'realHomework'})
                 if real_homework:
-                    entry['homework'] = real_homework.get_text(strip=True)
+                    entry['homework'] = real_homework.get_text(separator='\n')
 
                 # Check if homework is done
                 done_span = homework_div.find('span', {'class': 'done'})
@@ -170,17 +170,17 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
         course_name = ''
         semester = ''
         if course_title:
-            course_name = course_title.get_text(strip=True).split('\n')[0].strip()
+            course_name = course_title.get_text(separator='\n').split('\n')[0].strip()
             semester_tag = course_title.find('span', {'class': 'label-info'})
             if semester_tag:
-                semester = semester_tag.get_text(strip=True)
+                semester = semester_tag.get_text(separator='\n')
 
         # Extract teacher info
         teacher_button = soup.find('button', {'class': 'btn-primary'})
         teacher_short = ''
         teacher_full = ''
         if teacher_button:
-            teacher_short = teacher_button.get_text(strip=True).replace('↓', '').strip()
+            teacher_short = teacher_button.get_text(separator='\n').replace('↓', '').strip()
             teacher_full = teacher_button.get('title', '')
 
         # Extract historical entries
@@ -202,7 +202,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                 # Extract date and hours
                 date_cell = row.find('td')
                 if date_cell:
-                    date_text = date_cell.get_text(strip=True)
+                    date_text = date_cell.get_text(separator='\n')
                     parts = date_text.split('\n')
                     if len(parts) >= 1:
                         entry['date'] = parts[0].strip()
@@ -212,14 +212,14 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                 # Extract topic (thema)
                 thema_tag = row.find('b')
                 if thema_tag:
-                    entry['thema'] = thema_tag.get_text(strip=True)
+                    entry['thema'] = thema_tag.get_text(separator='\n')
 
                 # Extract homework
                 homework_span = row.find('span', {'class': 'homework'})
                 if homework_span:
                     markup = row.find('span', {'class': 'markup'})
                     if markup:
-                        entry['homework'] = markup.get_text(strip=True)
+                        entry['homework'] = markup.get_text(separator='\n')
 
                     # Check if homework is done
                     done_span = homework_span.find('span', {'class': 'done'})
@@ -229,7 +229,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                 # Extract and decrypt attendance
                 encoded_tag = row.find('encoded')
                 if encoded_tag:
-                    encrypted_attendance = encoded_tag.get_text(strip=True)
+                    encrypted_attendance = encoded_tag.get_text(separator='\n')
                     try:
                         decrypted = self.cryptor.decrypt(encrypted_attendance)
                         # Parse the decrypted HTML to get clean attendance text
@@ -237,7 +237,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                         # Remove hidden elements
                         for hidden in attendance_soup.find_all(class_='hidden'):
                             hidden.decompose()
-                        entry['attendance'] = attendance_soup.get_text(strip=True, separator=' ')
+                        entry['attendance'] = attendance_soup.get_text(separator='\n')
                     except Exception as e:
                         entry['attendance'] = f'[Decryption failed: {str(e)}]'
 
@@ -246,7 +246,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                 if files_div:
                     for link in files_div.find_all('a'):
                         file_info = {
-                            'name': link.get_text(strip=True),
+                            'name': link.get_text(separator='\n'),
                             'url': link.get('href', '')
                         }
                         entry['files'].append(file_info)
@@ -258,7 +258,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
         klausuren_tab = soup.find('div', {'id': 'klausuren'})
         if klausuren_tab:
             for li in klausuren_tab.find_all('li'):
-                exams.append(li.get_text(strip=True))
+                exams.append(li.get_text(separator='\n'))
 
         # Extract attendance summary
         attendance_summary = {}
@@ -267,8 +267,8 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
             for row in attendance_table.find_all('tr'):
                 cells = row.find_all('td')
                 if len(cells) >= 2:
-                    att_type = cells[0].get_text(strip=True)
-                    att_hours = cells[1].get_text(strip=True)
+                    att_type = cells[0].get_text(separator='\n')
+                    att_hours = cells[1].get_text(separator='\n')
                     attendance_summary[att_type] = att_hours
 
         return {
