@@ -165,6 +165,20 @@ class SchulportalHessenAPI:
         ...
     def benutzer_get_data(self) -> Dict[str, Any]:
         """Fetch student/user data from benutzerverwaltung.php"""
+
+    # School List methods
+    def school_list_get_all(self) -> Dict[str, Any]:
+        """Fetch and parse all schools organized by district"""
+        ...
+
+    def school_list_get_by_district(self, district_id: str) -> Dict[str, Any]:
+        """Fetch schools for a specific district"""
+        ...
+
+    def school_list_search_by_name(self, school_name: str) -> Dict[str, Any]:
+        """Search for schools by name across all districts"""
+        ...
+
     def logout(self) -> Dict[str, Any]:
         """Logout from Schulportal Hessen"""
         ...
@@ -225,3 +239,14 @@ from .applets.benutzer.api import (
 )
 
 SchulportalHessenAPI.benutzer_get_data = benutzer_get_data
+
+# Import and attach the school_list methods
+from .applets.school_list.api import (
+    school_list_get_all,
+    school_list_get_by_district,
+    school_list_search_by_name
+)
+
+SchulportalHessenAPI.school_list_get_all = school_list_get_all
+SchulportalHessenAPI.school_list_get_by_district = school_list_get_by_district
+SchulportalHessenAPI.school_list_search_by_name = school_list_search_by_name

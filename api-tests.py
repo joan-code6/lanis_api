@@ -139,3 +139,104 @@ def test_multiple_sessions_independent(base_url: str, require_credentials: Dict[
 	finally:
 		requests.post(f"{base_url}/logout", headers={"X-Session-Token": body1["token"]}, timeout=10)
 		requests.post(f"{base_url}/logout", headers={"X-Session-Token": body2["token"]}, timeout=10)
+
+
+def test_school_list_get_all(base_url: str) -> None:
+	"""Test fetching all schools"""
+	resp = requests.get(f"{base_url}/school-list", timeout=15)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /school-list API Response ===")
+	print(f"Success: {body.get('success')}")
+	print(f"Districts count: {len(body.get('districts', []))}")
+	if body.get('districts'):
+		first_district = body['districts'][0]
+		print(f"Sample district: {first_district.get('name')} (ID: {first_district.get('id')})")
+		print(f"Schools in first district: {len(first_district.get('schools', []))}")
+	print("=============================\n")
+	assert body.get("success") is True
+	assert isinstance(body.get("districts"), list)
+	assert len(body.get("districts", [])) > 0
+	# Verify structure of first district
+	district = body["districts"][0]
+	assert "id" in district
+	assert "name" in district
+	assert "schools" in district
+	assert isinstance(district["schools"], list)
+	# Verify structure of first school
+	if district["schools"]:
+		school = district["schools"][0]
+		assert "id" in school
+		assert "name" in school
+		assert "location" in school
+
+
+def test_school_list_get_by_district(base_url: str) -> None:
+	"""Test fetching schools for a specific district"""
+	# First get all districts to find a valid ID
+	all_schools = requests.get(f"{base_url}/school-list", timeout=15)
+	all_schools.raise_for_status()
+	all_data = all_schools.json()
+	
+	if not all_data.get("districts"):
+		pytest.skip("No districts available for testing")
+	
+	district_id = all_data["districts"][0]["id"]
+	resp = requests.get(f"{base_url}/school-list/district/{district_id}", timeout=15)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /school-list/district/{district_id} API Response ===")
+	print(f"Success: {body.get('success')}")
+	if body.get('district'):
+		print(f"District: {body['district'].get('name')} (ID: {body['district'].get('id')})")
+		print(f"Schools count: {len(body['district'].get('schools', []))}")
+	print("=============================\n")
+	assert body.get("success") is True
+	assert "district" in body
+	assert body["district"]["id"] == district_id
+	assert isinstance(body["district"]["schools"], list)
+
+
+def test_school_list_search_by_name(base_url: str) -> None:
+	"""Test searching for schools by name"""
+	resp = requests.get(f"{base_url}/school-list/search?q=Goethe", timeout=15)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /school-list/search?q=Goethe API Response ===")
+	print(f"Success: {body.get('success')}")
+	print(f"Query: {body.get('query')}")
+	print(f"Results count: {body.get('count')}")
+	if body.get('results'):
+		for i, result in enumerate(body['results'][:3]):
+			print(f"  {i+1}. {result['school'].get('name')} in {result['district_name']}")
+	print("=============================\n")
+	assert body.get("success") is True
+	assert body.get("query") == "Goethe"
+	assert isinstance(body.get("results"), list)
+	assert body.get("count") >= 0
+	# Should find at least one school with "Goethe" in the name
+	assert body.get("count") > 0
+	# Verify structure of first result
+	if body["results"]:
+		result = body["results"][0]
+		assert "district_id" in result
+		assert "district_name" in result
+		assert "school" in result
+		assert "id" in result["school"]
+		assert "name" in result["school"]
+		assert "location" in result["school"]
+
+
+def test_school_list_search_no_results(base_url: str) -> None:
+	"""Test searching for schools with no results"""
+	resp = requests.get(f"{base_url}/school-list/search?q=NonexistentSchoolXYZ123", timeout=15)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /school-list/search with no results API Response ===")
+	print(f"Success: {body.get('success')}")
+	print(f"Results count: {body.get('count')}")
+	print("=============================\n")
+	assert body.get("success") is True
+	assert body.get("count") == 0
+	assert body.get("results") == []
+

@@ -11,10 +11,12 @@ Run locally:
 """
 
 import asyncio
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
@@ -27,6 +29,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 SESSION_TTL_SECONDS = 60 * 60  # expire inactive sessions after 60 minutes
+CACHE_TTL_SECONDS = 10 * 60  # cache responses for 10 minutes
+LONG_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # cache for 30 days (1 month)
+LONG_CACHE_ENDPOINTS = {"/modules", "/apps", "/benutzer"}  # endpoints with long-term cache
 
 
 class LoginRequest(BaseModel):
@@ -51,11 +56,28 @@ class SessionData:
 	school_id: str
 
 
+@dataclass
+class CacheEntry:
+	"""Represents a cached response with timestamp."""
+	data: Any
+	created_at: datetime
+	is_long_term: bool = False  # whether this uses long-term caching
+
+	def is_expired(self, ttl_seconds: int) -> bool:
+		"""Check if cache entry has expired."""
+		return datetime.utcnow() - self.created_at > timedelta(seconds=ttl_seconds)
+
+	def is_stale(self, ttl_seconds: int) -> bool:
+		"""Check if cache entry is stale (for revalidation)."""
+		return datetime.utcnow() - self.created_at > timedelta(seconds=ttl_seconds // 2)
+
+
 class SessionManager:
 	"""Thread-safe in-memory token store for multiple API users."""
 
 	def __init__(self, ttl_seconds: int = SESSION_TTL_SECONDS) -> None:
 		self._sessions: Dict[str, SessionData] = {}
+		self._cache: Dict[str, CacheEntry] = {}  # per-user per-endpoint cache
 		self._lock = asyncio.Lock()
 		self._ttl = ttl_seconds
 
@@ -66,6 +88,97 @@ class SessionManager:
 			for token in expired:
 				data = self._sessions.pop(token)
 				data.client.close()
+
+	async def _purge_expired_cache(self) -> None:
+		"""Remove expired cache entries."""
+		async with self._lock:
+			expired = [key for key, entry in self._cache.items() if entry.is_expired(CACHE_TTL_SECONDS)]
+			for key in expired:
+				self._cache.pop(key)
+
+	def _make_cache_key(self, token: str, endpoint: str, params: str = "") -> str:
+		"""Generate a cache key from token, endpoint, and parameters."""
+		key_str = f"{token}:{endpoint}:{params}"
+		return hashlib.sha256(key_str.encode()).hexdigest()
+
+	async def get_cached(self, token: str, endpoint: str, params: str = "") -> Optional[Any]:
+		"""
+		Retrieve a cached response if available and not expired.
+		
+		Args:
+			token: Session token
+			endpoint: API endpoint path
+			params: Query parameters as string for cache key differentiation
+			
+		Returns:
+			Cached data if available and not expired, None otherwise
+		"""
+		await self._purge_expired_cache()
+		cache_key = self._make_cache_key(token, endpoint, params)
+		
+		async with self._lock:
+			entry = self._cache.get(cache_key)
+			if entry:
+				ttl = LONG_CACHE_TTL_SECONDS if entry.is_long_term else CACHE_TTL_SECONDS
+				if not entry.is_expired(ttl):
+					return entry.data
+				else:
+					self._cache.pop(cache_key)
+		
+		return None
+
+	async def get_cached_with_revalidate(self, token: str, endpoint: str, params: str = "") -> tuple[Optional[Any], bool]:
+		"""
+		Retrieve a cached response and indicate if revalidation is needed.
+		
+		For long-term cached endpoints, returns stale data immediately while marking for background revalidation.
+		
+		Args:
+			token: Session token
+			endpoint: API endpoint path
+			params: Query parameters as string for cache key differentiation
+			
+		Returns:
+			Tuple of (cached_data, needs_revalidation)
+		"""
+		await self._purge_expired_cache()
+		cache_key = self._make_cache_key(token, endpoint, params)
+		
+		async with self._lock:
+			entry = self._cache.get(cache_key)
+			if entry:
+				ttl = LONG_CACHE_TTL_SECONDS if entry.is_long_term else CACHE_TTL_SECONDS
+				if not entry.is_expired(ttl):
+					# Check if needs revalidation (for long-term cache)
+					if entry.is_long_term and entry.is_stale(ttl):
+						return entry.data, True
+					return entry.data, False
+				else:
+					self._cache.pop(cache_key)
+		
+		return None, False
+
+	async def set_cache(self, token: str, endpoint: str, data: Any, params: str = "", is_long_term: bool = False) -> None:
+		"""
+		Cache a response.
+		
+		Args:
+			token: Session token
+			endpoint: API endpoint path
+			data: Response data to cache
+			params: Query parameters as string for cache key differentiation
+			is_long_term: Whether to use long-term caching (30 days)
+		"""
+		cache_key = self._make_cache_key(token, endpoint, params)
+		async with self._lock:
+			self._cache[cache_key] = CacheEntry(data=data, created_at=datetime.utcnow(), is_long_term=is_long_term)
+
+	async def invalidate_user_cache(self, token: str) -> None:
+		"""Invalidate all cache entries for a specific user."""
+		async with self._lock:
+			expired = [key for key in self._cache.keys() if key.startswith(token)]
+			for key in expired:
+				self._cache.pop(key)
 
 	async def create_session(self, school_id: str, username: str, password: str) -> str:
 		token = uuid.uuid4().hex
@@ -101,6 +214,8 @@ class SessionManager:
 		if data:
 			await run_in_threadpool(data.client.logout)
 			data.client.close()
+		# Invalidate all cache entries for this user
+		await self.invalidate_user_cache(token)
 
 	async def shutdown(self) -> None:
 		async with self._lock:
@@ -117,6 +232,30 @@ app = FastAPI(title="Schulportal Hessen API", version="0.1.0")
 
 async def client_dependency(x_session_token: str = Header(..., alias="X-Session-Token")) -> SchulportalHessenAPI:
 	return await sessions.get_client(x_session_token)
+
+
+def _should_cache(endpoint: str) -> bool:
+	"""Determine if an endpoint should be cached. Messages are never cached."""
+	return not endpoint.startswith("/nachrichten")
+
+
+def _make_param_key(params: Dict[str, Any]) -> str:
+	"""Convert query parameters to a string for cache key generation."""
+	if not params:
+		return ""
+	sorted_params = sorted(params.items())
+	return json.dumps(sorted_params)
+
+
+def _responses_equal(old_data: Any, new_data: Any) -> bool:
+	"""
+	Compare two responses for equality.
+	Uses JSON serialization for reliable comparison.
+	"""
+	try:
+		return json.dumps(old_data, sort_keys=True) == json.dumps(new_data, sort_keys=True)
+	except (TypeError, ValueError):
+		return old_data == new_data
 
 
 app.add_middleware(
@@ -162,19 +301,107 @@ async def logout_endpoint(x_session_token: str = Header(..., alias="X-Session-To
 
 
 @app.get("/apps")
-async def get_apps(client: SchulportalHessenAPI = Depends(client_dependency)) -> Dict[str, object]:
-	return await run_in_threadpool(client.get_apps)
+async def get_apps(
+	x_session_token: str = Header(..., alias="X-Session-Token"),
+	client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+	# Try to get cached response (with revalidation check)
+	cached_data, needs_revalidation = await sessions.get_cached_with_revalidate(x_session_token, "/apps")
+	
+	# Start background revalidation task if needed
+	if needs_revalidation:
+		asyncio.create_task(_revalidate_endpoint(x_session_token, "/apps", client.get_apps))
+	
+	# Return cached data if available
+	if cached_data is not None:
+		return cached_data
+	
+	# Fetch fresh data
+	result = await run_in_threadpool(client.get_apps)
+	
+	# Cache the result with long-term TTL
+	await sessions.set_cache(x_session_token, "/apps", result, is_long_term=True)
+	return result
+
+
+async def _revalidate_endpoint(token: str, endpoint: str, fetch_func) -> None:
+	"""Background task to revalidate stale cache entries."""
+	try:
+		# Fetch fresh data
+		fresh_data = await run_in_threadpool(fetch_func)
+		
+		# Get current cached data
+		cached_data = await sessions.get_cached(token, endpoint)
+		
+		# Only update cache if data has changed
+		if cached_data is not None and not _responses_equal(cached_data, fresh_data):
+			await sessions.set_cache(token, endpoint, fresh_data, is_long_term=True)
+	except Exception:
+		# Silently fail background revalidation - let next request handle it
+		pass
 
 
 @app.get("/modules")
-async def get_modules(client: SchulportalHessenAPI = Depends(client_dependency)) -> Dict[str, object]:
+async def get_modules(
+	x_session_token: str = Header(..., alias="X-Session-Token"),
+	client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+	# Try to get cached response (with revalidation check)
+	cached_data, needs_revalidation = await sessions.get_cached_with_revalidate(x_session_token, "/modules")
+	
+	# Start background revalidation task if needed
+	if needs_revalidation:
+		asyncio.create_task(_revalidate_modules(x_session_token, client.get_available_modules))
+	
+	# Return cached data if available
+	if cached_data is not None:
+		return cached_data
+	
+	# Fetch fresh data
 	modules = await run_in_threadpool(client.get_available_modules)
-	return {"success": True, "modules": modules}
+	result = {"success": True, "modules": modules}
+	
+	# Cache the result with long-term TTL
+	await sessions.set_cache(x_session_token, "/modules", result, is_long_term=True)
+	return result
+
+
+async def _revalidate_modules(token: str, fetch_func) -> None:
+	"""Background task to revalidate stale modules cache."""
+	try:
+		fresh_modules = await run_in_threadpool(fetch_func)
+		fresh_data = {"success": True, "modules": fresh_modules}
+		
+		cached_data = await sessions.get_cached(token, "/modules")
+		
+		if cached_data is not None and not _responses_equal(cached_data, fresh_data):
+			await sessions.set_cache(token, "/modules", fresh_data, is_long_term=True)
+	except Exception:
+		pass
 
 
 @app.get("/benutzer")
-async def get_user_data(client: SchulportalHessenAPI = Depends(client_dependency)) -> Dict[str, object]:
-	return await run_in_threadpool(client.benutzer_get_data)
+async def get_user_data(
+	x_session_token: str = Header(..., alias="X-Session-Token"),
+	client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+	# Try to get cached response (with revalidation check)
+	cached_data, needs_revalidation = await sessions.get_cached_with_revalidate(x_session_token, "/benutzer")
+	
+	# Start background revalidation task if needed
+	if needs_revalidation:
+		asyncio.create_task(_revalidate_endpoint(x_session_token, "/benutzer", client.benutzer_get_data))
+	
+	# Return cached data if available
+	if cached_data is not None:
+		return cached_data
+	
+	# Fetch fresh data
+	result = await run_in_threadpool(client.benutzer_get_data)
+	
+	# Cache the result with long-term TTL
+	await sessions.set_cache(x_session_token, "/benutzer", result, is_long_term=True)
+	return result
 
 
 @app.get("/nachrichten/headers")
@@ -212,34 +439,188 @@ async def send_message(
 
 
 @app.get("/meinunterricht")
-async def meinunterricht_overview(client: SchulportalHessenAPI = Depends(client_dependency)) -> Dict[str, object]:
-	return await run_in_threadpool(client.meinunterricht_get_overview)
+async def meinunterricht_overview(
+	x_session_token: str = Header(..., alias="X-Session-Token"),
+	client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+	# Try to get cached response
+	cached = await sessions.get_cached(x_session_token, "/meinunterricht")
+	if cached is not None:
+		return cached
+	
+	# Fetch fresh data
+	result = await run_in_threadpool(client.meinunterricht_get_overview)
+	
+	# Cache the result
+	await sessions.set_cache(x_session_token, "/meinunterricht", result)
+	return result
 
 
 @app.get("/meinunterricht/course/{course_id}")
 async def meinunterricht_course(
 	course_id: str,
+	x_session_token: str = Header(..., alias="X-Session-Token"),
 	client: SchulportalHessenAPI = Depends(client_dependency),
 ) -> Dict[str, object]:
-	return await run_in_threadpool(client.meinunterricht_get_course, course_id)
+	# Create cache key with course_id
+	params = _make_param_key({"course_id": course_id})
+	
+	# Try to get cached response
+	cached = await sessions.get_cached(x_session_token, "/meinunterricht/course", params)
+	if cached is not None:
+		return cached
+	
+	# Fetch fresh data
+	result = await run_in_threadpool(client.meinunterricht_get_course, course_id)
+	
+	# Cache the result
+	await sessions.set_cache(x_session_token, "/meinunterricht/course", result, params)
+	return result
 
 
 @app.get("/meinunterricht/entry")
 async def meinunterricht_entry(
 	url: str,
+	x_session_token: str = Header(..., alias="X-Session-Token"),
 	client: SchulportalHessenAPI = Depends(client_dependency),
 ) -> Dict[str, object]:
-	return await run_in_threadpool(client.meinunterricht_get_entry_details, url)
+	# Create cache key with url parameter
+	params = _make_param_key({"url": url})
+	
+	# Try to get cached response
+	cached = await sessions.get_cached(x_session_token, "/meinunterricht/entry", params)
+	if cached is not None:
+		return cached
+	
+	# Fetch fresh data
+	result = await run_in_threadpool(client.meinunterricht_get_entry_details, url)
+	
+	# Cache the result
+	await sessions.set_cache(x_session_token, "/meinunterricht/entry", result, params)
+	return result
 
 
 @app.get("/meinunterricht/weekly")
-async def meinunterricht_weekly(client: SchulportalHessenAPI = Depends(client_dependency)) -> Dict[str, object]:
-	return await run_in_threadpool(client.meinunterricht_get_weekly_view)
+async def meinunterricht_weekly(
+	x_session_token: str = Header(..., alias="X-Session-Token"),
+	client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+	# Try to get cached response
+	cached = await sessions.get_cached(x_session_token, "/meinunterricht/weekly")
+	if cached is not None:
+		return cached
+	
+	# Fetch fresh data
+	result = await run_in_threadpool(client.meinunterricht_get_weekly_view)
+	
+	# Cache the result
+	await sessions.set_cache(x_session_token, "/meinunterricht/weekly", result)
+	return result
 
 
 @app.get("/meinunterricht/submissions")
-async def meinunterricht_submissions(client: SchulportalHessenAPI = Depends(client_dependency)) -> Dict[str, object]:
-	return await run_in_threadpool(client.meinunterricht_get_submissions)
+async def meinunterricht_submissions(
+	x_session_token: str = Header(..., alias="X-Session-Token"),
+	client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+	# Try to get cached response
+	cached = await sessions.get_cached(x_session_token, "/meinunterricht/submissions")
+	if cached is not None:
+		return cached
+	
+	# Fetch fresh data
+	result = await run_in_threadpool(client.meinunterricht_get_submissions)
+	
+	# Cache the result
+	await sessions.set_cache(x_session_token, "/meinunterricht/submissions", result)
+	return result
+
+
+@app.get("/school-list")
+async def school_list_all() -> Dict[str, object]:
+	"""
+	Fetch all schools organized by district/region
+	
+	This endpoint does not require authentication as school list data is public.
+	
+	Returns:
+		Dict with districts and their schools
+		Example: {
+			'success': True,
+			'districts': [
+				{
+					'id': '7',
+					'name': 'Bergstraße/Odenwaldkreis',
+					'schools': [
+						{'id': '3354', 'name': 'Adam-Karrillon-Schule', 'location': 'Wald-Michelbach'},
+						...
+					]
+				},
+				...
+			]
+		}
+	"""
+	# Public endpoint, no caching needed as data rarely changes
+	client = SchulportalHessenAPI()
+	result = await run_in_threadpool(client.school_list_get_all)
+	return result
+
+
+@app.get("/school-list/district/{district_id}")
+async def school_list_by_district(district_id: str) -> Dict[str, object]:
+	"""
+	Fetch schools for a specific district by ID
+	
+	This endpoint does not require authentication as school list data is public.
+	
+	Args:
+		district_id: The district ID (e.g., '7' for Bergstraße/Odenwaldkreis)
+	
+	Returns:
+		Dict with district data and its schools
+		Example: {
+			'success': True,
+			'district': {
+				'id': '7',
+				'name': 'Bergstraße/Odenwaldkreis',
+				'schools': [...]
+			}
+		}
+	"""
+	client = SchulportalHessenAPI()
+	result = await run_in_threadpool(client.school_list_get_by_district, district_id)
+	return result
+
+
+@app.get("/school-list/search")
+async def school_list_search(q: str) -> Dict[str, object]:
+	"""
+	Search for schools by name across all districts
+	
+	This endpoint does not require authentication as school list data is public.
+	
+	Args:
+		q: The school name or partial name to search for (case-insensitive)
+	
+	Returns:
+		Dict with search results
+		Example: {
+			'success': True,
+			'query': 'Goethe',
+			'count': 3,
+			'results': [
+				{
+					'district_id': '7',
+					'district_name': 'Bergstraße/Odenwaldkreis',
+					'school': {'id': '3351', 'name': 'Goetheschule', 'location': 'Viernheim'}
+				},
+				...
+			]
+		}
+	"""
+	client = SchulportalHessenAPI()
+	result = await run_in_threadpool(client.school_list_search_by_name, q)
+	return result
 
 
 # Convenience alias for uvicorn CLI discovery

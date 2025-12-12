@@ -120,6 +120,132 @@ Check the health status of the API.
 
 ---
 
+### School List
+
+The school list endpoints provide access to public data about schools in Hesse. These endpoints do **not** require authentication.
+
+#### GET `/school-list`
+
+Retrieve all schools organized by district/region.
+
+**Response:**
+```json
+{
+  "success": true,
+  "districts": [
+    {
+      "id": "7",
+      "name": "{region_name}",
+      "schools": [
+        {
+          "id": "3354",
+          "name": "{school_name}",
+          "location": "{city_name}"
+        },
+        "..."
+      ]
+    },
+    "..."
+  ]
+}
+```
+
+**Response Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | boolean | Indicates if the request was successful |
+| `districts` | array | List of all districts with their schools |
+| `districts[].id` | string | District ID |
+| `districts[].name` | string | District name (e.g., "Bergstraße/Odenwaldkreis") |
+| `districts[].schools` | array | List of schools in the district |
+| `districts[].schools[].id` | string | School ID |
+| `districts[].schools[].name` | string | School name |
+| `districts[].schools[].location` | string | City/location of the school |
+
+**Status Codes:**
+- `200 OK` - School list retrieved successfully
+- `500 Internal Server Error` - Failed to fetch or parse school list
+
+---
+
+#### GET `/school-list/district/{district_id}`
+
+Retrieve schools for a specific district by ID.
+
+**Path Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `district_id` | string | The district ID (e.g., "7") |
+
+**Response:**
+```json
+{
+  "success": true,
+  "district": {
+    "id": "7",
+    "name": "{region_name}",
+    "schools": [
+      {
+        "id": "3354",
+        "name": "{school_name}",
+        "location": "{city_name}"
+      },
+      "..."
+    ]
+  }
+}
+```
+
+**Status Codes:**
+- `200 OK` - District schools retrieved successfully
+- `500 Internal Server Error` - Failed to fetch or parse school list
+
+---
+
+#### GET `/school-list/search`
+
+Search for schools by name across all districts (case-insensitive).
+
+**Query Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `q` | string | Yes | School name or partial name to search for |
+
+**Response:**
+```json
+{
+  "success": true,
+  "query": "{search_term}",
+  "count": 3,
+  "results": [
+    {
+      "district_id": "7",
+      "district_name": "{region_name}",
+      "school": {
+        "id": "3351",
+        "name": "{school_name}",
+        "location": "{city_name}"
+      }
+    },
+    "..."
+  ]
+}
+```
+
+**Response Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | boolean | Indicates if the request was successful |
+| `query` | string | The search term used |
+| `count` | integer | Number of matching schools |
+| `results` | array | List of matching schools with their district info |
+
+**Status Codes:**
+- `200 OK` - Search completed successfully
+- `500 Internal Server Error` - Failed to fetch or parse school list
+
+---
+
 ### User Information
 
 #### GET `/benutzer`
