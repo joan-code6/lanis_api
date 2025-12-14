@@ -488,30 +488,114 @@ async def get_user_data(
 	return result
 
 
+
+# --- Message Cache Update Task ---
+async def _update_message_cache_task(token: str, endpoint: str, fetch_func, params: dict, cache_params: str):
+	"""
+	Background task to fetch fresh message data and update cache if changed.
+	Args:
+		token: Session token
+		endpoint: API endpoint path (e.g. /nachrichten/headers)
+		fetch_func: Callable to fetch fresh data
+		params: Dict of parameters for fetch_func
+		cache_params: Stringified params for cache key
+	"""
+	try:
+		# Fetch fresh data
+		fresh_data = await run_in_threadpool(fetch_func, **params)
+		# Get current cached data
+		cached_data = await sessions.get_cached(token, endpoint, cache_params)
+		# Only update cache if data has changed
+		if cached_data is None or not _responses_equal(cached_data, fresh_data):
+			await sessions.set_cache(token, endpoint, fresh_data, cache_params)
+	except Exception as e:
+		logger.error(f"Error updating message cache for {endpoint}: {e}")
+
+
+# --- Caching for /nachrichten endpoints ---
 @app.get("/nachrichten/headers")
 async def get_message_headers(
 	get_type: str = "All",
 	last: int = 0,
+	x_session_token: str = Header(..., alias="X-Session-Token"),
 	client: SchulportalHessenAPI = Depends(client_dependency),
 ) -> Dict[str, object]:
-	return await run_in_threadpool(client.nachrichten_get_headers, get_type, last)
+	endpoint = "/nachrichten/headers"
+	params = {"get_type": get_type, "last": last}
+	cache_params = _make_param_key(params)
+	cached = await sessions.get_cached(x_session_token, endpoint, cache_params)
+	# Always start background update task
+	task = Task(
+		name=f"update_message_cache:{endpoint}",
+		func=_update_message_cache_task,
+		args=(x_session_token, endpoint, client.nachrichten_get_headers, params, cache_params),
+		priority=TaskPriority.LOW,
+		max_retries=2,
+	)
+	await task_queue.add_task(task)
+	if cached is not None:
+		return cached
+	# Fetch fresh if not cached
+	result = await run_in_threadpool(client.nachrichten_get_headers, get_type, last)
+	await sessions.set_cache(x_session_token, endpoint, result, cache_params)
+	return result
+
 
 
 @app.get("/nachrichten/{conversation_id}")
 async def get_conversation(
 	conversation_id: str,
 	last: int = 0,
+	x_session_token: str = Header(..., alias="X-Session-Token"),
 	client: SchulportalHessenAPI = Depends(client_dependency),
 ) -> Dict[str, object]:
-	return await run_in_threadpool(client.nachrichten_get_conversation, conversation_id, last)
+	endpoint = "/nachrichten/conversation"
+	params = {"conversation_id": conversation_id, "last": last}
+	cache_params = _make_param_key(params)
+	cached = await sessions.get_cached(x_session_token, endpoint, cache_params)
+	# Always start background update task
+	task = Task(
+		name=f"update_message_cache:{endpoint}",
+		func=_update_message_cache_task,
+		args=(x_session_token, endpoint, client.nachrichten_get_conversation, params, cache_params),
+		priority=TaskPriority.LOW,
+		max_retries=2,
+	)
+	await task_queue.add_task(task)
+	if cached is not None:
+		return cached
+	# Fetch fresh if not cached
+	result = await run_in_threadpool(client.nachrichten_get_conversation, conversation_id, last)
+	await sessions.set_cache(x_session_token, endpoint, result, cache_params)
+	return result
+
 
 
 @app.get("/nachrichten/search")
 async def search_recipients(
 	q: str,
+	x_session_token: str = Header(..., alias="X-Session-Token"),
 	client: SchulportalHessenAPI = Depends(client_dependency),
 ) -> Dict[str, object]:
-	return await run_in_threadpool(client.nachrichten_search_recipients, q)
+	endpoint = "/nachrichten/search"
+	params = {"q": q}
+	cache_params = _make_param_key(params)
+	cached = await sessions.get_cached(x_session_token, endpoint, cache_params)
+	# Always start background update task
+	task = Task(
+		name=f"update_message_cache:{endpoint}",
+		func=_update_message_cache_task,
+		args=(x_session_token, endpoint, client.nachrichten_search_recipients, params, cache_params),
+		priority=TaskPriority.LOW,
+		max_retries=2,
+	)
+	await task_queue.add_task(task)
+	if cached is not None:
+		return cached
+	# Fetch fresh if not cached
+	result = await run_in_threadpool(client.nachrichten_search_recipients, q)
+	await sessions.set_cache(x_session_token, endpoint, result, cache_params)
+	return result
 
 
 @app.post("/nachrichten/send")
