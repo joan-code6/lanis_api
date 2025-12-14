@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 
-SESSION_TTL_SECONDS = 60 * 60  # expire inactive sessions after 60 minutes
+SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive sessions after 1 hour
 CACHE_TTL_SECONDS = 10 * 60  # cache responses for 10 minutes
 LONG_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # cache for 30 days (1 month)
 LONG_CACHE_ENDPOINTS = {"/modules", "/apps", "/benutzer"}  # endpoints with long-term cache
