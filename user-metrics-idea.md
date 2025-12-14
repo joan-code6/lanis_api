@@ -7,3 +7,22 @@
 # ToDo:
 
 # Done:
+- [x] Created `task_queue.py` - Background task queue system with:
+  - Priority-based task scheduling (HIGH, NORMAL, LOW)
+  - Configurable max concurrent tasks (default: 2)
+  - Retry logic with exponential backoff
+  - Task status tracking (pending, running, completed, failed)
+  - Queue statistics endpoint
+  
+- [x] Created `user_metrics_db.py` - SQLite database for user metrics:
+  - Stores user data from /benutzerverwaltung.php
+  - Hash-based change detection (only updates if data changed)
+  - Tracks first_seen, last_updated, update_count
+  - Stats endpoint for aggregate data
+  
+- [x] Integrated into `api.py`:
+  - Task queue starts on API startup, stops gracefully on shutdown
+  - Login endpoint queues a LOW priority task to fetch user data
+  - New `/metrics/stats` endpoint shows database and queue statistics
+  
+- [x] Added `aiosqlite` to requirements.txt

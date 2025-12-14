@@ -7,12 +7,13 @@ Features:
 - Uses a small in-memory session manager with an inactivity TTL to prevent leaked sessions.
 
 Run locally:
-	uvicorn api:app --reload
+	uvicorn api.api:app --reload
 """
 
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -20,21 +21,15 @@ from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from functions.base import SchulportalHessenAPI
 
-from fastapi.middleware.cors import CORSMiddleware
+from .queue import task_queue, Task, TaskPriority
+from .metrics import user_metrics_db
 
-from task_queue import task_queue, Task, TaskPriority
-from user_metrics_db import user_metrics_db
-
-import logging
 logger = logging.getLogger("api")
-
-from task_queue import task_queue, Task, TaskPriority
-from user_metrics_db import user_metrics_db
-
 
 
 SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive sessions after 1 hour
@@ -275,6 +270,8 @@ async def fetch_and_store_user_data(token: str, school_id: str, username: str) -
 			
 	except Exception as e:
 		logger.error(f"Error storing user metrics for {username}@{school_id}: {e}")
+
+
 app = FastAPI(title="Schulportal Hessen API", version="0.1.0")
 
 
