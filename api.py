@@ -536,34 +536,38 @@ async def meinunterricht_submissions(
 	return result
 
 
-@app.get("/school-list")
-async def school_list_all() -> Dict[str, object]:
-	"""
-	Fetch all schools organized by district/region
-	
-	This endpoint does not require authentication as school list data is public.
-	
-	Returns:
-		Dict with districts and their schools
-		Example: {
-			'success': True,
-			'districts': [
-				{
-					'id': '7',
-					'name': 'Bergstraße/Odenwaldkreis',
-					'schools': [
-						{'id': '3354', 'name': 'Adam-Karrillon-Schule', 'location': 'Wald-Michelbach'},
-						...
-					]
-				},
-				...
-			]
-		}
-	"""
-	# Public endpoint, no caching needed as data rarely changes
+
+# --- School List Caching ---
+SCHOOL_LIST_CACHE_KEY = "school_list_all"
+SCHOOL_LIST_CACHE_TTL = 2 * 24 * 60 * 60  # 2 days in seconds
+SCHOOL_LIST_CACHE_AUTO_REFRESH = 3 * 24 * 60 * 60  # 3 days in seconds
+school_list_cache = {
+	"data": None,
+	"created_at": None,
+}
+
+async def _refresh_school_list_cache():
 	client = SchulportalHessenAPI()
-	result = await run_in_threadpool(client.school_list_get_all)
-	return result
+	data = await run_in_threadpool(client.school_list_get_all)
+	school_list_cache["data"] = data
+	school_list_cache["created_at"] = datetime.utcnow()
+	return data
+
+@app.get("/school-list")
+async def school_list_all_cached() -> Dict[str, object]:
+	"""
+	Fetch all schools organized by district/region, with caching for 2 days and auto-refresh after 3 days.
+	"""
+	now = datetime.utcnow()
+	created_at = school_list_cache["created_at"]
+	data = school_list_cache["data"]
+	# If no cache or cache expired (older than 3 days), refresh synchronously
+	if not data or not created_at or (now - created_at).total_seconds() > SCHOOL_LIST_CACHE_AUTO_REFRESH:
+		return await _refresh_school_list_cache()
+	# If cache is stale (older than 2 days but less than 3), serve stale and refresh in background
+	if (now - created_at).total_seconds() > SCHOOL_LIST_CACHE_TTL:
+		asyncio.create_task(_refresh_school_list_cache())
+	return data
 
 
 @app.get("/school-list/district/{district_id}")
