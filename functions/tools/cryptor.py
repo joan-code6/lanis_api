@@ -11,9 +11,9 @@ from random import randint, random, seed
 from typing import Optional
 
 import requests
-from Cryptodome import Random
-from Cryptodome.Cipher import AES, PKCS1_v1_5
-from Cryptodome.PublicKey import RSA
+from Crypto import Random
+from Crypto.Cipher import AES, PKCS1_v1_5
+from Crypto.PublicKey import RSA
 
 
 class Cryptor:
