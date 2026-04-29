@@ -708,6 +708,132 @@ Retrieve all submissions/tasks that need attention.
 
 ---
 
+### Calendar (Kalender)
+
+#### GET `/kalender`
+
+Retrieve the calendar overview page metadata for the current user.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "page_title": "Kalender",
+  "calendar": {
+    "first_id": "{calendar_view_id}",
+    "new_events_count": "{count}",
+    "can_write": false,
+    "key": "{calendar_key}",
+    "public_view": false,
+    "institution": "{school_id}",
+    "is_admin": false
+  },
+  "categories": [
+    {
+      "id": 20,
+      "name": "Sonstige Termine",
+      "color": "#2e2e2e",
+      "logo": ""
+    }
+  ],
+  "groups": [],
+  "export_links": [
+    {
+      "label": "als PDF",
+      "url": "kalender.php?a=export..."
+    }
+  ]
+}
+```
+
+**Status Codes:**
+- `200 OK` - Calendar overview retrieved successfully
+- `401 Unauthorized` - Invalid or expired session token
+
+#### GET `/kalender/events`
+
+Retrieve calendar events using the same filter contract as the web UI.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Query Parameters:**
+- `year` - `0` for the current school year, `1` for the next school year
+- `start` - Calendar start mode, default `year`
+- `category` - Filter by category id
+- `search` - Search text for title, location, or description
+- `target` - Zielgruppe filter
+- `view_id` - Selected calendar view id
+
+**Response:**
+```json
+{
+  "success": true,
+  "events": [
+    {
+      "id": "{event_id}",
+      "title": "{event_title}",
+      "category": 20,
+      "description": "{description}",
+      "start": {"date": "2026-04-29 08:00:00"},
+      "end": {"date": "2026-04-29 09:30:00"},
+      "all_day": false,
+      "new": "",
+      "editable": false,
+      "properties": {}
+    }
+  ],
+  "count": 1,
+  "filters": {
+    "year": 0,
+    "start": "year",
+    "category": "",
+    "search": "",
+    "target": "",
+    "view_id": "{calendar_view_id}"
+  }
+}
+```
+
+**Status Codes:**
+- `200 OK` - Calendar events retrieved successfully
+- `401 Unauthorized` - Invalid or expired session token
+
+#### GET `/kalender/event/{event_id}`
+
+Retrieve the full payload for a single calendar event.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Query Parameters:**
+- `view_id` - Selected calendar view id
+
+**Response:**
+```json
+{
+  "success": true,
+  "event": {
+    "id": "{event_id}",
+    "title": "{event_title}",
+    "...": "..."
+  },
+  "filters": {
+    "event_id": "{event_id}",
+    "view_id": "{calendar_view_id}"
+  }
+}
+```
+
+**Status Codes:**
+- `200 OK` - Calendar event retrieved successfully
+- `401 Unauthorized` - Invalid or expired session token
+
+---
+
 ## Error Responses
 
 All error responses follow this format:

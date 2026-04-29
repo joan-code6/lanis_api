@@ -21,17 +21,19 @@ class SchulportalHessenAPI:
     def __init__(self):
         """Initialize the API client with a session for cookie management."""
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br, zstd',
-            'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'same-origin',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1'
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Fetch-User": "?1",
+                "Upgrade-Insecure-Requests": "1",
+            }
+        )
         self.school_id: Optional[str] = None
         self.logged_in = False
         self.cryptor: Optional[Cryptor] = None
@@ -52,10 +54,7 @@ class SchulportalHessenAPI:
             }
         """
         if not self.logged_in:
-            return {
-                'success': False,
-                'error': 'Not logged in. Please login first.'
-            }
+            return {"success": False, "error": "Not logged in. Please login first."}
 
         try:
             apps_url = f"{self.BASE_START_URL}/startseite.php?a=ajax&f=apps"
@@ -64,21 +63,12 @@ class SchulportalHessenAPI:
             response.raise_for_status()
 
             data = response.json()
-            return {
-                'success': True,
-                'data': data
-            }
+            return {"success": True, "data": data}
 
         except requests.RequestException as e:
-            return {
-                'success': False,
-                'error': f'Failed to retrieve apps: {str(e)}'
-            }
+            return {"success": False, "error": f"Failed to retrieve apps: {str(e)}"}
         except json.JSONDecodeError as e:
-            return {
-                'success': False,
-                'error': f'Failed to parse response: {str(e)}'
-            }
+            return {"success": False, "error": f"Failed to parse response: {str(e)}"}
 
     def get_available_modules(self) -> List[Dict[str, str]]:
         """
@@ -89,28 +79,30 @@ class SchulportalHessenAPI:
         """
         apps_data = self.get_apps()
 
-        if not apps_data.get('success'):
+        if not apps_data.get("success"):
             return []
 
         modules = []
-        entries = apps_data.get('data', {}).get('entrys', [])
+        entries = apps_data.get("data", {}).get("entrys", [])
 
         for entry in entries:
-            link = entry.get('link', '')
+            link = entry.get("link", "")
             # Convert relative links to absolute URLs
-            if link.startswith('http'):
+            if link.startswith("http"):
                 full_url = link
             else:
                 full_url = f"{self.BASE_START_URL}/{link}"
 
-            modules.append({
-                'name': entry.get('Name'),
-                'url': full_url,
-                'color': entry.get('Farbe'),
-                'logo': entry.get('Logo'),
-                'folders': entry.get('Ordner', []),
-                'target': entry.get('target', '_self')
-            })
+            modules.append(
+                {
+                    "name": entry.get("Name"),
+                    "url": full_url,
+                    "color": entry.get("Farbe"),
+                    "logo": entry.get("Logo"),
+                    "folders": entry.get("Ordner", []),
+                    "target": entry.get("target", "_self"),
+                }
+            )
 
         return modules
 
@@ -127,11 +119,15 @@ class SchulportalHessenAPI:
         return cookies_dict
 
     # Message/Nachrichten methods
-    def nachrichten_get_headers(self, get_type: str = "All", last: int = 0) -> Dict[str, Any]:
+    def nachrichten_get_headers(
+        self, get_type: str = "All", last: int = 0
+    ) -> Dict[str, Any]:
         """Fetch messages overview/headers (conversations list)"""
         ...
 
-    def nachrichten_get_conversation(self, conversation_id: str, last: int = 0) -> Dict[str, Any]:
+    def nachrichten_get_conversation(
+        self, conversation_id: str, last: int = 0
+    ) -> Dict[str, Any]:
         """Fetch messages from a specific conversation"""
         ...
 
@@ -163,6 +159,36 @@ class SchulportalHessenAPI:
     def meinunterricht_get_submissions(self) -> Dict[str, Any]:
         """Fetch student submissions/assignments (Abgaben)"""
         ...
+
+    def meinunterricht_set_homework_done(
+        self, course_id: str, entry_id: str, done: bool = True
+    ) -> Dict[str, Any]:
+        """Mark or unmark homework as done for a specific entry"""
+        ...
+
+    # Kalender methods
+    def kalender_get_overview(self) -> Dict[str, Any]:
+        """Fetch and parse the calendar overview page"""
+        ...
+
+    def kalender_get_events(
+        self,
+        year: int = 0,
+        start: str = "year",
+        category: str = "",
+        search: str = "",
+        target: str = "",
+        view_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch calendar events using the page's getEvents action"""
+        ...
+
+    def kalender_get_event(
+        self, event_id: str, view_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Fetch a single calendar event using the page's getEvent action"""
+        ...
+
     def benutzer_get_data(self) -> Dict[str, Any]:
         """Fetch student/user data from benutzerverwaltung.php"""
 
@@ -182,11 +208,17 @@ class SchulportalHessenAPI:
     def logout(self) -> Dict[str, Any]:
         """Logout from Schulportal Hessen"""
         ...
+
     def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
         """Login to Schulportal Hessen"""
         ...
+
     def sid_validator(self, sid: str) -> bool:
         """Validate a given session ID (sid)"""
+        ...
+
+    def login_using_env(self):
+        """Login using set creds in .env"""
         ...
 
     def close(self):
@@ -195,22 +227,19 @@ class SchulportalHessenAPI:
 
 
 # Import and attach the login methods
-from .applets.login.api import (
-    login,
-    logout,
-    sid_validator
-)
+from .applets.login.api import login, logout, sid_validator, login_using_env
 
 SchulportalHessenAPI.login = login
 SchulportalHessenAPI.logout = logout
 SchulportalHessenAPI.sid_validator = sid_validator
+SchulportalHessenAPI.login_using_env = login_using_env
 
 # Import and attach the nachrichten methods
 from .applets.nachrichten.api import (
     nachrichten_get_headers,
     nachrichten_get_conversation,
     nachrichten_search_recipients,
-    nachrichten_send_message
+    nachrichten_send_message,
 )
 
 SchulportalHessenAPI.nachrichten_get_headers = nachrichten_get_headers
@@ -224,7 +253,8 @@ from .applets.mein_unterricht.api import (
     meinunterricht_get_course,
     meinunterricht_get_entry_details,
     meinunterricht_get_weekly_view,
-    meinunterricht_get_submissions
+    meinunterricht_get_submissions,
+    meinunterricht_set_homework_done,
 )
 
 SchulportalHessenAPI.meinunterricht_get_overview = meinunterricht_get_overview
@@ -232,11 +262,21 @@ SchulportalHessenAPI.meinunterricht_get_course = meinunterricht_get_course
 SchulportalHessenAPI.meinunterricht_get_entry_details = meinunterricht_get_entry_details
 SchulportalHessenAPI.meinunterricht_get_weekly_view = meinunterricht_get_weekly_view
 SchulportalHessenAPI.meinunterricht_get_submissions = meinunterricht_get_submissions
+SchulportalHessenAPI.meinunterricht_set_homework_done = meinunterricht_set_homework_done
+
+# Import and attach the kalender methods
+from .applets.kalender.api import (
+    kalender_get_overview,
+    kalender_get_events,
+    kalender_get_event,
+)
+
+SchulportalHessenAPI.kalender_get_overview = kalender_get_overview
+SchulportalHessenAPI.kalender_get_events = kalender_get_events
+SchulportalHessenAPI.kalender_get_event = kalender_get_event
 
 # Import and attach the benutzer methods
-from .applets.benutzer.api import (
-    benutzer_get_data
-)
+from .applets.benutzer.api import benutzer_get_data
 
 SchulportalHessenAPI.benutzer_get_data = benutzer_get_data
 
@@ -244,7 +284,7 @@ SchulportalHessenAPI.benutzer_get_data = benutzer_get_data
 from .applets.school_list.api import (
     school_list_get_all,
     school_list_get_by_district,
-    school_list_search_by_name
+    school_list_search_by_name,
 )
 
 SchulportalHessenAPI.school_list_get_all = school_list_get_all

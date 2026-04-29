@@ -2,6 +2,20 @@ from typing import Dict, Any
 import requests
 from functions.tools.cryptor import Cryptor
 
+def login_using_env(self, env_path="../.env"):
+    try:
+        import os
+        from dotenv import load_dotenv
+        load_dotenv(env_path)
+    except Exception as e:
+        return "error when trying to use dotenv"
+    try:
+        username = str(os.getenv("LANIS_API_USERNAME"))
+        password = str(os.getenv("LANIS_API_PASSWORD"))
+        school_id = str(os.getenv("LANIS_API_SCHOOL_ID"))
+    except Exception as e:
+        return "error loading creds from env"
+    return login(self, school_id, username, password)
 
 def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
     """

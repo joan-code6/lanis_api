@@ -97,6 +97,31 @@ def test_modules_with_session(base_url: str, session_token: str) -> None:
 	assert isinstance(data.get("modules"), list)
 
 
+def test_calendar_overview_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	resp = requests.get(f"{base_url}/kalender", headers=headers, timeout=15)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /kalender API Response ===")
+	print(body)
+	print("=============================\n")
+	assert body.get("success") is True
+	assert isinstance(body.get("categories"), list)
+	assert isinstance(body.get("calendar"), dict)
+
+
+def test_calendar_events_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	resp = requests.get(f"{base_url}/kalender/events", headers=headers, timeout=15)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /kalender/events API Response ===")
+	print(body)
+	print("=============================\n")
+	assert body.get("success") is True
+	assert isinstance(body.get("events"), list)
+
+
 def test_invalid_token_rejected(base_url: str) -> None:
 	resp = requests.get(f"{base_url}/apps", headers={"X-Session-Token": "invalid"}, timeout=10)
 	print("\n=== /apps with invalid token Response ===")
