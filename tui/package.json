@@ -1,31 +1,42 @@
 {
-  "name": "lanis-tui",
-  "version": "1.0.0",
+  "name": "lanis-hessen",
+  "version": "1.0.7",
   "description": "A beautiful TUI for the Schulportal Hessen API",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "src/cli.tsx",
   "bin": {
-    "lanis": "dist/index.js"
+    "lanis": "./lanis.js"
   },
   "scripts": {
-    "dev": "tsx src/index.tsx",
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "type-check": "tsc --noEmit"
+    "dev": "tsx src/cli.tsx",
+    "start": "tsx src/cli.tsx"
   },
   "dependencies": {
+    "axios": "^1.6.0",
     "ink": "^4.4.1",
     "ink-select-input": "^5.0.0",
+    "ink-spinner": "^5.0.0",
     "ink-text-input": "^5.0.0",
-    "ink-spinner": "5.0.0",
     "react": "^18.2.0",
-    "axios": "^1.6.0",
-    "strip-ansi": "^7.1.0"
+    "strip-ansi": "^7.1.0",
+    "tsx": "^4.0.0"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0",
-    "tsx": "^4.0.0"
+    "@types/react": "^18.2.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "tui",
+    "schulportal",
+    "hessen",
+    "lanis",
+    "cli"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
   }
 }
