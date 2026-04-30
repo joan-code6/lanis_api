@@ -1,0 +1,31 @@
+{
+  "name": "lanis-tui",
+  "version": "1.0.0",
+  "description": "A beautiful TUI for the Schulportal Hessen API",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "lanis": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.tsx",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ink": "^4.4.1",
+    "ink-select-input": "^5.0.0",
+    "ink-text-input": "^5.0.0",
+    "ink-spinner": "5.0.0",
+    "react": "^18.2.0",
+    "axios": "^1.6.0",
+    "strip-ansi": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "tsx": "^4.0.0"
+  }
+}

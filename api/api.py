@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -46,6 +46,25 @@ class LoginRequest(BaseModel):
     school_id: str = Field(..., description="Schul-ID (e.g. 1234)")
     username: str = Field(..., description="Username without school prefix")
     password: str = Field(..., description="User password")
+
+
+class DsbLoginRequest(BaseModel):
+    username: str = Field(..., description="DSBmobile username or school identifier")
+    password: str = Field(..., description="DSBmobile password")
+
+
+class DsbPlanRequest(BaseModel):
+    username: Optional[str] = Field(
+        None, description="DSBmobile username or school identifier"
+    )
+    password: Optional[str] = Field(None, description="DSBmobile password")
+    plan_index: int = Field(0, description="Which plan iframe index to fetch")
+    plan_url: Optional[str] = Field(
+        None, description="Explicit plan URL (overrides plan_index)"
+    )
+    include_raw: bool = Field(
+        False, description="Include raw HTML of the plan page in the response"
+    )
 
 
 class LoginResponse(BaseModel):
@@ -430,6 +449,42 @@ async def logout_endpoint(
 ) -> Dict[str, str]:
     await sessions.drop_session(x_session_token)
     return {"status": "logged_out"}
+
+
+@app.post("/dsb/login")
+async def dsb_login_endpoint(
+    payload: DsbLoginRequest,
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    return await run_in_threadpool(client.dsb_login, payload.username, payload.password)
+
+
+@app.post("/dsb/plan-urls")
+async def dsb_plan_urls_endpoint(
+    payload: DsbLoginRequest,
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    return await run_in_threadpool(
+        client.dsb_get_plan_urls, payload.username, payload.password
+    )
+
+
+@app.post("/dsb/plan")
+async def dsb_plan_endpoint(
+    payload: DsbPlanRequest,
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    return await run_in_threadpool(
+        client.dsb_get_substitution_plan,
+        payload.username,
+        payload.password,
+        payload.plan_index,
+        payload.plan_url,
+        payload.include_raw,
+    )
 
 
 @app.get("/apps")
@@ -864,8 +919,7 @@ async def meinunterricht_homework_done(
     )
 
     # Invalidate cache for meinunterricht views
-    await sessions.invalidate(x_session_token, "/meinunterricht/overview")
-    await sessions.invalidate(x_session_token, f"/meinunterricht/course/{course_id}")
+    await sessions.invalidate_user_cache(x_session_token)
     return result
 
 

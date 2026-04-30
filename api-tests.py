@@ -23,6 +23,8 @@ API_BASE_URL = os.environ.get("LANIS_API_URL", "http://localhost:8000").rstrip("
 SCHOOL_ID = os.environ.get("LANIS_API_SCHOOL_ID")
 USERNAME = os.environ.get("LANIS_API_USERNAME")
 PASSWORD = os.environ.get("LANIS_API_PASSWORD")
+DSB_USERNAME = os.environ.get("LANIS_DSB_USERNAME")
+DSB_PASSWORD = os.environ.get("LANIS_DSB_PASSWORD")
 
 
 @pytest.fixture(scope="session")
@@ -258,6 +260,63 @@ def test_school_list_search_no_results(base_url: str) -> None:
 	resp.raise_for_status()
 	body = resp.json()
 	print("\n=== /school-list/search with no results API Response ===")
+
+
+def test_dsb_login_and_plan_urls(base_url: str, session_token: str) -> None:
+	if not (DSB_USERNAME and DSB_PASSWORD):
+		pytest.skip("Set LANIS_DSB_USERNAME and LANIS_DSB_PASSWORD for DSB tests")
+
+	headers = {"X-Session-Token": session_token}
+	login_resp = requests.post(
+		f"{base_url}/dsb/login",
+		headers=headers,
+		json={"username": DSB_USERNAME, "password": DSB_PASSWORD},
+		timeout=15,
+	)
+	login_resp.raise_for_status()
+	login_body = login_resp.json()
+	print("\n=== /dsb/login API Response ===")
+	print(login_body)
+	print("=============================\n")
+	assert login_body.get("success") is True
+
+	urls_resp = requests.post(
+		f"{base_url}/dsb/plan-urls",
+		headers=headers,
+		json={"username": DSB_USERNAME, "password": DSB_PASSWORD},
+		timeout=15,
+	)
+	urls_resp.raise_for_status()
+	urls_body = urls_resp.json()
+	print("\n=== /dsb/plan-urls API Response ===")
+	print(urls_body)
+	print("=============================\n")
+	assert urls_body.get("success") is True
+	assert isinstance(urls_body.get("plan_urls"), list)
+
+
+def test_dsb_plan(base_url: str, session_token: str) -> None:
+	if not (DSB_USERNAME and DSB_PASSWORD):
+		pytest.skip("Set LANIS_DSB_USERNAME and LANIS_DSB_PASSWORD for DSB tests")
+
+	headers = {"X-Session-Token": session_token}
+	resp = requests.post(
+		f"{base_url}/dsb/plan",
+		headers=headers,
+		json={
+			"username": DSB_USERNAME,
+			"password": DSB_PASSWORD,
+			"plan_index": 0,
+		},
+		timeout=15,
+	)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /dsb/plan API Response ===")
+	print(body)
+	print("=============================\n")
+	assert body.get("success") is True
+	assert isinstance(body.get("tables"), list)
 	print(f"Success: {body.get('success')}")
 	print(f"Results count: {body.get('count')}")
 	print("=============================\n")

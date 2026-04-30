@@ -37,6 +37,9 @@ class SchulportalHessenAPI:
         self.school_id: Optional[str] = None
         self.logged_in = False
         self.cryptor: Optional[Cryptor] = None
+        self.dsb_session: Optional[requests.Session] = None
+        self.dsb_logged_in: bool = False
+        self.dsb_plan_urls: List[str] = []
 
     def get_apps(self) -> Dict[str, Any]:
         """
@@ -205,6 +208,57 @@ class SchulportalHessenAPI:
         """Search for schools by name across all districts"""
         ...
 
+    # DSBmobile methods
+    def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
+        """
+        Login to DSBmobile to access substitution plans.
+
+        Args:
+            username: DSBmobile username or school identifier (e.g. {username}).
+            password: DSBmobile password (e.g. {password}).
+
+        Returns:
+            Dict with success status and session cookie data.
+        """
+        ...
+
+    def dsb_get_plan_urls(
+        self, username: Optional[str] = None, password: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Fetch substitution plan iframe URLs after login.
+
+        Args:
+            username: DSBmobile username or school identifier (e.g. {username}).
+            password: DSBmobile password (e.g. {password}).
+
+        Returns:
+            Dict with plan iframe URLs.
+        """
+        ...
+
+    def dsb_get_substitution_plan(
+        self,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        plan_index: int = 0,
+        plan_url: Optional[str] = None,
+        include_raw: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Fetch and parse the substitution plan table from DSBmobile.
+
+        Args:
+            username: DSBmobile username or school identifier (e.g. {username}).
+            password: DSBmobile password (e.g. {password}).
+            plan_index: Which iframe plan URL to parse (default: 0).
+            plan_url: Explicit plan URL to fetch (overrides plan_index).
+
+        Returns:
+            Dict with the plan URL, title, parsed tables, and optional raw HTML.
+        """
+        ...
+
     def logout(self) -> Dict[str, Any]:
         """Logout from Schulportal Hessen"""
         ...
@@ -224,6 +278,8 @@ class SchulportalHessenAPI:
     def close(self):
         """Close the session"""
         self.session.close()
+        if self.dsb_session:
+            self.dsb_session.close()
 
 
 # Import and attach the login methods
@@ -290,3 +346,14 @@ from .applets.school_list.api import (
 SchulportalHessenAPI.school_list_get_all = school_list_get_all
 SchulportalHessenAPI.school_list_get_by_district = school_list_get_by_district
 SchulportalHessenAPI.school_list_search_by_name = school_list_search_by_name
+
+# Import and attach the DSBmobile methods
+from .external.dsb.api import (
+    dsb_login,
+    dsb_get_plan_urls,
+    dsb_get_substitution_plan,
+)
+
+SchulportalHessenAPI.dsb_login = dsb_login
+SchulportalHessenAPI.dsb_get_plan_urls = dsb_get_plan_urls
+SchulportalHessenAPI.dsb_get_substitution_plan = dsb_get_substitution_plan

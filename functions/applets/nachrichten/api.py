@@ -3,7 +3,9 @@ import json
 from functions.tools.cryptor import Cryptor
 
 
-def nachrichten_get_headers(self, get_type: str = "All", last: int = 0) -> Dict[str, Any]:
+def nachrichten_get_headers(
+    self, get_type: str = "All", last: int = 0
+) -> Dict[str, Any]:
     """
     Fetch messages overview/headers (conversations list)
 
@@ -19,72 +21,78 @@ def nachrichten_get_headers(self, get_type: str = "All", last: int = 0) -> Dict[
         {'success': True, 'total': 40, 'conversations': [...]}
     """
     if not self.logged_in:
-        return {'success': False, 'error': 'Not logged in'}
+        return {"success": False, "error": "Not logged in"}
 
     # Initialize cryptor if needed
     if not self.cryptor or not self.cryptor.authenticated:
         if not self.cryptor:
-            self.cryptor = Cryptor()
-        
-        # Fetch nachrichten.php to get keys
+            self.cryptor = Cryptor(self.session)
+
+        # Authenticate the cryptor to set up encryption keys
         try:
-            resp = self.session.get(f"{self.BASE_START_URL}/nachrichten.php")
-            if resp.status_code == 200:
-                self.cryptor.extract_keys(resp.text)
-            else:
-                return {'success': False, 'error': f'Failed to fetch nachrichten.php: {resp.status_code}'}
+            auth_result = self.cryptor.authenticate()
+            if not auth_result:
+                return {"success": False, "error": "Failed to authenticate encryption"}
         except Exception as e:
-            return {'success': False, 'error': f'Failed to initialize encryption: {str(e)}'}
+            import traceback
+
+            return {
+                "success": False,
+                "error": f"Failed to initialize encryption: {str(e)}",
+                "details": str(e),
+            }
 
     if not self.cryptor or not self.cryptor.authenticated:
-        return {'success': False, 'error': 'Encryption not initialized'}
+        return {"success": False, "error": "Encryption not initialized"}
 
     try:
         response = self.session.post(
             f"{self.BASE_START_URL}/nachrichten.php",
-            data={
-                'a': 'headers',
-                'getType': get_type,
-                'last': str(last)
-            },
+            data={"a": "headers", "getType": get_type, "last": str(last)},
             headers={
-                'Accept': '*/*',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-origin'
-            }
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            },
         )
         response.raise_for_status()
 
         data = response.json()
 
+        # Debug: log the response structure
+        print(
+            f"[DEBUG] nachrichten_get_headers response keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}"
+        )
+
         # Decrypt the 'rows' field
-        if 'rows' in data and data['rows']:
-            decrypted = self.cryptor.decrypt(data['rows'])
+        if "rows" in data and data["rows"]:
+            decrypted = self.cryptor.decrypt(data["rows"])
             conversations = json.loads(decrypted)
 
             return {
-                'success': True,
-                'total': data.get('total', 0),
-                'conversations': conversations
+                "success": True,
+                "total": data.get("total", 0),
+                "conversations": conversations,
             }
         else:
-            return {
-                'success': True,
-                'total': data.get('total', 0),
-                'conversations': []
-            }
+            return {"success": True, "total": data.get("total", 0), "conversations": []}
 
     except Exception as e:
+        import traceback
+
         return {
-            'success': False,
-            'error': f'Failed to fetch messages: {str(e)}'
+            "success": False,
+            "error": f"Failed to fetch messages: {str(e)}",
+            "trace": traceback.format_exc(),
         }
 
 
-def nachrichten_get_conversation(self, conversation_id: str, last: int = 0) -> Dict[str, Any]:
+def nachrichten_get_conversation(
+    self, conversation_id: str, last: int = 0
+) -> Dict[str, Any]:
     """
     Fetch messages from a specific conversation
 
@@ -96,25 +104,25 @@ def nachrichten_get_conversation(self, conversation_id: str, last: int = 0) -> D
         Dict with success status and decrypted messages
     """
     if not self.logged_in:
-        return {'success': False, 'error': 'Not logged in'}
+        return {"success": False, "error": "Not logged in"}
 
     # Initialize cryptor if needed
     if not self.cryptor or not self.cryptor.authenticated:
         if not self.cryptor:
-            self.cryptor = Cryptor()
-        
-        # Fetch nachrichten.php to get keys
+            self.cryptor = Cryptor(self.session)
+
+        # Authenticate the cryptor to set up encryption keys
         try:
-            resp = self.session.get(f"{self.BASE_START_URL}/nachrichten.php")
-            if resp.status_code == 200:
-                self.cryptor.extract_keys(resp.text)
-            else:
-                return {'success': False, 'error': f'Failed to fetch nachrichten.php: {resp.status_code}'}
+            if not self.cryptor.authenticate():
+                return {"success": False, "error": "Failed to authenticate encryption"}
         except Exception as e:
-            return {'success': False, 'error': f'Failed to initialize encryption: {str(e)}'}
+            return {
+                "success": False,
+                "error": f"Failed to initialize encryption: {str(e)}",
+            }
 
     if not self.cryptor or not self.cryptor.authenticated:
-        return {'success': False, 'error': 'Encryption not initialized'}
+        return {"success": False, "error": "Encryption not initialized"}
 
     try:
         # Encrypt the conversation ID (Uniquid)
@@ -122,48 +130,36 @@ def nachrichten_get_conversation(self, conversation_id: str, last: int = 0) -> D
 
         response = self.session.post(
             f"{self.BASE_START_URL}/nachrichten.php",
-            data={
-                'a': 'read',
-                'uniqid': encrypted_id
-            },
+            data={"a": "read", "uniqid": encrypted_id},
             headers={
-                'Accept': '*/*',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-origin'
-            }
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            },
         )
         response.raise_for_status()
 
         data = response.json()
-        
-        if 'message' in data:
-            decrypted = self.cryptor.decrypt(data['message'])
+
+        if "message" in data:
+            decrypted = self.cryptor.decrypt(data["message"])
             message_data = json.loads(decrypted)
-            
+
             # The structure returned is a single message object with a 'reply' list
             # We want to return a list of messages including the main one and replies
             messages = [message_data]
-            if 'reply' in message_data and message_data['reply']:
-                messages.extend(message_data['reply'])
-                
-            return {
-                'success': True,
-                'messages': messages
-            }
+            if "reply" in message_data and message_data["reply"]:
+                messages.extend(message_data["reply"])
+
+            return {"success": True, "messages": messages}
         else:
-             return {
-                'success': False,
-                'error': f"No message data in response: {data}"
-            }
+            return {"success": False, "error": f"No message data in response: {data}"}
 
     except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to fetch conversation: {str(e)}'
-        }
+        return {"success": False, "error": f"Failed to fetch conversation: {str(e)}"}
 
 
 def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
@@ -177,52 +173,40 @@ def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
         Dict with success status and list of users
     """
     if not self.logged_in:
-        return {'success': False, 'error': 'Not logged in'}
+        return {"success": False, "error": "Not logged in"}
 
     if not self.cryptor or not self.cryptor.authenticated:
-        return {'success': False, 'error': 'Encryption not initialized'}
+        return {"success": False, "error": "Encryption not initialized"}
 
     try:
         response = self.session.post(
             f"{self.BASE_START_URL}/nachrichten.php",
-            data={
-                'a': 'searchRecipt',
-                'q': query
-            },
+            data={"a": "searchRecipt", "q": query},
             headers={
-                'Accept': '*/*',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-origin'
-            }
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            },
         )
         response.raise_for_status()
 
         # Try to parse as JSON first (might not be encrypted)
         try:
             users = response.json()
-            return {
-                'success': True,
-                'users': users
-            }
+            return {"success": True, "users": users}
         except json.JSONDecodeError:
             # If not JSON, try to decrypt
             encrypted_data = response.text
             decrypted = self.cryptor.decrypt(encrypted_data)
             users = json.loads(decrypted)
 
-            return {
-                'success': True,
-                'users': users
-            }
+            return {"success": True, "users": users}
 
     except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to search recipients: {str(e)}'
-        }
+        return {"success": False, "error": f"Failed to search recipients: {str(e)}"}
 
 
 def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -240,10 +224,10 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
         This may require further investigation of the exact payload structure.
     """
     if not self.logged_in:
-        return {'success': False, 'error': 'Not logged in'}
+        return {"success": False, "error": "Not logged in"}
 
     if not self.cryptor or not self.cryptor.authenticated:
-        return {'success': False, 'error': 'Encryption not initialized'}
+        return {"success": False, "error": "Encryption not initialized"}
 
     try:
         # Encrypt the message data
@@ -251,30 +235,21 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
 
         response = self.session.post(
             f"{self.BASE_START_URL}/nachrichten.php",
-            data={
-                'a': 'newmessage',
-                'c': encrypted_payload
-            },
+            data={"a": "newmessage", "c": encrypted_payload},
             headers={
-                'Accept': '*/*',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-origin'
-            }
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            },
         )
         response.raise_for_status()
 
         result = response.json()
 
-        return {
-            'success': True,
-            'response': result
-        }
+        return {"success": True, "response": result}
 
     except Exception as e:
-        return {
-            'success': False,
-            'error': f'Failed to send message: {str(e)}'
-        }
+        return {"success": False, "error": f"Failed to send message: {str(e)}"}

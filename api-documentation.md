@@ -102,6 +102,107 @@ Terminate the current session.
 
 ---
 
+### DSBmobile (Substitution Plan)
+
+These endpoints require a valid `X-Session-Token` from `/login`. DSBmobile uses separate
+credentials, so you pass them in the request body.
+
+#### POST `/dsb/login`
+
+Login to DSBmobile and establish a session for substitution plan access.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Request Body:**
+```json
+{
+  "username": "{dsb_username}",
+  "password": "{dsb_password}"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "session_cookie": "{dsb_cookie}",
+  "session_id": "{aspnet_session_id}",
+  "response_url": "https://www.dsbmobile.de/default.aspx"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Login attempt completed
+- `401 Unauthorized` - Invalid or expired session token
+
+---
+
+#### POST `/dsb/plan-urls`
+
+Fetch available substitution plan iframe URLs after login.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Request Body:**
+```json
+{
+  "username": "{dsb_username}",
+  "password": "{dsb_password}"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "plan_urls": ["{plan_url}"],
+  "count": 1
+}
+```
+
+---
+
+#### POST `/dsb/plan`
+
+Fetch and parse the substitution plan table from a plan URL.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Request Body:**
+```json
+{
+  "username": "{dsb_username}",
+  "password": "{dsb_password}",
+  "plan_index": 0,
+  "plan_url": "{plan_url}",
+  "include_raw": false
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "plan_url": "{plan_url}",
+  "title": "{plan_title}",
+  "raw_html": null,
+  "tables": [
+    {
+      "caption": "{caption}",
+      "headers": ["{header}"],
+      "rows": [
+        {"{header}": "{value}"}
+      ]
+    }
+  ]
+}
+```
+
+---
+
 ### System
 
 #### GET `/health`

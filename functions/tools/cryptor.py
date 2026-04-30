@@ -31,10 +31,10 @@ class Cryptor:
     https://stackoverflow.com/questions/36762098/how-to-decrypt-password-from-javascript-cryptojs-aes-encryptpassword-passphras
 
     https://github.com/koenidv/sph-planner/blob/main/app/src/main/java/de/koenidv/sph/networking/Cryption.kt
-    
+
     Credits to spezian for the original implementation!
     """
-    
+
     BASE_URL = "https://start.schulportal.hessen.de"
 
     def __init__(self, session: requests.Session) -> None:
@@ -146,7 +146,9 @@ class Cryptor:
 
         key = re.sub(pattern=r"[xy]", string=pattern, repl=self._random_letter)
 
-        print(f"Cryptor - Generate key: Generated key {key[:8]}-....-4...-....-............-......3...")
+        print(
+            f"Cryptor - Generate key: Generated key {key[:8]}-....-4...-....-............-......3..."
+        )
 
         return self.encrypt(key, key)
 
@@ -174,7 +176,9 @@ class Cryptor:
             challenge = str(response.json()["challenge"])
         except JSONDecodeError as error:
             # Occurs if challenge is not in JSON, often that means its just blank.
-            print(f"Cryptor - Handshake: Error decoding json {response.content} - {error}")
+            print(
+                f"Cryptor - Handshake: Error decoding json {response.content} - {error}"
+            )
             raise
 
         return challenge
@@ -208,8 +212,7 @@ class Cryptor:
         """
         try:
             response = self.session.get(
-                f"{self.BASE_URL}/ajax.php",
-                params={"f": "rsaPublicKey"}
+                f"{self.BASE_URL}/ajax.php", params={"f": "rsaPublicKey"}
             )
             response.raise_for_status()
         except requests.RequestException as error:
@@ -220,7 +223,9 @@ class Cryptor:
             public_key = response.json()["publickey"]
         except JSONDecodeError as error:
             # Occurs if public_key is not in JSON, often that means its just blank.
-            print(f"Cryptor - Public key: Error decoding json {response.content} - {error}")
+            print(
+                f"Cryptor - Public key: Error decoding json {response.content} - {error}"
+            )
             raise
 
         return public_key
@@ -299,18 +304,30 @@ class Cryptor:
         """
         if not self.authenticated:
             raise ValueError("Cryptor not authenticated. Call authenticate() first.")
-            
-        encrypted = base64.b64decode(encrypted.encode())
-        assert encrypted[0:8] == b"Salted__"
-        salt = encrypted[8:16]
-        key_iv = self._bytes_to_key(self.secret.encode(), salt, 32 + 16)
-        key = key_iv[:32]
-        iv = key_iv[32:]
-        aes = AES.new(key, AES.MODE_CBC, iv)
 
-        decrypted = self._unpad(aes.decrypt(encrypted[16:]))
+        print(f"[Cryptor] decrypt: encrypted length = {len(encrypted)}")
 
-        print("Cryptor - Decrypt: Decrypted data.")
+        try:
+            encrypted_bytes = base64.b64decode(encrypted.encode())
+            print(f"[Cryptor] decrypt: decoded length = {len(encrypted_bytes)}")
+        except Exception as e:
+            print(f"[Cryptor] decrypt: base64 decode error: {e}")
+            raise
+
+        assert encrypted_bytes[0:8] == b"Salted__"
+        salt = encrypted_bytes[8:16]
+
+        try:
+            key_iv = self._bytes_to_key(self.secret.encode(), salt, 32 + 16)
+            key = key_iv[:32]
+            iv = key_iv[32:]
+            aes = AES.new(key, AES.MODE_CBC, iv)
+            decrypted = self._unpad(aes.decrypt(encrypted_bytes[16:]))
+            print("Cryptor - Decrypt: Decrypted data.")
+            return decrypted
+        except Exception as e:
+            print(f"[Cryptor] decrypt: decryption error: {e}")
+            raise
 
         return decrypted
 
@@ -322,17 +339,38 @@ class Cryptor:
         bool
             If False the handshake failed, if True it isn't False.
         """
-        self.secret = self._generate_key()
+        print("[Cryptor] Starting authentication...")
+        try:
+            self.secret = self._generate_key()
+            print("[Cryptor] Generated key")
+        except Exception as e:
+            print(f"[Cryptor] Error generating key: {e}")
+            raise
 
-        encrypted_key = self._encrypt_key(self._get_public_key())
+        try:
+            encrypted_key = self._encrypt_key(self._get_public_key())
+            print("[Cryptor] Encrypted key")
+        except Exception as e:
+            print(f"[Cryptor] Error encrypting key: {e}")
+            raise
 
-        challenge = self._handshake(encrypted_key)
+        try:
+            challenge = self._handshake(encrypted_key)
+            print("[Cryptor] Got challenge")
+        except Exception as e:
+            print(f"[Cryptor] Error in handshake: {e}")
+            raise
 
         self.authenticated = True
 
-        if self._challenge(challenge):
-            print("Cryptor - Authenticate: Successfully authenticated.")
-            return True
+        try:
+            if self._challenge(challenge):
+                print("Cryptor - Authenticate: Successfully authenticated.")
+                return True
+        except Exception as e:
+            print(f"[Cryptor] Error in challenge: {e}")
+            self.authenticated = False
+            raise
 
         self.authenticated = False
 

@@ -133,11 +133,21 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
 
+    # Initialize cryptor if needed
     if not self.cryptor or not self.cryptor.authenticated:
-        return {
-            "success": False,
-            "error": "Encryption not initialized for attendance decryption",
-        }
+        if not self.cryptor:
+            self.cryptor = Cryptor(self.session)
+
+        # Authenticate the cryptor to set up encryption keys
+        try:
+            auth_result = self.cryptor.authenticate()
+            if not auth_result:
+                return {"success": False, "error": "Failed to authenticate encryption"}
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to initialize encryption: {str(e)}",
+            }
 
     try:
         response = self.session.get(
