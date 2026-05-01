@@ -16,11 +16,11 @@ run_once() {
 
 run_daemon() {
     echo "Setting up cron job for daily fetch at 1 PM..."
-    cron_entry="0 13 * * * cd $PROJECT_DIR && python3 $SCRIPT_DIR/fetch_substitution_plan.py --school-id 5201 --username 282822 --password berlin >> $LOG_FILE 2>&1"
+    SCRIPT_PATH="$SCRIPT_DIR/fetch_substitution_plan.py"
+    cron_entry="0 13 * * * cd $PROJECT_DIR && python3 $SCRIPT_PATH --school-id 5201 --username 282822 --password berlin >> $LOG_FILE 2>&1"
     
     (crontab -l 2>/dev/null | grep -v "fetch_substitution_plan.py"; echo "$cron_entry") | crontab -
     echo "Cron job added. Use 'crontab -l' to verify."
-    echo "Use 'sudo service cron restart' if needed."
 }
 
 # Check status

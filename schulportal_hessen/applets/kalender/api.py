@@ -20,12 +20,22 @@ def _parse_calendar_page(html: str) -> Dict[str, Any]:
     calendar_node = soup.find(id="calender")
     calendar_meta = {
         "first_id": calendar_node.get("data-firstid", "") if calendar_node else "",
-        "new_events_count": calendar_node.get("data-neuetermine", "") if calendar_node else "",
-        "can_write": _parse_bool(calendar_node.get("data-canwrite")) if calendar_node else False,
+        "new_events_count": calendar_node.get("data-neuetermine", "")
+        if calendar_node
+        else "",
+        "can_write": _parse_bool(calendar_node.get("data-canwrite"))
+        if calendar_node
+        else False,
         "key": calendar_node.get("data-key", "") if calendar_node else "",
-        "public_view": _parse_bool(calendar_node.get("data-publicview")) if calendar_node else False,
-        "institution": calendar_node.get("data-institution", "") if calendar_node else "",
-        "is_admin": _parse_bool(calendar_node.get("data-isadmin")) if calendar_node else False,
+        "public_view": _parse_bool(calendar_node.get("data-publicview"))
+        if calendar_node
+        else False,
+        "institution": calendar_node.get("data-institution", "")
+        if calendar_node
+        else "",
+        "is_admin": _parse_bool(calendar_node.get("data-isadmin"))
+        if calendar_node
+        else False,
     }
 
     page_title = ""
@@ -34,7 +44,11 @@ def _parse_calendar_page(html: str) -> Dict[str, Any]:
         page_title = title_tag.get_text(" ", strip=True)
 
     inline_script = soup.find(string=re.compile(r"var startView =", re.I))
-    script_text = inline_script.parent.get_text("\n", strip=False) if inline_script and inline_script.parent else html
+    script_text = (
+        inline_script.parent.get_text("\n", strip=False)
+        if inline_script and inline_script.parent
+        else html
+    )
 
     categories: List[Dict[str, Any]] = []
     for match in re.finditer(
@@ -52,13 +66,28 @@ def _parse_calendar_page(html: str) -> Dict[str, Any]:
         )
 
     groups: List[Dict[str, Any]] = []
-    for match in re.finditer(r"groups\.push\(\{\s*id:\s*(\d+),\s*name:'(.*?)'\s*\}\s*\);", script_text, re.S):
+    for match in re.finditer(
+        r"groups\.push\(\{\s*id:\s*(\d+),\s*name:\s*['\"](.*?)['\"]", script_text, re.S
+    ):
         groups.append(
             {
                 "id": int(match.group(1)),
                 "name": unescape(match.group(2).strip()),
             }
         )
+
+    if not groups:
+        for match in re.finditer(
+            r"groups\.push\(\{\s*id:\s*(\d+),\s*name:'(.*?)'\s*\}\s*\);",
+            script_text,
+            re.S,
+        ):
+            groups.append(
+                {
+                    "id": int(match.group(1)),
+                    "name": unescape(match.group(2).strip()),
+                }
+            )
 
     export_links: List[Dict[str, str]] = []
     for link in soup.select(".btn-group.export a[href]"):
@@ -98,9 +127,15 @@ def kalender_get_overview(self) -> Dict[str, Any]:
         parsed = _parse_calendar_page(response.text)
         return {"success": True, **parsed}
     except requests.RequestException as e:
-        return {"success": False, "error": f"Failed to fetch calendar overview: {str(e)}"}
+        return {
+            "success": False,
+            "error": f"Failed to fetch calendar overview: {str(e)}",
+        }
     except Exception as e:
-        return {"success": False, "error": f"Failed to parse calendar overview: {str(e)}"}
+        return {
+            "success": False,
+            "error": f"Failed to parse calendar overview: {str(e)}",
+        }
 
 
 def _normalize_event_payload(payload: Any) -> List[Dict[str, Any]]:
@@ -169,6 +204,8 @@ def kalender_get_events(
     try:
         overview = self.kalender_get_overview()
         selected_view = view_id or overview.get("calendar", {}).get("first_id", "")
+        groups = overview.get("groups", [])
+        categories = overview.get("categories", [])
 
         post_data = {
             "f": "getEvents",
@@ -179,7 +216,9 @@ def kalender_get_events(
             "z": target,
             "u": selected_view,
         }
-        response = self.session.post(f"{self.BASE_START_URL}/kalender.php", data=post_data)
+        response = self.session.post(
+            f"{self.BASE_START_URL}/kalender.php", data=post_data
+        )
         response.raise_for_status()
 
         try:
@@ -188,10 +227,23 @@ def kalender_get_events(
             payload = json.loads(response.text)
 
         events = _normalize_event_payload(payload)
+
+        for event in events:
+            # Map category ID to category name and color
+            if event.get("category"):
+                cat_id = str(event["category"])
+                for cat in categories:
+                    if str(cat.get("id")) == cat_id:
+                        event["category_name"] = cat.get("name", "")
+                        event["category_color"] = cat.get("color", "")
+                        break
+
         return {
             "success": True,
             "events": events,
             "count": len(events),
+            "categories": categories,
+            "groups": groups,
             "filters": {
                 "year": year,
                 "start": start,
@@ -208,7 +260,9 @@ def kalender_get_events(
         return {"success": False, "error": f"Failed to parse calendar events: {str(e)}"}
 
 
-def kalender_get_event(self, event_id: str, view_id: Optional[str] = None) -> Dict[str, Any]:
+def kalender_get_event(
+    self, event_id: str, view_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Fetch a single calendar event via the same `getEvent` POST action as the UI.
 

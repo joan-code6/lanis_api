@@ -17,9 +17,9 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, status
+from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -797,10 +797,25 @@ async def search_recipients(
 
 @app.post("/nachrichten/send")
 async def send_message(
-    message: Dict[str, object],
+    recipients: List[str] = Body(..., description="List of recipient IDs"),
+    subject: str = Body(..., description="Message subject"),
+    body: str = Body(..., description="Message body"),
     client: SchulportalHessenAPI = Depends(client_dependency),
 ) -> Dict[str, object]:
-    return await run_in_threadpool(client.nachrichten_send_message, message)
+    """
+    Send a new message to one or more recipients.
+
+    Args:
+        recipients: List of recipient user IDs (e.g., ["l-14480"])
+        subject: Message subject line
+        body: Message content/text
+    """
+    message_data = {
+        "recipients": recipients,
+        "subject": subject,
+        "body": body,
+    }
+    return await run_in_threadpool(client.nachrichten_send_message, message_data)
 
 
 @app.get("/meinunterricht")

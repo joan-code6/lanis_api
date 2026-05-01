@@ -3,7 +3,7 @@ from typing import Optional, Dict, Any, List
 from urllib.parse import urlencode
 import json
 
-from functions.tools.cryptor import Cryptor
+from schulportal_hessen.tools.cryptor import Cryptor
 
 
 class SchulportalHessenAPI:

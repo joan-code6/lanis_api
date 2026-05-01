@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "schulportal-hessen-api"
+version = "0.1.0"
+description = "Python API client for Schulportal Hessen"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Schulportal Hessen API Contributors"}
+]
+dependencies = [
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "pycryptodome>=3.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[tool.hatchling.build.targets.wheel]
+packages = ["schulportal_hessen"]
+
+[tool.ruff]
+target-version = "py310"

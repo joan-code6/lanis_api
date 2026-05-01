@@ -1,6 +1,6 @@
 from typing import Dict, Any
 import json
-from functions.tools.cryptor import Cryptor
+from schulportal_hessen.tools.cryptor import Cryptor
 
 
 def nachrichten_get_headers(
@@ -214,14 +214,20 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
     Send a new message
 
     Args:
-        message_data: Dict containing message details (recipients, subject, body, etc.)
+        message_data: Dict with keys:
+            - recipients: list of recipient IDs (e.g., ["l-14480"])
+            - subject: message subject
+            - body: message text
 
     Returns:
-        Dict with success status
+        Dict with success status and message ID if successful
 
-    Note:
-        The message_data structure needs to match SPH's expected format.
-        This may require further investigation of the exact payload structure.
+    Example:
+        >>> api.nachrichten_send_message({
+        ...     "recipients": ["l-14480"],
+        ...     "subject": "Hello",
+        ...     "body": "Test message"
+        ... })
     """
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
@@ -230,8 +236,19 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
         return {"success": False, "error": "Encryption not initialized"}
 
     try:
-        # Encrypt the message data
-        encrypted_payload = self.cryptor.encrypt(json.dumps(message_data))
+        recipients = message_data.get("recipients", [])
+        subject = message_data.get("subject", "")
+        body = message_data.get("body", "")
+
+        # Build payload in the format SPH expects (based on Flutter reverse engineering)
+        payload = [
+            {"name": "subject", "value": subject},
+            {"name": "text", "value": body},
+        ]
+        for recipient in recipients:
+            payload.append({"name": "to[]", "value": recipient})
+
+        encrypted_payload = self.cryptor.encrypt(json.dumps(payload))
 
         response = self.session.post(
             f"{self.BASE_START_URL}/nachrichten.php",
@@ -245,11 +262,20 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
                 "Sec-Fetch-Site": "same-origin",
             },
         )
-        response.raise_for_status()
 
         result = response.json()
 
-        return {"success": True, "response": result}
+        if result.get("back") is True:
+            return {
+                "success": True,
+                "message_id": result.get("id"),
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Message sending failed",
+                "details": result,
+            }
 
     except Exception as e:
         return {"success": False, "error": f"Failed to send message: {str(e)}"}
