@@ -1,11 +1,12 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "sph-client"
 version = "0.1.0"
 description = "Python API client for Schulportal Hessen (SPH)"
+readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
@@ -23,8 +24,8 @@ dev = [
     "ruff>=0.1.0",
 ]
 
-[tool.hatchling.build.targets.wheel]
-packages = ["schulportal_hessen"]
+[tool.setuptools.packages]
+find = {}
 
 [tool.ruff]
 target-version = "py310"
