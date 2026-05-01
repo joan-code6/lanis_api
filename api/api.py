@@ -24,7 +24,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from functions.base import SchulportalHessenAPI
+from schulportal_hessen.base import SchulportalHessenAPI
 
 from .queue import task_queue, Task, TaskPriority
 from .metrics import user_metrics_db

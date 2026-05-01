@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from functions.base import SchulportalHessenAPI
-from functions.external.dsb.api import (
+from schulportal_hessen.base import SchulportalHessenAPI
+from schulportal_hessen.external.dsb.api import (
     dsb_login,
     dsb_get_plan_urls,
     dsb_get_substitution_plan,
