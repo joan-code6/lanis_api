@@ -29,7 +29,6 @@ build:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
       id-token: write
     steps:
