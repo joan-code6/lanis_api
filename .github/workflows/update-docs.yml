@@ -1,0 +1,35 @@
+name: Update API Docs
+
+on:
+  push:
+    paths:
+      - 'schulportal_hessen/**/*.py'
+
+jobs:
+  update-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install beautifulsoup4
+
+      - name: Generate docs
+        run: python docs_extractor.py
+
+      - name: Commit and push docs
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          git add docs/API.md
+          git diff --staged --quiet || git commit -m "docs: update API documentation"
+          
+          git push
