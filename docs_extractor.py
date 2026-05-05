@@ -40,15 +40,15 @@ def extract_api_docs(project_root: Path) -> str:
         "dsb": project_root / "schulportal_hessen" / "external" / "dsb" / "api.py",
     }
     
-    docs = ["# sph_client API Documentation\n"]
+    docs = ["## sph_client API Documentation\n"]
     
     for name, path in modules.items():
         if path.exists():
             methods = get_class_methods(path)
-            docs.append(f"\n## {name.upper()}\n")
+            docs.append(f"\n### {name.upper()}\n")
             for method_name, info in methods.items():
                 if info["docstring"]:
-                    docs.append(f"### {method_name}\n")
+                    docs.append(f"#### {method_name}\n")
                     docs.append(f"{info['docstring']}\n")
     
     return "\n".join(docs)
