@@ -10,5 +10,4 @@ Python API client for Schulportal Hessen (SPH)
 pip install sph_client
 ```
 
-## API Reference
 $API_DOCS
