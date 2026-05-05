@@ -8,18 +8,69 @@ from schulportal_hessen.tools.cryptor import Cryptor
 
 class SchulportalHessenAPI:
     """
-    API Client for Schulportal Hessen (SPH)
+    API Client for Schulportal Hessen (SPH) - Unofficial Python API Wrapper
 
-    This class provides methods to interact with the Schulportal Hessen platform,
-    allowing programmatic access to login, retrieve available apps, and navigate
-    the portal as a normal user would through a browser.
+    This class provides a programmatic interface to interact with the official
+    Schulportal Hessen (https://schulportal.hessen.de), the Hessian School Portal
+    used by schools in the German state of Hesse.
+
+    The API enables automated access to:
+    - User authentication and session management
+    - Message exchange (Nachrichten)
+    - Calendar events (Kalender)
+    - Course materials and assignments (Mein Unterricht)
+    - User profile data (Benutzerverwaltung)
+    - School directory lookups
+    - DSBmobile substitution plans
+
+    Authentication is handled via Schulportal credentials (school ID + username + password).
+    The API manages HTTP session cookies and supports optional end-to-end
+    encryption for message handling.
+
+    Attributes
+    ----------
+    school_id : str, optional
+        The Schul-ID (school identifier) for the logged-in user.
+    logged_in : bool
+        Whether the user is currently authenticated.
+    cryptor : Cryptor, optional
+        Encryption handler for encrypted communications.
+    dsb_session : requests.Session, optional
+        Separate session for DSBmobile substitution plans.
+
+    Base URLs
+    ----------
+    - Login: https://login.schulportal.hessen.de
+    - Start/Content: https://start.schulportal.hessen.de
+
+    Example
+    ----------
+    >>> api = SchulportalHessenAPI()
+    >>> result = api.login("1234", "max.mustermann", "password123")
+    >>> if result["success"]:
+    ...     messages = api.nachrichten_get_headers()
+    ...     events = api.kalender_get_events()
+    ...     api.logout()
     """
 
     BASE_LOGIN_URL = "https://login.schulportal.hessen.de"
     BASE_START_URL = "https://start.schulportal.hessen.de"
 
     def __init__(self):
-        """Initialize the API client with a session for cookie management."""
+        """Initialize the API client with a session for HTTP cookie management.
+
+        Creates a new requests.Session with proper headers configured for
+        the Schulportal Hessen web application. Sets up default User-Agent
+        and Accept headers to mimic browser behavior.
+
+        The session persists cookies across requests, enabling automatic
+        session handling after successful login.
+
+        Note
+        -----
+        After initialization, call login() with valid credentials
+        to authenticate before making other API calls.
+        """
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -42,19 +93,36 @@ class SchulportalHessenAPI:
         self.dsb_plan_urls: List[str] = []
 
     def get_apps(self) -> Dict[str, Any]:
-        """
-        Retrieve available apps/modules for the logged-in user
+        """Retrieve available apps/modules for the logged-in user.
 
-        Returns:
-            Dict containing folders and available apps/entries
+        Fetches the user's personalized list of available modules from the
+        startseite.php AJAX endpoint. This includes navigation items like
+        Kalender, Nachrichten, Mein Unterricht, etc.
 
-        Example response structure:
-            {
-                "error": "0",
-                "folders": [{"name": "Start", "logo": "fa fa-newspaper-o", "farbe": "faebcc"}, ...],
-                "entrys": [{"Name": "Kalender", "Farbe": "168647", "Logo": "fa fa-calendar", ...}, ...],
-                "till": 1765299123
-            }
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary containing:
+            - success (bool): Whether the request succeeded
+            - data (Dict): The raw response with folders and entries
+              - folders: List of folder groupings with name, logo, color
+              - entries: List of available apps/modules
+              - till: Timestamp (cache validity)
+
+        Raises
+        ------
+        RequestsException
+            If the HTTP request fails.
+
+        Example
+        -------
+        >>> api.get_apps()
+        {'success': True, 'data': {
+            'error': '0',
+            'folders': [{'name': 'Start', 'logo': 'fa fa-newspaper-o', 'farbe': 'faebcc'}],
+            'entrys': [{'Name': 'Kalender', 'Farbe': '168647', 'Logo': 'fa fa-calendar'}],
+            'till': 1765299123
+        }}
         """
         if not self.logged_in:
             return {"success": False, "error": "Not logged in. Please login first."}

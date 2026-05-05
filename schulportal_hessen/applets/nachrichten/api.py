@@ -6,19 +6,47 @@ from schulportal_hessen.tools.cryptor import Cryptor
 def nachrichten_get_headers(
     self, get_type: str = "All", last: int = 0
 ) -> Dict[str, Any]:
-    """
-    Fetch messages overview/headers (conversations list)
+    """Fetch messages overview/headers (conversations list).
 
-    Args:
-        get_type: Filter type - "All", "visibleOnly", "unvisibleOnly"
-        last: Pagination/refresh parameter (0 for full sync)
+    Retrieves the list of message conversations for the authenticated user.
+    This endpoint returns encrypted data that is automatically decrypted.
 
-    Returns:
-        Dict with success status and decrypted message data
+    Parameters
+    ----------
+    get_type : str, optional
+        Filter type for messages. Options:
+        - "All" (default): All messages
+        - "visibleOnly": Only visible messages
+        - "unvisibleOnly": Only hidden messages
+    last : int, optional
+        Pagination parameter (0 for full sync). Pass the last message ID
+        to fetch older messages incrementally.
 
-    Example:
-        >>> api.nachrichten_get_headers()
-        {'success': True, 'total': 40, 'conversations': [...]}
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - success (bool): Whether request succeeded
+        - total (int): Total number of conversations
+        - conversations (List[Dict]): List of conversation objects with:
+          - id, sender, subject, date, unread, ...
+
+    Raises
+    ------
+    Exception
+        If encryption initialization fails or HTTP request fails.
+
+    Notes
+    -----
+    This method requires the Cryptor to be initialized for
+    decrypting the encrypted message data from SPH.
+
+    Example
+    -----
+    >>> api.nachrichten_get_headers()
+    {'success': True, 'total': 40, 'conversations': [
+    ...     {'id': 'c-1234', 'sender': 'teacher@schule.de', 'subject': 'Info', 'date': '2026-01-15', 'unread': True}
+    ... ]}
     """
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
@@ -93,15 +121,40 @@ def nachrichten_get_headers(
 def nachrichten_get_conversation(
     self, conversation_id: str, last: int = 0
 ) -> Dict[str, Any]:
-    """
-    Fetch messages from a specific conversation
+    """Fetch messages from a specific conversation.
 
-    Args:
-        conversation_id: The conversation/thread ID
-        last: Timestamp for pagination (0 for all messages)
+    Retrieves all messages within a conversation thread, including
+    the initial message and all replies.
 
-    Returns:
-        Dict with success status and decrypted messages
+    Parameters
+    ----------
+    conversation_id : str
+        The unique conversation/thread identifier (e.g., "c-1423").
+        This can be obtained from nachrichten_get_headers().
+    last : int, optional
+        Timestamp for pagination. Pass 0 to fetch all messages
+        in the conversation.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - success (bool): Whether request succeeded
+        - messages (List[Dict]): List of message objects, each containing:
+          - sender, content, date, attachments, reply (nested replies)
+
+    Raises
+    ------
+    Exception
+        If encryption fails or conversation not found.
+
+    Example
+    -----
+    >>> api.nachrichten_get_conversation("c-1423")
+    {'success': True, 'messages': [
+    ...     {'sender': 'teacher@schule.de', 'content': 'Hello class...', 'date': '2026-01-15'},
+    ...     {'sender': 'student@schule.de', 'content': 'Question...', 'date': '2026-01-15'}
+    ... ]}
     """
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}

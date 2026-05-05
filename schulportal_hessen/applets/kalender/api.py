@@ -108,15 +108,33 @@ def _parse_calendar_page(html: str) -> Dict[str, Any]:
 
 
 def kalender_get_overview(self) -> Dict[str, Any]:
-    """
-    Fetch the calendar overview page and extract its metadata.
+    """Fetch the calendar overview page and extract its metadata.
 
-    Returns:
-        Dict with success status, calendar configuration, categories, groups, and export links.
+    Retrieves the calendar configuration including available
+    categories, groups, and user-specific settings.
 
-    Example:
-        >>> api.kalender_get_overview()
-        {'success': True, 'calendar': {'first_id': '...', 'can_write': False}, 'categories': [...]}
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - success (bool): Whether request succeeded
+        - page_title (str): Page heading
+        - calendar (Dict): Configuration with first_id, can_write, key, etc.
+        - categories (List[Dict]): Available event categories
+        - groups (List[Dict]): Available groups
+        - export_links (List[Dict]): Export options (iCal, PDF, etc.)
+
+    Raises
+    ------
+    RequestsException
+        If the HTTP request fails.
+
+    Example
+    -----
+    >>> api.kalender_get_overview()
+    {'success': True, 'calendar': {'first_id': 'v-123', 'can_write': False},
+     'categories': [{'id': 20, 'name': 'Sonstige Termine', 'color': '#2e2e2e'}],
+     'groups': [], 'export_links': [{'label': 'als PDF', 'url': '...'}]}
     """
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
@@ -184,19 +202,43 @@ def kalender_get_events(
     target: str = "",
     view_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Fetch calendar events using the same POST contract as the web UI.
+    """Fetch calendar events using the same POST contract as the web UI.
 
-    Args:
-        year: 0 for the current school year, 1 for the next school year.
-        start: Calendar start mode used by the web UI.
-        category: Filter by category id.
-        search: Free-text search filter.
-        target: Zielgruppe filter.
-        view_id: Selected calendar view id. If omitted, the current default view is used.
+    Retrieves calendar events with filtering options matching the SPH web
+    interface functionality.
 
-    Returns:
-        Dict with success status and a normalized list of events.
+    Parameters
+    ----------
+    year : int, optional
+        School year: 0 = current year, 1 = next year.
+    start : str, optional
+        Calendar start mode. Options: "year", "month", "week", "day".
+    category : str, optional
+        Filter by category ID (from kalender_get_overview categories).
+    search : str, optional
+        Free-text search filter (matches title, location, description).
+    target : str, optional
+        Target group filter (Zielgruppe).
+    view_id : str, optional
+        Specific calendar view ID. If omitted, uses default view.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - success (bool): Whether request succeeded
+        - events (List[Dict]): Event objects with id, title, category,
+          description, start, end, all_day, editable, etc.
+        - count (int): Number of events returned
+        - categories (List[Dict]): Available categories
+        - groups (List[Dict]): Available groups
+        - filters (Dict): The filters used for this query
+
+    Example
+    -----
+    >>> api.kalender_get_events(year=0, start="month", category="20")
+    {'success': True, 'events': [{'id': 'e-123', 'title': 'Exam', 'category': 20, ...}],
+     'count': 1, 'categories': [...], 'filters': {...}}
     """
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}

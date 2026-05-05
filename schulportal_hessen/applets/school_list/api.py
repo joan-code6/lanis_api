@@ -1,6 +1,33 @@
-from typing import Dict, Any, List
-import json
-import requests
+"""
+Schulportal Hessen School Directory API.
+
+Provides access to the public school directory for all schools in Hesse.
+The school list is fetched from the public exporteur endpoint and
+includes schools organized by district/region.
+
+This module does NOT require authentication - it uses a public endpoint.
+
+District IDs roughly correspond to:
+- 1: Gießen
+- 2: Kassel  
+- 3: Marburg
+- 4: Fulda
+- 5: Limburg-Weilburg
+- 6: Lahn-Dill
+- 7: Bergstraße/Odenwald
+- 8: Main-Kinzig
+- 9: Main-Taunus
+- 10: Hochtaunus
+- ...
+
+Example
+-----
+>>> api.school_list_get_all()
+{'success': True, 'districts': [{'id': '7', 'name': 'Bergstraße/Odenwaldkreis', 'schools': [...]}]}
+
+>>> api.school_list_search_by_name("Goethe")
+{'success': True, 'query': 'Goethe', 'count': 5, 'results': [...]}
+"""
 
 
 def school_list_get_all(self) -> Dict[str, Any]:

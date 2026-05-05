@@ -17,22 +17,43 @@ from Crypto.PublicKey import RSA
 
 
 class Cryptor:
-    """Provides various functions for encrypting, decrypting and to satisfy Schulportal Hessens security requirements.
+    """Encryption handler for Schulportal Hessen secure communications.
+
+    This class provides encryption and decryption capabilities required
+    for communicating with Schulportal Hessen. It handles the hybrid
+    RSA/AES encryption scheme used by SPH to protect message content.
+
+    The encryption works as follows:
+    1. On authentication, retrieve the RSA public key from SPH
+    2. Generate a random AES-256 session key
+    3. Encrypt the AES key with RSA and store it server-side
+    4. Use AES-CBC for all subsequent message encryption/decryption
 
     Parameters
     ----------
     session : requests.Session
-        The requests session used for API calls.
+        The authenticated requests session to use for API calls.
+
+    Attributes
+    ----------
+    session : requests.Session
+        The active HTTP session.
+    secret : str, optional
+        The decrypted AES session key (after authentication).
+    authenticated : bool
+        Whether encryption has been successfully initialized.
+
+    Raises
+    ------
+    Exception
+        If RSA key retrieval or encryption setup fails.
 
     Notes
     -----
-    This class wouldn't exist without these scripts:
-
-    https://stackoverflow.com/questions/36762098/how-to-decrypt-password-from-javascript-cryptojs-aes-encryptpassword-passphras
-
-    https://github.com/koenidv/sph-planner/blob/main/app/src/main/java/de/koenidv/sph/networking/Cryption.kt
-
-    Credits to spezian for the original implementation!
+    Original implementation based on work by spezian from the LanisAPI project.
+    Key derivation algorithm adapted from:
+    - https://stackoverflow.com/questions/36762098/how-to-decrypt-password-from-javascript-cryptojs-aes-encryptpassword-passphras
+    - https://github.com/koenidv/sph-planner/.../Cryption.kt
     """
 
     BASE_URL = "https://start.schulportal.hessen.de"
@@ -43,25 +64,33 @@ class Cryptor:
         self.authenticated = False
 
     def _bytes_to_key(self, data: bytes, salt: bytes, output: int = 48) -> bytes:
-        """Transform bytes to keys.
+        """Derive cryptographic key from data and salt using MD5 iteration.
+
+        Implements PKCS#7 style key derivation using MD5 hash chains.
+        This is used to derive AES encryption keys from password/salt pairs.
 
         Parameters
         ----------
         data : bytes
-            Byte data.
+            Input data to hash.
         salt : bytes
-            Salt byte.
+            Salt value (must be exactly 8 bytes).
         output : int, optional
-            Output, by default 48
+            Desired key length in bytes (default: 48).
 
         Returns
         -------
         bytes
-            Key.
+            Derived key of specified length.
 
-        Note
-        ----
-        I REALLY don't know what this does but it does work.
+        Raises
+        ------
+        AssertionError
+            If salt length is not exactly 8 bytes.
+
+        See Also
+        --------
+        https://gist.github.com/gsakkis/4546068
         """
         # extended from https://gist.github.com/gsakkis/4546068
         assert len(salt) == 8, len(salt)

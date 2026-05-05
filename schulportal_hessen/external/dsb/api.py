@@ -156,19 +156,47 @@ def _extract_plan_urls_from_menu(items: List[Dict], urls: List[str]) -> None:
 
 
 def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
-    """
-    Login to DSBmobile to access substitution plans.
+    """Login to DSBmobile to access substitution plans.
 
-    Args:
-        username: DSBmobile username or school identifier (e.g. {username}).
-        password: DSBmobile password (e.g. {password}).
+    DSBmobile (https://www.dsbmobile.de) is a separate platform
+    from Schulportal Hessen that provides substitution/replacement
+    plan information for schools.
 
-    Returns:
-        Dict with success status and session cookie data.
+    This method establishes a separate session for DSBmobile
+    and stores the authentication cookies for subsequent calls.
 
-    Example:
-        >>> api.dsb_login("{username}", "{password}")
-        {"success": True, "session_cookie": "{dsb_cookie}"}
+    Parameters
+    ----------
+    username : str
+        DSBmobile username, typically in format "{school_id}{username}"
+        or just the school identifier depending on school configuration.
+    password : str
+        DSBmobile password.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - success (bool): Whether login succeeded
+        - session_cookie (str): The DSBMobile session cookie value
+        - session_id (str): ASP.NET session ID
+        - response_url (str): Final redirect URL
+
+    Raises
+    ------
+    RequestsException
+        If the HTTP request fails.
+
+    Notes
+    -----
+    DSBmobile uses different credentials than SPH. The username
+    is typically provided by the school administration.
+    This is a completely separate system from Schulportal Hessen.
+
+    Example
+    -----
+    >>> api.dsb_login("F1234", "mypassword")
+    {'success': True, 'session_cookie': 'abc123...', 'session_id': 'def456...'}
     """
     session = _get_dsb_session(self)
 

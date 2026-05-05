@@ -4,15 +4,34 @@ from bs4 import BeautifulSoup
 
 
 def benutzer_get_data(self) -> Dict[str, Any]:
-    """
-    Fetch user data from benutzerverwaltung.php
+    """Fetch user profile data from benutzerverwaltung.php.
 
-    Returns:
-        Dict with success status and user data
+    Retrieves personal profile information for the authenticated
+    user including name, email, school details, and other
+    account information stored in the user management system.
 
-    Example:
-        >>> api.benutzer_get_data()
-        {'success': True, 'data': {'login': 'bennet.wegener', 'nachname': 'Wegener', ...}}
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - success (bool): Whether request succeeded
+        - data (Dict): User profile fields (lowercased keys):
+          - login, nachname, vorname, email, geschlecht, ...
+
+    Raises
+    ------
+    Exception
+        If HTTP request fails or HTML parsing fails.
+
+    Example
+    -----
+    >>> api.benutzer_get_data()
+    {'success': True, 'data': {
+        'login': 'max.mustermann',
+        'nachname': 'Mustermann',
+        'vorname': 'Max',
+        'email': 'max.mustermann@schule.hessen.de'
+    }}
     """
     if not self.logged_in:
         return {'success': False, 'error': 'Not logged in'}
