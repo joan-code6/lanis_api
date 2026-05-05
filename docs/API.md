@@ -5,22 +5,52 @@
 
 ### __init__
 
-Initialize the API client with a session for cookie management.
+Initialize the API client with a session for HTTP cookie management.
+
+Creates a new requests.Session with proper headers configured for
+the Schulportal Hessen web application. Sets up default User-Agent
+and Accept headers to mimic browser behavior.
+
+The session persists cookies across requests, enabling automatic
+session handling after successful login.
+
+Note
+-----
+After initialization, call login() with valid credentials
+to authenticate before making other API calls.
 
 ### get_apps
 
-Retrieve available apps/modules for the logged-in user
+Retrieve available apps/modules for the logged-in user.
 
-Returns:
-    Dict containing folders and available apps/entries
+Fetches the user's personalized list of available modules from the
+startseite.php AJAX endpoint. This includes navigation items like
+Kalender, Nachrichten, Mein Unterricht, etc.
 
-Example response structure:
-    {
-        "error": "0",
-        "folders": [{"name": "Start", "logo": "fa fa-newspaper-o", "farbe": "faebcc"}, ...],
-        "entrys": [{"Name": "Kalender", "Farbe": "168647", "Logo": "fa fa-calendar", ...}, ...],
-        "till": 1765299123
-    }
+Returns
+-------
+Dict[str, Any]
+    A dictionary containing:
+    - success (bool): Whether the request succeeded
+    - data (Dict): The raw response with folders and entries
+      - folders: List of folder groupings with name, logo, color
+      - entries: List of available apps/modules
+      - till: Timestamp (cache validity)
+
+Raises
+------
+RequestsException
+    If the HTTP request fails.
+
+Example
+-------
+>>> api.get_apps()
+{'success': True, 'data': {
+    'error': '0',
+    'folders': [{'name': 'Start', 'logo': 'fa fa-newspaper-o', 'farbe': 'faebcc'}],
+    'entrys': [{'Name': 'Kalender', 'Farbe': '168647', 'Logo': 'fa fa-calendar'}],
+    'till': 1765299123
+}}
 
 ### get_available_modules
 
@@ -211,27 +241,71 @@ Returns:
 
 Fetch the calendar overview page and extract its metadata.
 
-Returns:
-    Dict with success status, calendar configuration, categories, groups, and export links.
+Retrieves the calendar configuration including available
+categories, groups, and user-specific settings.
 
-Example:
-    >>> api.kalender_get_overview()
-    {'success': True, 'calendar': {'first_id': '...', 'can_write': False}, 'categories': [...]}
+Returns
+-------
+Dict[str, Any]
+    Dictionary containing:
+    - success (bool): Whether request succeeded
+    - page_title (str): Page heading
+    - calendar (Dict): Configuration with first_id, can_write, key, etc.
+    - categories (List[Dict]): Available event categories
+    - groups (List[Dict]): Available groups
+    - export_links (List[Dict]): Export options (iCal, PDF, etc.)
+
+Raises
+------
+RequestsException
+    If the HTTP request fails.
+
+Example
+-----
+>>> api.kalender_get_overview()
+{'success': True, 'calendar': {'first_id': 'v-123', 'can_write': False},
+ 'categories': [{'id': 20, 'name': 'Sonstige Termine', 'color': '#2e2e2e'}],
+ 'groups': [], 'export_links': [{'label': 'als PDF', 'url': '...'}]}
 
 ### kalender_get_events
 
 Fetch calendar events using the same POST contract as the web UI.
 
-Args:
-    year: 0 for the current school year, 1 for the next school year.
-    start: Calendar start mode used by the web UI.
-    category: Filter by category id.
-    search: Free-text search filter.
-    target: Zielgruppe filter.
-    view_id: Selected calendar view id. If omitted, the current default view is used.
+Retrieves calendar events with filtering options matching the SPH web
+interface functionality.
 
-Returns:
-    Dict with success status and a normalized list of events.
+Parameters
+----------
+year : int, optional
+    School year: 0 = current year, 1 = next year.
+start : str, optional
+    Calendar start mode. Options: "year", "month", "week", "day".
+category : str, optional
+    Filter by category ID (from kalender_get_overview categories).
+search : str, optional
+    Free-text search filter (matches title, location, description).
+target : str, optional
+    Target group filter (Zielgruppe).
+view_id : str, optional
+    Specific calendar view ID. If omitted, uses default view.
+
+Returns
+-------
+Dict[str, Any]
+    Dictionary containing:
+    - success (bool): Whether request succeeded
+    - events (List[Dict]): Event objects with id, title, category,
+      description, start, end, all_day, editable, etc.
+    - count (int): Number of events returned
+    - categories (List[Dict]): Available categories
+    - groups (List[Dict]): Available groups
+    - filters (Dict): The filters used for this query
+
+Example
+-----
+>>> api.kalender_get_events(year=0, start="month", category="20")
+{'success': True, 'events': [{'id': 'e-123', 'title': 'Exam', 'category': 20, ...}],
+ 'count': 1, 'categories': [...], 'filters': {...}}
 
 ### kalender_get_event
 
@@ -251,16 +325,45 @@ Returns:
 
 Login to DSBmobile to access substitution plans.
 
-Args:
-    username: DSBmobile username or school identifier (e.g. {username}).
-    password: DSBmobile password (e.g. {password}).
+DSBmobile (https://www.dsbmobile.de) is a separate platform
+from Schulportal Hessen that provides substitution/replacement
+plan information for schools.
 
-Returns:
-    Dict with success status and session cookie data.
+This method establishes a separate session for DSBmobile
+and stores the authentication cookies for subsequent calls.
 
-Example:
-    >>> api.dsb_login("{username}", "{password}")
-    {"success": True, "session_cookie": "{dsb_cookie}"}
+Parameters
+----------
+username : str
+    DSBmobile username, typically in format "{school_id}{username}"
+    or just the school identifier depending on school configuration.
+password : str
+    DSBmobile password.
+
+Returns
+-------
+Dict[str, Any]
+    Dictionary containing:
+    - success (bool): Whether login succeeded
+    - session_cookie (str): The DSBMobile session cookie value
+    - session_id (str): ASP.NET session ID
+    - response_url (str): Final redirect URL
+
+Raises
+------
+RequestsException
+    If the HTTP request fails.
+
+Notes
+-----
+DSBmobile uses different credentials than SPH. The username
+is typically provided by the school administration.
+This is a completely separate system from Schulportal Hessen.
+
+Example
+-----
+>>> api.dsb_login("F1234", "mypassword")
+{'success': True, 'session_cookie': 'abc123...', 'session_id': 'def456...'}
 
 ### dsb_get_plan_urls
 
