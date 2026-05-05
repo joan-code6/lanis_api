@@ -24,12 +24,41 @@ jobs:
       - name: Generate docs
         run: python docs_extractor.py
 
+      - name: Update README with API docs
+        run: |
+          API_DOCS=$(cat docs/API.md)
+          cat > README.md.tmp << 'EOF'
+          # sph-client
+          
+          Python API client for Schulportal Hessen (SPH)
+          
+          ## Installation
+          
+          ```bash
+          pip install lanis
+          ```
+          
+          ## Usage
+          
+          ```python
+          from lanis import Client
+          ```
+          
+          ## API Reference
+          
+          <!-- API_DOCS_START -->
+          EOF
+          cat README.md.tmp > README.md
+          echo "$API_DOCS" >> README.md
+          echo "<!-- API_DOCS_END -->" >> README.md
+          rm README.md.tmp
+
       - name: Commit and push docs
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          git add docs/API.md
+          git add docs/API.md README.md
           git diff --staged --quiet || git commit -m "docs: update API documentation"
           
           git push

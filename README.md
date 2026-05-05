@@ -5,11 +5,8 @@ Python API client for Schulportal Hessen (SPH)
 ## Installation
 
 ```bash
-pip install lanis
+pip install sph_client
 ```
 
-## Usage
-
-```python
-from lanis import Client
-```
+## API Reference
+$API_DOCS
