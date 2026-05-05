@@ -27,10 +27,13 @@ jobs:
 
       - name: Update README with API docs
         run: |
-          API_DOCS=$(cat docs/API.md)
-          cp template-readme.md README.md.tmp
-          sed 's/\$API_DOCS/'"$API_DOCS"'/g' README.md.tmp > README.md
-          rm README.md.tmp
+          python -c "
+          import sys
+          api_docs = open('docs/API.md').read()
+          content = open('template-readme.md').read()
+          content = content.replace('$API_DOCS', api_docs)
+          open('README.md', 'w').write(content)
+          "
 
       - name: Commit and push docs
         run: |
