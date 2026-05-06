@@ -666,6 +666,82 @@ async def get_calendar_event(
     return result
 
 
+@app.get("/vertretungsplan")
+async def get_vertretungsplan(
+    include_raw: bool = False,
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    params = _make_param_key({"include_raw": include_raw})
+    cached = await sessions.get_cached(x_session_token, "/vertretungsplan", params)
+    if cached is not None:
+        return cached
+
+    result = await run_in_threadpool(client.vertretungsplan_get_plan, include_raw)
+    await sessions.set_cache(x_session_token, "/vertretungsplan", result, params)
+    return result
+
+
+@app.get("/stundenplan")
+async def get_stundenplan(
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    cached = await sessions.get_cached(x_session_token, "/stundenplan")
+    if cached is not None:
+        return cached
+
+    result = await run_in_threadpool(client.stundenplan_get_plan)
+    await sessions.set_cache(x_session_token, "/stundenplan", result)
+    return result
+
+
+@app.get("/dateispeicher")
+async def get_dateispeicher(
+    folder_id: int = 0,
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    params = _make_param_key({"folder_id": folder_id})
+    cached = await sessions.get_cached(x_session_token, "/dateispeicher", params)
+    if cached is not None:
+        return cached
+
+    result = await run_in_threadpool(client.dateispeicher_get_node, folder_id)
+    await sessions.set_cache(x_session_token, "/dateispeicher", result, params)
+    return result
+
+
+@app.get("/dateispeicher/search")
+async def search_dateispeicher(
+    q: str,
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    params = _make_param_key({"q": q})
+    cached = await sessions.get_cached(x_session_token, "/dateispeicher/search", params)
+    if cached is not None:
+        return cached
+
+    result = await run_in_threadpool(client.dateispeicher_search_files, q)
+    await sessions.set_cache(x_session_token, "/dateispeicher/search", result, params)
+    return result
+
+
+@app.get("/lerngruppen")
+async def get_lerngruppen(
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    cached = await sessions.get_cached(x_session_token, "/lerngruppen")
+    if cached is not None:
+        return cached
+
+    result = await run_in_threadpool(client.lerngruppen_get_overview)
+    await sessions.set_cache(x_session_token, "/lerngruppen", result)
+    return result
+
+
 # --- Message Cache Update Task ---
 async def _update_message_cache_task(
     token: str, endpoint: str, fetch_func, params: dict, cache_params: str

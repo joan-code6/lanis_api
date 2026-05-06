@@ -23,11 +23,17 @@ District IDs roughly correspond to:
 Example
 -----
 >>> api.school_list_get_all()
-{'success': True, 'districts': [{'id': '7', 'name': 'Bergstraße/Odenwaldkreis', 'schools': [...]}]}
+{'success': True, 'districts': [{'id': '{district_id}', 'name': '{district_name}', 'schools': [...]}]}
 
->>> api.school_list_search_by_name("Goethe")
-{'success': True, 'query': 'Goethe', 'count': 5, 'results': [...]}
+>>> api.school_list_search_by_name("{school_name}")
+{'success': True, 'query': '{school_name}', 'count': 5, 'results': [...]}
 """
+
+from typing import Any, Dict
+
+import json
+
+import requests
 
 
 def school_list_get_all(self) -> Dict[str, Any]:
@@ -46,11 +52,11 @@ def school_list_get_all(self) -> Dict[str, Any]:
             'success': True,
             'districts': [
                 {
-                    'id': '7',
-                    'name': '{region_name}',
+                    'id': '{district_id}',
+                    'name': '{district_name}',
                     'schools': [
                         {
-                            'id': '3354',
+                            'id': '{school_id}',
                             'name': '{school_name}',
                             'location': '{city_name}'
                         },
@@ -67,10 +73,10 @@ def school_list_get_all(self) -> Dict[str, Any]:
             'success': True,
             'districts': [
                 {
-                    'id': '7',
-                    'name': 'Bergstraße/Odenwaldkreis',
+                    'id': '{district_id}',
+                    'name': '{district_name}',
                     'schools': [
-                        {'id': '3354', 'name': 'Adam-Karrillon-Schule', 'location': 'Wald-Michelbach'},
+                        {'id': '{school_id}', 'name': '{school_name}', 'location': '{city_name}'},
                         ...
                     ]
                 },
@@ -137,18 +143,18 @@ def school_list_get_by_district(self, district_id: str) -> Dict[str, Any]:
     Retrieves the list of schools for a specific district/region by ID.
 
     Args:
-        district_id: The district ID (e.g., '7' for Bergstraße/Odenwaldkreis)
+        district_id: The district ID (e.g., '{district_id}')
 
     Returns:
         Dict with success status and parsed school data for the district
 
     Example:
-        >>> api.school_list_get_by_district('7')
+        >>> api.school_list_get_by_district('{district_id}')
         {
             'success': True,
             'district': {
-                'id': '7',
-                'name': 'Bergstraße/Odenwaldkreis',
+                'id': '{district_id}',
+                'name': '{district_name}',
                 'schools': [...]
             }
         }
@@ -221,14 +227,14 @@ def school_list_search_by_name(self, school_name: str) -> Dict[str, Any]:
         Dict with success status and list of matching schools
 
     Example:
-        >>> api.school_list_search_by_name('Goethe')
+        >>> api.school_list_search_by_name('{school_name}')
         {
             'success': True,
             'results': [
                 {
-                    'district_id': '7',
-                    'district_name': 'Bergstraße/Odenwaldkreis',
-                    'school': {'id': '3351', 'name': 'Goetheschule', 'location': 'Viernheim'}
+                    'district_id': '{district_id}',
+                    'district_name': '{district_name}',
+                    'school': {'id': '{school_id}', 'name': '{school_name}', 'location': '{city_name}'}
                 },
                 ...
             ]

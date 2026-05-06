@@ -27,10 +27,10 @@ def benutzer_get_data(self) -> Dict[str, Any]:
     -----
     >>> api.benutzer_get_data()
     {'success': True, 'data': {
-        'login': 'max.mustermann',
-        'nachname': 'Mustermann',
-        'vorname': 'Max',
-        'email': 'max.mustermann@schule.hessen.de'
+        'login': '{username}',
+        'nachname': '{last_name}',
+        'vorname': '{first_name}',
+        'email': '{username}@{school_domain}'
     }}
     """
     if not self.logged_in:

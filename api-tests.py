@@ -96,7 +96,13 @@ def test_modules_with_session(base_url: str, session_token: str) -> None:
 	print(data)
 	print("=============================\n")
 	assert data.get("success") is True
-	assert isinstance(data.get("modules"), list)
+	modules = data.get("modules")
+	assert isinstance(modules, list)
+	for module in modules:
+		assert isinstance(module.get("usable"), bool)
+		assert isinstance(module.get("usage"), list)
+		if module.get("usable"):
+			assert len(module.get("usage")) > 0
 
 
 def test_calendar_overview_with_session(base_url: str, session_token: str) -> None:
@@ -122,6 +128,63 @@ def test_calendar_events_with_session(base_url: str, session_token: str) -> None
 	print("=============================\n")
 	assert body.get("success") is True
 	assert isinstance(body.get("events"), list)
+
+
+def test_vertretungsplan_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	resp = requests.get(f"{base_url}/vertretungsplan", headers=headers, timeout=20)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /vertretungsplan API Response ===")
+	print(body)
+	print("=============================\n")
+	assert "success" in body
+
+
+def test_stundenplan_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	resp = requests.get(f"{base_url}/stundenplan", headers=headers, timeout=20)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /stundenplan API Response ===")
+	print(body)
+	print("=============================\n")
+	assert "success" in body
+
+
+def test_dateispeicher_root_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	resp = requests.get(f"{base_url}/dateispeicher", headers=headers, timeout=20)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /dateispeicher API Response ===")
+	print(body)
+	print("=============================\n")
+	assert "success" in body
+
+
+def test_dateispeicher_search_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	resp = requests.get(
+		f"{base_url}/dateispeicher/search?q=test", headers=headers, timeout=20
+	)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /dateispeicher/search API Response ===")
+	print(body)
+	print("=============================\n")
+	assert "success" in body
+
+
+def test_lerngruppen_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	resp = requests.get(f"{base_url}/lerngruppen", headers=headers, timeout=20)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /lerngruppen API Response ===")
+	print(body)
+	print("=============================\n")
+	assert "success" in body
 
 
 def test_invalid_token_rejected(base_url: str) -> None:

@@ -237,7 +237,7 @@ def kalender_get_events(
     Example
     -----
     >>> api.kalender_get_events(year=0, start="month", category="20")
-    {'success': True, 'events': [{'id': 'e-123', 'title': 'Exam', 'category': 20, ...}],
+    {'success': True, 'events': [{'id': '{event_id}', 'title': '{title}', 'category': 20, ...}],
      'count': 1, 'categories': [...], 'filters': {...}}
     """
     if not self.logged_in:

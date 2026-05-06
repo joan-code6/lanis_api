@@ -45,7 +45,7 @@ def nachrichten_get_headers(
     -----
     >>> api.nachrichten_get_headers()
     {'success': True, 'total': 40, 'conversations': [
-    ...     {'id': 'c-1234', 'sender': 'teacher@schule.de', 'subject': 'Info', 'date': '2026-01-15', 'unread': True}
+    ...     {'id': '{conversation_id}', 'sender': '{sender}', 'subject': '{subject}', 'date': '{date}', 'unread': True}
     ... ]}
     """
     if not self.logged_in:
@@ -129,7 +129,7 @@ def nachrichten_get_conversation(
     Parameters
     ----------
     conversation_id : str
-        The unique conversation/thread identifier (e.g., "c-1423").
+        The unique conversation/thread identifier (e.g., "{conversation_id}").
         This can be obtained from nachrichten_get_headers().
     last : int, optional
         Timestamp for pagination. Pass 0 to fetch all messages
@@ -150,10 +150,10 @@ def nachrichten_get_conversation(
 
     Example
     -----
-    >>> api.nachrichten_get_conversation("c-1423")
+    >>> api.nachrichten_get_conversation("{conversation_id}")
     {'success': True, 'messages': [
-    ...     {'sender': 'teacher@schule.de', 'content': 'Hello class...', 'date': '2026-01-15'},
-    ...     {'sender': 'student@schule.de', 'content': 'Question...', 'date': '2026-01-15'}
+    ...     {'sender': '{sender}', 'content': '{message_text}', 'date': '{date}'},
+    ...     {'sender': '{sender}', 'content': '{message_text}', 'date': '{date}'}
     ... ]}
     """
     if not self.logged_in:
@@ -268,7 +268,7 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
 
     Args:
         message_data: Dict with keys:
-            - recipients: list of recipient IDs (e.g., ["l-14480"])
+            - recipients: list of recipient IDs (e.g., ["l-{recipient_id}"])
             - subject: message subject
             - body: message text
 
@@ -277,9 +277,9 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
 
     Example:
         >>> api.nachrichten_send_message({
-        ...     "recipients": ["l-14480"],
-        ...     "subject": "Hello",
-        ...     "body": "Test message"
+        ...     "recipients": ["l-{recipient_id}"],
+        ...     "subject": "{subject}",
+        ...     "body": "{message_text}"
         ... })
     """
     if not self.logged_in:

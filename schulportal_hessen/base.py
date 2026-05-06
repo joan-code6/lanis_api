@@ -46,7 +46,7 @@ class SchulportalHessenAPI:
     Example
     ----------
     >>> api = SchulportalHessenAPI()
-    >>> result = api.login("1234", "max.mustermann", "password123")
+    >>> result = api.login("{school_id}", "{username}", "{password}")
     >>> if result["success"]:
     ...     messages = api.nachrichten_get_headers()
     ...     events = api.kalender_get_events()
@@ -141,23 +141,79 @@ class SchulportalHessenAPI:
         except json.JSONDecodeError as e:
             return {"success": False, "error": f"Failed to parse response: {str(e)}"}
 
-    def get_available_modules(self) -> List[Dict[str, str]]:
-        """
-        Get a simplified list of available modules with their access URLs
+    def get_available_modules(self) -> List[Dict[str, Any]]:
+        """Return the logged-in user's available modules with resolved URLs.
 
-        Returns:
-            List of dicts containing module name and full URL
+        This helper reads the raw app list returned by :meth:`get_apps` and
+        normalizes each entry into a compact structure that is easier to use in
+        client code. Relative links are converted to absolute URLs.
+
+        Returns
+        -------
+        List[Dict[str, str]]
+            A list of modules containing:
+            - name: Display name of the module
+            - url: Absolute access URL
+            - color: Module color value from the portal
+            - logo: Icon class for the module
+            - folders: Folder/group metadata attached to the module
+            - target: Link target, usually "_self"
+            - usable: Whether the module is supported by this package
+            - usage: List of API method names to use with the module
+
+        Notes
+        -----
+        If the user is not logged in or the app list cannot be loaded, an
+        empty list is returned.
         """
         apps_data = self.get_apps()
 
         if not apps_data.get("success"):
             return []
 
-        modules = []
+        modules: List[Dict[str, Any]] = []
         entries = apps_data.get("data", {}).get("entrys", [])
+
+        usage_by_link = {
+            "kalender.php": [
+                "kalender_get_overview",
+                "kalender_get_events",
+                "kalender_get_event",
+            ],
+            "nachrichten.php": [
+                "nachrichten_get_headers",
+                "nachrichten_get_conversation",
+                "nachrichten_search_recipients",
+                "nachrichten_send_message",
+            ],
+            "meinunterricht.php": [
+                "meinunterricht_get_overview",
+                "meinunterricht_get_course",
+                "meinunterricht_get_entry_details",
+                "meinunterricht_get_weekly_view",
+                "meinunterricht_get_submissions",
+                "meinunterricht_set_homework_done",
+                "meinunterricht_download_file",
+            ],
+            "vertretungsplan.php": ["vertretungsplan_get_plan"],
+            "stundenplan.php": ["stundenplan_get_plan"],
+            "dateispeicher.php": [
+                "dateispeicher_get_root",
+                "dateispeicher_get_node",
+                "dateispeicher_search_files",
+            ],
+            "lerngruppen.php": ["lerngruppen_get_overview"],
+            "benutzerverwaltung.php": ["benutzer_get_data"],
+        }
 
         for entry in entries:
             link = entry.get("link", "")
+            usage = []
+            for link_key, methods in usage_by_link.items():
+                if link_key in link:
+                    usage = methods
+                    break
+            usable = len(usage) > 0
             # Convert relative links to absolute URLs
             if link.startswith("http"):
                 full_url = link
@@ -172,17 +228,20 @@ class SchulportalHessenAPI:
                     "logo": entry.get("Logo"),
                     "folders": entry.get("Ordner", []),
                     "target": entry.get("target", "_self"),
+                    "usable": usable,
+                    "usage": usage,
                 }
             )
 
         return modules
 
     def get_cookies(self) -> Dict[str, str]:
-        """
-        Get current session cookies
+        """Return the current session cookies as a plain dictionary.
 
-        Returns:
-            Dict of cookie name-value pairs
+        Returns
+        -------
+        Dict[str, str]
+            Mapping of cookie names to values for the active HTTP session.
         """
         cookies_dict = {}
         for cookie in self.session.cookies:
@@ -193,53 +252,143 @@ class SchulportalHessenAPI:
     def nachrichten_get_headers(
         self, get_type: str = "All", last: int = 0
     ) -> Dict[str, Any]:
-        """Fetch messages overview/headers (conversations list)"""
+        """Fetch the conversation list for the authenticated user.
+
+        Args:
+            get_type: Message filter. Common values are "All", "visibleOnly",
+                and "unvisibleOnly".
+            last: Pagination marker used for incremental fetches.
+
+        Returns:
+            Dict containing the decrypted conversation list and the reported
+            total count.
+        """
         ...
 
     def nachrichten_get_conversation(
         self, conversation_id: str, last: int = 0
     ) -> Dict[str, Any]:
-        """Fetch messages from a specific conversation"""
+        """Fetch the full message thread for a conversation.
+
+        Args:
+            conversation_id: Encrypted conversation identifier returned by
+                :meth:`nachrichten_get_headers`.
+            last: Pagination marker for older messages.
+
+        Returns:
+            Dict containing the decrypted message payload and nested replies.
+        """
         ...
 
     def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
-        """Search for message recipients (users)"""
+        """Search message recipients by name or partial name.
+
+        Args:
+            query: Search term used to look up users in the recipient picker.
+
+        Returns:
+            Dict containing the matching users.
+        """
         ...
 
     def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, Any]:
-        """ToDo make it work"""
+        """Send a new Nachricht using the portal's encrypted payload format.
+
+        Args:
+            message_data: Dictionary with at least these keys:
+                recipients: List of recipient ids such as ["l-{recipient_id}"]
+                subject: Message subject text
+                body: Message body text
+
+        Returns:
+            Dict with success status and the returned message id when sending
+            succeeds.
+        """
         ...
 
     # Mein Unterricht methods
     def meinunterricht_get_overview(self) -> Dict[str, Any]:
-        """Fetch "mein Unterricht" overview page with current entries"""
+        """Fetch the Mein Unterricht overview with current entries.
+
+        Returns:
+            Dict containing the parsed overview entries and the raw HTML.
+        """
         ...
 
     def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
-        """Fetch detailed view of a specific course/class folder"""
+        """Fetch the detailed page for a single course folder.
+
+        Args:
+            course_id: Course/book id from the portal's data-book attribute.
+
+        Returns:
+            Dict containing course metadata, entries, attendance information,
+            and attached files.
+        """
         ...
 
     def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:
-        """Fetch details for a specific entry/link from mein Unterricht"""
+        """Fetch a linked Mein Unterricht entry by URL.
+
+        Args:
+            url: Relative path or absolute URL for the linked entry.
+
+        Returns:
+            Dict containing the fetched content and its detected content type.
+        """
         ...
 
     def meinunterricht_get_weekly_view(self) -> Dict[str, Any]:
-        """Fetch weekly view of class entries"""
+        """Fetch the weekly Mein Unterricht view.
+
+        Returns:
+            Dict containing the HTML response for the weekly class overview.
+        """
         ...
 
     def meinunterricht_get_submissions(self) -> Dict[str, Any]:
-        """Fetch student submissions/assignments (Abgaben)"""
+        """Fetch the Mein Unterricht submissions/assignments view.
+
+        Returns:
+            Dict containing the HTML response for the submissions page.
+        """
         ...
 
     def meinunterricht_set_homework_done(
         self, course_id: str, entry_id: str, done: bool = True
     ) -> Dict[str, Any]:
-        """Mark or unmark homework as done for a specific entry"""
+        """Mark or unmark a homework entry as completed.
+
+        Args:
+            course_id: Course/book id for the homework entry.
+            entry_id: Entry id for the homework item.
+            done: True to mark as done, False to mark as not done.
+
+        Returns:
+            Dict containing the requested state and whether the update
+            succeeded.
+        """
+        ...
+
+    def meinunterricht_download_file(self, url: str) -> Dict[str, Any]:
+        """Download an attached file using the authenticated session.
+
+        Args:
+            url: Relative or absolute file URL extracted from course entries.
+
+        Returns:
+            Dict containing filename metadata and binary content.
+        """
         ...
 
     # Kalender methods
     def kalender_get_overview(self) -> Dict[str, Any]:
-        """Fetch and parse the calendar overview page"""
+        """Fetch and parse the calendar overview page.
+
+        Returns:
+            Dict containing calendar metadata, categories, groups, and export
+            links.
+        """
         ...
 
     def kalender_get_events(
@@ -251,29 +400,114 @@ class SchulportalHessenAPI:
         target: str = "",
         view_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Fetch calendar events using the page's getEvents action"""
+        """Fetch calendar events with the same filters as the web UI.
+
+        Args:
+            year: School year selector, where 0 is the current year.
+            start: Calendar start mode such as "year", "month", "week", or
+                "day".
+            category: Category id filter.
+            search: Free-text search term.
+            target: Target-group filter.
+            view_id: Optional calendar view id. If omitted, the current default
+                view is used.
+
+        Returns:
+            Dict containing the parsed events, filter metadata, and raw payload.
+        """
         ...
 
     def kalender_get_event(
         self, event_id: str, view_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Fetch a single calendar event using the page's getEvent action"""
+        """Fetch a single calendar event using the portal's getEvent action.
+
+        Args:
+            event_id: Internal event id.
+            view_id: Optional calendar view id. If omitted, the default view
+                from the overview page is used.
+
+        Returns:
+            Dict containing the parsed event payload and the applied filters.
+        """
+        ...
+
+    # Vertretungsplan methods
+    def vertretungsplan_get_plan(self, include_raw: bool = False) -> Dict[str, Any]:
+        """Fetch the substitution plan (vertretungsplan.php).
+
+        Args:
+            include_raw: Include the raw HTML response in the payload.
+
+        Returns:
+            Dict containing the parsed substitution days and metadata.
+        """
+        ...
+
+    # Stundenplan methods
+    def stundenplan_get_plan(self) -> Dict[str, Any]:
+        """Fetch the timetable (stundenplan.php).
+
+        Returns:
+            Dict containing timetable data for all and personal views.
+        """
+        ...
+
+    # Dateispeicher methods
+    def dateispeicher_get_root(self) -> Dict[str, Any]:
+        """Fetch the root folder for the file storage (dateispeicher.php)."""
+        ...
+
+    def dateispeicher_get_node(self, folder_id: int = 0) -> Dict[str, Any]:
+        """Fetch files and folders for a specific dateispeicher node."""
+        ...
+
+    def dateispeicher_search_files(self, query: str) -> Dict[str, Any]:
+        """Search files in the dateispeicher by name."""
+        ...
+
+    # Lerngruppen methods
+    def lerngruppen_get_overview(self) -> Dict[str, Any]:
+        """Fetch study groups and exam data (lerngruppen.php)."""
         ...
 
     def benutzer_get_data(self) -> Dict[str, Any]:
-        """Fetch student/user data from benutzerverwaltung.php"""
+        """Fetch the authenticated user's profile data.
+
+        Returns:
+            Dict containing the lowercased profile fields extracted from
+            benutzerverwaltung.php.
+        """
 
     # School List methods
     def school_list_get_all(self) -> Dict[str, Any]:
-        """Fetch and parse all schools organized by district"""
+        """Fetch and parse the complete public school directory.
+
+        Returns:
+            Dict containing all districts and their schools.
+        """
         ...
 
     def school_list_get_by_district(self, district_id: str) -> Dict[str, Any]:
-        """Fetch schools for a specific district"""
+        """Fetch the schools for one district by id.
+
+        Args:
+            district_id: District id such as "7".
+
+        Returns:
+            Dict containing the matching district and its schools.
+        """
         ...
 
     def school_list_search_by_name(self, school_name: str) -> Dict[str, Any]:
-        """Search for schools by name across all districts"""
+        """Search the public school list by school name.
+
+        Args:
+            school_name: School name or partial name to search for.
+
+        Returns:
+            Dict containing the matching schools and the total count.
+        """
         ...
 
     # DSBmobile methods
@@ -379,6 +613,7 @@ from .applets.mein_unterricht.api import (
     meinunterricht_get_weekly_view,
     meinunterricht_get_submissions,
     meinunterricht_set_homework_done,
+    meinunterricht_download_file,
 )
 
 SchulportalHessenAPI.meinunterricht_get_overview = meinunterricht_get_overview
@@ -387,6 +622,7 @@ SchulportalHessenAPI.meinunterricht_get_entry_details = meinunterricht_get_entry
 SchulportalHessenAPI.meinunterricht_get_weekly_view = meinunterricht_get_weekly_view
 SchulportalHessenAPI.meinunterricht_get_submissions = meinunterricht_get_submissions
 SchulportalHessenAPI.meinunterricht_set_homework_done = meinunterricht_set_homework_done
+SchulportalHessenAPI.meinunterricht_download_file = meinunterricht_download_file
 
 # Import and attach the kalender methods
 from .applets.kalender.api import (
@@ -398,6 +634,32 @@ from .applets.kalender.api import (
 SchulportalHessenAPI.kalender_get_overview = kalender_get_overview
 SchulportalHessenAPI.kalender_get_events = kalender_get_events
 SchulportalHessenAPI.kalender_get_event = kalender_get_event
+
+# Import and attach the vertretungsplan methods
+from .applets.vertretungsplan.api import vertretungsplan_get_plan
+
+SchulportalHessenAPI.vertretungsplan_get_plan = vertretungsplan_get_plan
+
+# Import and attach the stundenplan methods
+from .applets.stundenplan.api import stundenplan_get_plan
+
+SchulportalHessenAPI.stundenplan_get_plan = stundenplan_get_plan
+
+# Import and attach the dateispeicher methods
+from .applets.dateispeicher.api import (
+    dateispeicher_get_root,
+    dateispeicher_get_node,
+    dateispeicher_search_files,
+)
+
+SchulportalHessenAPI.dateispeicher_get_root = dateispeicher_get_root
+SchulportalHessenAPI.dateispeicher_get_node = dateispeicher_get_node
+SchulportalHessenAPI.dateispeicher_search_files = dateispeicher_search_files
+
+# Import and attach the lerngruppen methods
+from .applets.lerngruppen.api import lerngruppen_get_overview
+
+SchulportalHessenAPI.lerngruppen_get_overview = lerngruppen_get_overview
 
 # Import and attach the benutzer methods
 from .applets.benutzer.api import benutzer_get_data

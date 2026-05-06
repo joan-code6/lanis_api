@@ -396,7 +396,9 @@ Retrieve all available modules for the current user.
       "color": "{color_code}",
       "logo": "{logo_class}",
       "folders": ["{folder_name}"],
-      "target": "{target}"
+      "target": "{target}",
+      "usable": true,
+      "usage": ["{method_name}"]
     },
     "..."
   ]
@@ -414,6 +416,8 @@ Retrieve all available modules for the current user.
 | `modules[].logo` | string | CSS class for the module icon |
 | `modules[].folders` | array | List of folders the module belongs to |
 | `modules[].target` | string | Link target (_blank or _self) |
+| `modules[].usable` | boolean | Whether the module is supported by this package |
+| `modules[].usage` | array | List of API method names for this module |
 
 **Status Codes:**
 - `200 OK` - Modules retrieved successfully
@@ -932,6 +936,137 @@ Retrieve the full payload for a single calendar event.
 **Status Codes:**
 - `200 OK` - Calendar event retrieved successfully
 - `401 Unauthorized` - Invalid or expired session token
+
+---
+
+### Substitution Plan (Schulportal)
+
+#### GET `/vertretungsplan`
+
+Retrieve the substitution plan from Schulportal Hessen (vertretungsplan.php).
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `include_raw` | boolean | false | Include raw HTML in the response |
+
+**Response:**
+```json
+{
+  "success": true,
+  "mode": "ajax",
+  "last_updated": "{timestamp}",
+  "days": [
+    {
+      "date": "{date}",
+      "substitutions": [
+        {"fach": "{subject}", "klasse": "{class}"}
+      ]
+    }
+  ],
+  "count": 1
+}
+```
+
+**Status Codes:**
+- `200 OK` - Substitution plan retrieved successfully
+- `401 Unauthorized` - Invalid or expired session token
+
+---
+
+### Timetable (Stundenplan)
+
+#### GET `/stundenplan`
+
+Retrieve the timetable from stundenplan.php (all and personal views).
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "plan_for_all": [[{"name": "{subject}", "room": "{room}"}]],
+  "plan_for_own": [[{"name": "{subject}"}]],
+  "hours": [{"label": "1", "start_time": {"hour": 8, "minute": 0}}],
+  "week_badge": "{week}"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Timetable retrieved successfully
+- `401 Unauthorized` - Invalid or expired session token
+
+---
+
+### File Storage (Dateispeicher)
+
+#### GET `/dateispeicher`
+
+Retrieve files and folders from the dateispeicher.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `folder_id` | integer | 0 | Folder id to fetch |
+
+**Response:**
+```json
+{
+  "success": true,
+  "folder_id": 0,
+  "files": [{"id": 1, "name": "{file}"}],
+  "folders": [{"id": 2, "name": "{folder}"}]
+}
+```
+
+#### GET `/dateispeicher/search`
+
+Search files in the dateispeicher.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Query Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | string | Search query |
+
+**Response:**
+```json
+{
+  "success": true,
+  "query": "{query}",
+  "results": []
+}
+```
+
+---
+
+### Study Groups (Lerngruppen)
+
+#### GET `/lerngruppen`
+
+Retrieve study groups and exam data from lerngruppen.php.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Response:**
+```json
+{
+  "success": true,
+  "groups": [{"id": "{group_id}", "course_name": "{course}"}],
+  "exams": [{"id": "{exam_id}", "date": "{date}"}]
+}
+```
 
 ---
 

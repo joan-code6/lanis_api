@@ -1,5 +1,31 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import json
+import os
+import re
+from urllib.parse import urljoin
+
+from schulportal_hessen.tools.cryptor import Cryptor
+
+
+def _make_absolute_url(base_url: str, url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        return ""
+    return url if url.startswith("http") else urljoin(f"{base_url}/", url)
+
+
+def _extract_filename(content_disposition: Optional[str], fallback_url: str) -> str:
+    if content_disposition:
+        match = re.search(r"filename\*=UTF-8''([^;]+)", content_disposition)
+        if match:
+            return match.group(1)
+        match = re.search(r'filename="?([^";]+)"?', content_disposition)
+        if match:
+            return match.group(1)
+
+    fallback = fallback_url.split("?")[0].rstrip("/")
+    name = os.path.basename(fallback)
+    return name or "download.bin"
 
 
 def meinunterricht_get_overview(self) -> Dict[str, Any]:
@@ -127,8 +153,8 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
         - Exams (Leistungskontrollen)
 
     Example:
-        >>> api.meinunterricht_get_course("1194")
-        {'success': True, 'course_name': 'Informatik', 'entries': [...]}
+        >>> api.meinunterricht_get_course("{course_id}")
+        {'success': True, 'course_name': '{course_name}', 'entries': [...]}
     """
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
@@ -249,12 +275,40 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                 # Extract files
                 files_div = row.find("div", {"class": "files"})
                 if files_div:
-                    for link in files_div.find_all("a"):
+                    base_url = ""
+                    alert_link = row.select_one("div.alert.alert-info a[href]")
+                    if alert_link:
+                        base_url = _make_absolute_url(
+                            self.BASE_START_URL, alert_link.get("href", "")
+                        )
+                        base_url = base_url.replace("&b=zip", "")
+
+                    for file_block in files_div.find_all("div", attrs={"data-file": True}):
+                        filename = file_block.get("data-file", "").strip()
+                        size_tag = file_block.find("small")
+                        size = size_tag.get_text(" ", strip=True) if size_tag else ""
+                        download_url = ""
+                        if base_url and filename:
+                            download_url = f"{base_url}&f={filename}"
                         file_info = {
-                            "name": link.get_text(separator="\n"),
-                            "url": link.get("href", ""),
+                            "name": filename or file_block.get_text(" ", strip=True),
+                            "size": size,
+                            "url": download_url or base_url,
+                            "download_url": download_url or base_url,
                         }
                         entry["files"].append(file_info)
+
+                    if not entry["files"]:
+                        for link in files_div.find_all("a", href=True):
+                            file_url = _make_absolute_url(
+                                self.BASE_START_URL, link.get("href", "")
+                            )
+                            file_info = {
+                                "name": link.get_text(separator="\n"),
+                                "url": file_url,
+                                "download_url": file_url,
+                            }
+                            entry["files"].append(file_info)
 
                 entries.append(entry)
 
@@ -264,6 +318,35 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
         if klausuren_tab:
             for li in klausuren_tab.find_all("li"):
                 exams.append(li.get_text(separator="\n"))
+
+        # Extract marks/grades
+        marks = []
+        marks_section = soup.find("div", {"id": "marks"})
+        if marks_section:
+            for hidden in marks_section.find_all(class_="hidden_encoded"):
+                hidden.decompose()
+            for row in marks_section.select("table tbody tr"):
+                cells = row.find_all("td")
+                if len(cells) != 3:
+                    continue
+                comment = None
+                next_row = row.find_next_sibling("tr")
+                if next_row:
+                    comment_cells = next_row.find_all("td")
+                    if len(comment_cells) == 2:
+                        comment_text = comment_cells[1].get_text(" ", strip=True)
+                        if ":" in comment_text:
+                            comment = comment_text.split(":", 1)[1].strip() or None
+                        else:
+                            comment = comment_text or None
+                marks.append(
+                    {
+                        "name": cells[0].get_text(" ", strip=True),
+                        "date": cells[1].get_text(" ", strip=True),
+                        "mark": cells[2].get_text(" ", strip=True),
+                        "comment": comment,
+                    }
+                )
 
         # Extract attendance summary
         attendance_summary = {}
@@ -286,6 +369,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
             "entries": entries,
             "entry_count": len(entries),
             "exams": exams,
+            "marks": marks,
             "attendance_summary": attendance_summary,
         }
 
@@ -437,3 +521,36 @@ def meinunterricht_set_homework_done(
             "success": False,
             "error": f"Failed to set homework done status: {str(e)}",
         }
+
+
+def meinunterricht_download_file(self, url: str) -> Dict[str, Any]:
+    """Download an attached file using the authenticated session.
+
+    Args:
+        url: Relative or absolute file URL extracted from course entries.
+
+    Returns:
+        Dict with filename, content type, and binary content.
+
+    Example:
+        >>> api.meinunterricht_download_file("dateiverteilung.php?a=download&...")
+        {"success": True, "filename": "{file}", "content": b"..."}
+    """
+    if not self.logged_in:
+        return {"success": False, "error": "Not logged in"}
+
+    try:
+        download_url = _make_absolute_url(self.BASE_START_URL, url)
+        response = self.session.get(download_url)
+        response.raise_for_status()
+
+        filename = _extract_filename(response.headers.get("Content-Disposition"), download_url)
+        return {
+            "success": True,
+            "filename": filename,
+            "content_type": response.headers.get("Content-Type"),
+            "content": response.content,
+            "url": download_url,
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to download file: {str(e)}"}

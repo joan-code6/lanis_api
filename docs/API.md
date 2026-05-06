@@ -54,10 +54,12 @@ Example
 
 ### get_available_modules
 
-Get a simplified list of available modules with their access URLs
+Get a simplified list of available modules with their access URLs and usability
 
 Returns:
-    List of dicts containing module name and full URL
+    List of dicts containing module data plus:
+    - usable (bool): Whether this package supports the module
+    - usage (list[str]): Method names to call for this module
 
 ### get_cookies
 
@@ -106,6 +108,10 @@ Fetch student submissions/assignments (Abgaben)
 
 Mark or unmark homework as done for a specific entry
 
+### meinunterricht_download_file
+
+Download an attached file using the authenticated session
+
 ### kalender_get_overview
 
 Fetch and parse the calendar overview page
@@ -117,6 +123,30 @@ Fetch calendar events using the page's getEvents action
 ### kalender_get_event
 
 Fetch a single calendar event using the page's getEvent action
+
+### vertretungsplan_get_plan
+
+Fetch the substitution plan (vertretungsplan.php)
+
+### stundenplan_get_plan
+
+Fetch the timetable (stundenplan.php)
+
+### dateispeicher_get_root
+
+Fetch the root folder for the file storage (dateispeicher.php)
+
+### dateispeicher_get_node
+
+Fetch files and folders for a specific dateispeicher node
+
+### dateispeicher_search_files
+
+Search files in the dateispeicher by name
+
+### lerngruppen_get_overview
+
+Fetch study groups and exam data (lerngruppen.php)
 
 ### benutzer_get_data
 
