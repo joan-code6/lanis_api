@@ -2,8 +2,13 @@ name: Release to PyPI
 
 on:
   push:
+    branches:
+      - 'main'
     tags:
       - 'v*'
+    paths:
+      - 'schulportal_hessen/**'
+      - 'sph_client/**'
   workflow_dispatch:
 
 jobs:
