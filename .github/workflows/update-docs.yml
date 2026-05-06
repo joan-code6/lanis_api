@@ -28,11 +28,18 @@ jobs:
       - name: Update README with API docs
         run: |
           python -c "
-          import sys
-          api_docs = open('docs/API.md').read()
-          content = open('template-readme.md').read()
+          from pathlib import Path
+
+          api_docs = Path('docs/API.md').read_text(encoding='utf-8')
+          template_path = Path('template-readme.md')
+
+          if template_path.exists():
+            content = template_path.read_text(encoding='utf-8')
+          else:
+            content = '# lanis_api\n\n$API_DOCS\n'
+
           content = content.replace('$API_DOCS', api_docs)
-          open('README.md', 'w').write(content)
+          Path('README.md').write_text(content, encoding='utf-8')
           "
 
       - name: Commit and push docs
