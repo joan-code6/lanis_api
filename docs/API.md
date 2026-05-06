@@ -1,9 +1,9 @@
-# sph_client API Documentation
+## sph_client API Documentation
 
 
-## BASE
+### BASE
 
-### __init__
+#### __init__
 
 Initialize the API client with a session for HTTP cookie management.
 
@@ -19,7 +19,7 @@ Note
 After initialization, call login() with valid credentials
 to authenticate before making other API calls.
 
-### get_apps
+#### get_apps
 
 Retrieve available apps/modules for the logged-in user.
 
@@ -52,119 +52,261 @@ Example
     'till': 1765299123
 }}
 
-### get_available_modules
+#### get_available_modules
 
-Get a simplified list of available modules with their access URLs and usability
+Return the logged-in user's available modules with resolved URLs.
+
+This helper reads the raw app list returned by :meth:`get_apps` and
+normalizes each entry into a compact structure that is easier to use in
+client code. Relative links are converted to absolute URLs.
+
+Returns
+-------
+List[Dict[str, str]]
+    A list of modules containing:
+    - name: Display name of the module
+    - url: Absolute access URL
+    - color: Module color value from the portal
+    - logo: Icon class for the module
+    - folders: Folder/group metadata attached to the module
+    - target: Link target, usually "_self"
+    - usable: Whether the module is supported by this package
+    - usage: List of API method names to use with the module
+
+Notes
+-----
+If the user is not logged in or the app list cannot be loaded, an
+empty list is returned.
+
+#### get_cookies
+
+Return the current session cookies as a plain dictionary.
+
+Returns
+-------
+Dict[str, str]
+    Mapping of cookie names to values for the active HTTP session.
+
+#### nachrichten_get_headers
+
+Fetch the conversation list for the authenticated user.
+
+Args:
+    get_type: Message filter. Common values are "All", "visibleOnly",
+        and "unvisibleOnly".
+    last: Pagination marker used for incremental fetches.
 
 Returns:
-    List of dicts containing module data plus:
-    - usable (bool): Whether this package supports the module
-    - usage (list[str]): Method names to call for this module
+    Dict containing the decrypted conversation list and the reported
+    total count.
 
-### get_cookies
+#### nachrichten_get_conversation
 
-Get current session cookies
+Fetch the full message thread for a conversation.
+
+Args:
+    conversation_id: Encrypted conversation identifier returned by
+        :meth:`nachrichten_get_headers`.
+    last: Pagination marker for older messages.
 
 Returns:
-    Dict of cookie name-value pairs
+    Dict containing the decrypted message payload and nested replies.
 
-### nachrichten_get_headers
+#### nachrichten_search_recipients
 
-Fetch messages overview/headers (conversations list)
+Search message recipients by name or partial name.
 
-### nachrichten_get_conversation
+Args:
+    query: Search term used to look up users in the recipient picker.
 
-Fetch messages from a specific conversation
+Returns:
+    Dict containing the matching users.
 
-### nachrichten_search_recipients
+#### nachrichten_send_message
 
-Search for message recipients (users)
+Send a new Nachricht using the portal's encrypted payload format.
 
-### nachrichten_send_message
+Args:
+    message_data: Dictionary with at least these keys:
+        recipients: List of recipient ids such as ["l-{recipient_id}"]
+        subject: Message subject text
+        body: Message body text
 
-ToDo make it work
+Returns:
+    Dict with success status and the returned message id when sending
+    succeeds.
 
-### meinunterricht_get_overview
+#### meinunterricht_get_overview
 
-Fetch "mein Unterricht" overview page with current entries
+Fetch the Mein Unterricht overview with current entries.
 
-### meinunterricht_get_course
+Returns:
+    Dict containing the parsed overview entries and the raw HTML.
 
-Fetch detailed view of a specific course/class folder
+#### meinunterricht_get_course
 
-### meinunterricht_get_entry_details
+Fetch the detailed page for a single course folder.
 
-Fetch details for a specific entry/link from mein Unterricht
+Args:
+    course_id: Course/book id from the portal's data-book attribute.
 
-### meinunterricht_get_weekly_view
+Returns:
+    Dict containing course metadata, entries, attendance information,
+    and attached files.
 
-Fetch weekly view of class entries
+#### meinunterricht_get_entry_details
 
-### meinunterricht_get_submissions
+Fetch a linked Mein Unterricht entry by URL.
 
-Fetch student submissions/assignments (Abgaben)
+Args:
+    url: Relative path or absolute URL for the linked entry.
 
-### meinunterricht_set_homework_done
+Returns:
+    Dict containing the fetched content and its detected content type.
 
-Mark or unmark homework as done for a specific entry
+#### meinunterricht_get_weekly_view
 
-### meinunterricht_download_file
+Fetch the weekly Mein Unterricht view.
 
-Download an attached file using the authenticated session
+Returns:
+    Dict containing the HTML response for the weekly class overview.
 
-### kalender_get_overview
+#### meinunterricht_get_submissions
 
-Fetch and parse the calendar overview page
+Fetch the Mein Unterricht submissions/assignments view.
 
-### kalender_get_events
+Returns:
+    Dict containing the HTML response for the submissions page.
 
-Fetch calendar events using the page's getEvents action
+#### meinunterricht_set_homework_done
 
-### kalender_get_event
+Mark or unmark a homework entry as completed.
 
-Fetch a single calendar event using the page's getEvent action
+Args:
+    course_id: Course/book id for the homework entry.
+    entry_id: Entry id for the homework item.
+    done: True to mark as done, False to mark as not done.
 
-### vertretungsplan_get_plan
+Returns:
+    Dict containing the requested state and whether the update
+    succeeded.
 
-Fetch the substitution plan (vertretungsplan.php)
+#### meinunterricht_download_file
 
-### stundenplan_get_plan
+Download an attached file using the authenticated session.
 
-Fetch the timetable (stundenplan.php)
+Args:
+    url: Relative or absolute file URL extracted from course entries.
 
-### dateispeicher_get_root
+Returns:
+    Dict containing filename metadata and binary content.
 
-Fetch the root folder for the file storage (dateispeicher.php)
+#### kalender_get_overview
 
-### dateispeicher_get_node
+Fetch and parse the calendar overview page.
 
-Fetch files and folders for a specific dateispeicher node
+Returns:
+    Dict containing calendar metadata, categories, groups, and export
+    links.
 
-### dateispeicher_search_files
+#### kalender_get_events
 
-Search files in the dateispeicher by name
+Fetch calendar events with the same filters as the web UI.
 
-### lerngruppen_get_overview
+Args:
+    year: School year selector, where 0 is the current year.
+    start: Calendar start mode such as "year", "month", "week", or
+        "day".
+    category: Category id filter.
+    search: Free-text search term.
+    target: Target-group filter.
+    view_id: Optional calendar view id. If omitted, the current default
+        view is used.
 
-Fetch study groups and exam data (lerngruppen.php)
+Returns:
+    Dict containing the parsed events, filter metadata, and raw payload.
 
-### benutzer_get_data
+#### kalender_get_event
 
-Fetch student/user data from benutzerverwaltung.php
+Fetch a single calendar event using the portal's getEvent action.
 
-### school_list_get_all
+Args:
+    event_id: Internal event id.
+    view_id: Optional calendar view id. If omitted, the default view
+        from the overview page is used.
 
-Fetch and parse all schools organized by district
+Returns:
+    Dict containing the parsed event payload and the applied filters.
 
-### school_list_get_by_district
+#### vertretungsplan_get_plan
 
-Fetch schools for a specific district
+Fetch the substitution plan (vertretungsplan.php).
 
-### school_list_search_by_name
+Args:
+    include_raw: Include the raw HTML response in the payload.
 
-Search for schools by name across all districts
+Returns:
+    Dict containing the parsed substitution days and metadata.
 
-### dsb_login
+#### stundenplan_get_plan
+
+Fetch the timetable (stundenplan.php).
+
+Returns:
+    Dict containing timetable data for all and personal views.
+
+#### dateispeicher_get_root
+
+Fetch the root folder for the file storage (dateispeicher.php).
+
+#### dateispeicher_get_node
+
+Fetch files and folders for a specific dateispeicher node.
+
+#### dateispeicher_search_files
+
+Search files in the dateispeicher by name.
+
+#### lerngruppen_get_overview
+
+Fetch study groups and exam data (lerngruppen.php).
+
+#### benutzer_get_data
+
+Fetch the authenticated user's profile data.
+
+Returns:
+    Dict containing the lowercased profile fields extracted from
+    benutzerverwaltung.php.
+
+#### school_list_get_all
+
+Fetch and parse the complete public school directory.
+
+Returns:
+    Dict containing all districts and their schools.
+
+#### school_list_get_by_district
+
+Fetch the schools for one district by id.
+
+Args:
+    district_id: District id such as "7".
+
+Returns:
+    Dict containing the matching district and its schools.
+
+#### school_list_search_by_name
+
+Search the public school list by school name.
+
+Args:
+    school_name: School name or partial name to search for.
+
+Returns:
+    Dict containing the matching schools and the total count.
+
+#### dsb_login
 
 Login to DSBmobile to access substitution plans.
 
@@ -175,7 +317,7 @@ Args:
 Returns:
     Dict with success status and session cookie data.
 
-### dsb_get_plan_urls
+#### dsb_get_plan_urls
 
 Fetch substitution plan iframe URLs after login.
 
@@ -186,7 +328,7 @@ Args:
 Returns:
     Dict with plan iframe URLs.
 
-### dsb_get_substitution_plan
+#### dsb_get_substitution_plan
 
 Fetch and parse the substitution plan table from DSBmobile.
 
@@ -199,30 +341,30 @@ Args:
 Returns:
     Dict with the plan URL, title, parsed tables, and optional raw HTML.
 
-### logout
+#### logout
 
 Logout from Schulportal Hessen
 
-### login
+#### login
 
 Login to Schulportal Hessen
 
-### sid_validator
+#### sid_validator
 
 Validate a given session ID (sid)
 
-### login_using_env
+#### login_using_env
 
 Login using set creds in .env
 
-### close
+#### close
 
 Close the session
 
 
-## LOGIN
+### LOGIN
 
-### login_using_env
+#### login_using_env
 
 Login using credentials stored in a .env file.
 
@@ -233,7 +375,7 @@ Args:
 Returns:
     Dict with the login result or an error description.
 
-### login
+#### login
 
 Login to Schulportal Hessen
 
@@ -250,14 +392,14 @@ Example:
     >>> result = api.login("1234", "firstname.lastname", "password123")
     >>> print(result)
 
-### logout
+#### logout
 
 Logout from Schulportal Hessen
 
 Returns:
     Dict containing logout status
 
-### sid_validator
+#### sid_validator
 
 Validate the current session by checking if the apps endpoint is accessible
 
@@ -265,9 +407,9 @@ Returns:
     Dict containing validation status
 
 
-## KALENDER
+### KALENDER
 
-### kalender_get_overview
+#### kalender_get_overview
 
 Fetch the calendar overview page and extract its metadata.
 
@@ -297,7 +439,7 @@ Example
  'categories': [{'id': 20, 'name': 'Sonstige Termine', 'color': '#2e2e2e'}],
  'groups': [], 'export_links': [{'label': 'als PDF', 'url': '...'}]}
 
-### kalender_get_events
+#### kalender_get_events
 
 Fetch calendar events using the same POST contract as the web UI.
 
@@ -334,10 +476,10 @@ Dict[str, Any]
 Example
 -----
 >>> api.kalender_get_events(year=0, start="month", category="20")
-{'success': True, 'events': [{'id': 'e-123', 'title': 'Exam', 'category': 20, ...}],
+{'success': True, 'events': [{'id': '{event_id}', 'title': '{title}', 'category': 20, ...}],
  'count': 1, 'categories': [...], 'filters': {...}}
 
-### kalender_get_event
+#### kalender_get_event
 
 Fetch a single calendar event via the same `getEvent` POST action as the UI.
 
@@ -349,9 +491,9 @@ Returns:
     Dict with success status and the parsed event payload.
 
 
-## DSB
+### DSB
 
-### dsb_login
+#### dsb_login
 
 Login to DSBmobile to access substitution plans.
 
@@ -395,7 +537,7 @@ Example
 >>> api.dsb_login("F1234", "mypassword")
 {'success': True, 'session_cookie': 'abc123...', 'session_id': 'def456...'}
 
-### dsb_get_plan_urls
+#### dsb_get_plan_urls
 
 Fetch plan URLs from GetData XHR endpoint after login.
 
@@ -410,7 +552,7 @@ Example:
     >>> api.dsb_get_plan_urls("{username}", "{password}")
     {"success": True, "plan_urls": ["{plan_url}", ...]}
 
-### dsb_get_substitution_plan
+#### dsb_get_substitution_plan
 
 Fetch and parse the substitution plan table from DSBmobile.
 
@@ -429,6 +571,6 @@ Example:
     >>> api.dsb_get_substitution_plan("{username}", "{password}")
     {"success": True, "plan_url": "{plan_url}", "tables": [...]}
 
-### _filter_tables_by_klasse
+#### _filter_tables_by_klasse
 
 Filter tables to only include rows matching the given class name.
