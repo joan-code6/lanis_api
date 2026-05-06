@@ -1,10 +1,13 @@
 name: Update API Docs
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - 'schulportal_hessen/**/*.py'
       - 'template-readme.md'
+      - 'docs_extractor.py'
+      - '.github/workflows/update-docs.yml'
 
 jobs:
   update-docs:
