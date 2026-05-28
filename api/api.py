@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -28,12 +29,24 @@ from schulportal_hessen.base import SchulportalHessenAPI
 
 from .queue import task_queue, Task, TaskPriority
 from .metrics import user_metrics_db
+from .file_cache import (
+    get_file_hash,
+    is_file_cached,
+    is_file_pending,
+    mark_pending,
+    unmark_pending,
+    write_pending_meta,
+    save_file,
+    get_meta,
+    get_content_path,
+)
 
 logger = logging.getLogger("api")
 
 
 SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive sessions after 1 hour
 CACHE_TTL_SECONDS = 10 * 60  # cache responses for 10 minutes
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 LONG_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # cache for 30 days (1 month)
 LONG_CACHE_ENDPOINTS = {
     "/modules",
@@ -767,6 +780,30 @@ async def _update_message_cache_task(
         logger.error(f"Error updating message cache for {endpoint}: {e}")
 
 
+# --- Background File Download Task ---
+async def _download_course_file(token: str, download_url: str, file_hash: str) -> None:
+    if is_file_cached(file_hash):
+        unmark_pending(file_hash)
+        return
+
+    write_pending_meta(file_hash, download_url)
+    client = await sessions.get_client(token)
+    result = await run_in_threadpool(client.meinunterricht_download_file, download_url)
+
+    if result.get("success"):
+        save_file(
+            file_hash,
+            result["content"],
+            result.get("content_type", "application/octet-stream"),
+            result.get("filename", "download"),
+        )
+    else:
+        unmark_pending(file_hash)
+        logger.warning(
+            "File download failed for %s: %s", file_hash[:12], result.get("error")
+        )
+
+
 # --- Caching for /nachrichten endpoints ---
 @app.get("/nachrichten/headers")
 async def get_message_headers(
@@ -918,22 +955,83 @@ async def meinunterricht_course(
     x_session_token: str = Header(..., alias="X-Session-Token"),
     client: SchulportalHessenAPI = Depends(client_dependency),
 ) -> Dict[str, object]:
-    # Create cache key with course_id
     params = _make_param_key({"course_id": course_id})
 
-    # Try to get cached response
     cached = await sessions.get_cached(
         x_session_token, "/meinunterricht/course", params
     )
     if cached is not None:
         return cached
 
-    # Fetch fresh data
     result = await run_in_threadpool(client.meinunterricht_get_course, course_id)
 
-    # Cache the result
+    if result.get("success") and "entries" in result:
+        for entry in result["entries"]:
+            for file_info in entry.get("files", []):
+                original_url = file_info.get("download_url", "")
+                if not original_url:
+                    continue
+
+                file_hash = get_file_hash(original_url)
+                local_url = f"{PUBLIC_BASE_URL}/meinunterricht/file/{file_hash}"
+                file_info["download_url"] = local_url
+                file_info["url"] = local_url
+                file_info["file_hash"] = file_hash
+
+                if not is_file_cached(file_hash) and not is_file_pending(file_hash):
+                    mark_pending(file_hash)
+                    download_task = Task(
+                        name=f"download_file:{file_hash[:12]}",
+                        func=_download_course_file,
+                        args=(x_session_token, original_url, file_hash),
+                        priority=TaskPriority.LOW,
+                        max_retries=2,
+                    )
+                    await task_queue.add_task(download_task)
+
     await sessions.set_cache(x_session_token, "/meinunterricht/course", result, params)
     return result
+
+
+@app.get("/meinunterricht/file/{file_hash}")
+async def meinunterricht_file(
+    file_hash: str,
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+):
+    from fastapi.responses import FileResponse
+
+    meta = get_meta(file_hash)
+    content_path = get_content_path(file_hash)
+
+    if content_path.exists() and meta and meta.get("content_type"):
+        return FileResponse(
+            content_path,
+            media_type=meta.get("content_type", "application/octet-stream"),
+            filename=meta.get("filename", "download"),
+        )
+
+    if meta and meta.get("download_url"):
+        result = await run_in_threadpool(
+            client.meinunterricht_download_file, meta["download_url"]
+        )
+        if result.get("success"):
+            save_file(
+                file_hash,
+                result["content"],
+                result.get("content_type", "application/octet-stream"),
+                result.get("filename", "download"),
+            )
+            return FileResponse(
+                content_path,
+                media_type=result.get("content_type", "application/octet-stream"),
+                filename=result.get("filename", "download"),
+            )
+
+    raise HTTPException(
+        status_code=404,
+        detail="File not yet available, please try again shortly",
+    )
 
 
 @app.get("/meinunterricht/entry")

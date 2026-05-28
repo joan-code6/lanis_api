@@ -580,8 +580,12 @@ class SchulportalHessenAPI:
     def close(self):
         """Close the session"""
         self.session.close()
-        if self.dsb_session:
+        if getattr(self, "dsb_session", None):
             self.dsb_session.close()
+            self.dsb_session = None
+        self._dsb_cookie = None
+        self._dsb_session_id = None
+        self.dsb_logged_in = False
 
 
 # Import and attach the login methods

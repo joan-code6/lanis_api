@@ -28,24 +28,35 @@ def _build_getdata_payload(username: str, password: str) -> str:
         "Date": datetime.datetime.utcnow().isoformat() + "Z",
         "LastUpdate": datetime.datetime.utcnow().isoformat() + "Z",
     }
-    import io
-
     json_bytes = json.dumps(request_data, ensure_ascii=False).encode("utf-8")
     compressed = gzip.compress(json_bytes)
     return base64.b64encode(compressed).decode("utf-8")
 
 
+DSB_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
+
+def _make_dsb_session(
+    dsbmobile_cookie: Optional[str] = None,
+    asp_session_id: Optional[str] = None,
+) -> requests.Session:
+    session = requests.Session()
+    session.headers.update(DSB_HEADERS)
+    if dsbmobile_cookie:
+        session.cookies.set("DSBmobile", dsbmobile_cookie, domain=".dsbmobile.de")
+    if asp_session_id:
+        session.cookies.set("ASP.NET_SessionId", asp_session_id, domain=".dsbmobile.de")
+    return session
+
+
 def _get_dsb_session(self) -> requests.Session:
-    if getattr(self, "dsb_session", None) is None:
-        self.dsb_session = requests.Session()
-        self.dsb_session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
-            }
-        )
-    return self.dsb_session
+    dsb_cookie = getattr(self, "_dsb_cookie", None)
+    dsb_sid = getattr(self, "_dsb_session_id", None)
+    return _make_dsb_session(dsbmobile_cookie=dsb_cookie, asp_session_id=dsb_sid)
 
 
 DSB_GETDATA_FIXED_B64 = "H4sIAAAAAAAAA4WP20rEMBCGXyXkSsFNk7ZZNHuliCJ42Is9gOJFshnbsN2kNNvtovjuTiOLl8Iw/PP9wxy+6DJC92CpovQi6fnwq69NiFS9vaNq2xV00QWPTs4KJtB+1L7qdQWILGD9Ev96nsKnaxqdScbJ2dp5G4ZInhdEcMZnBMG0nJHjmLqDEhLpObmHzTZkORccQ5A718FHOGbJpemG05G3cHCbce8aDGIk8z7WJ/em97aBVFlgNTgPW+erHVinmfN16CMwG80uGNcAG8CMI/V+HJjzfDrh5aTgC1EoeaWKS1ZK+Zrejftla//p+/4B9MquQU8BAAA="
@@ -55,20 +66,44 @@ def _extract_login_payload(html: str) -> Dict[str, str]:
     soup = BeautifulSoup(html, "html.parser")
     form = soup.find("form")
     if not form:
+        for parser in ("lxml", "html5lib"):
+            try:
+                soup = BeautifulSoup(html, parser)
+                form = soup.find("form")
+                if form:
+                    break
+            except Exception:
+                continue
+    if not form:
         return {}
 
     payload: Dict[str, str] = {}
     for input_tag in form.find_all("input"):
-        name = input_tag.get("name")
+        name = input_tag.get("name", "")
         if not name:
             continue
         input_type = (input_tag.get("type") or "").lower()
-        value = input_tag.get("value", "")
+        value = input_tag.get("value", "") or ""
         if input_type in {"checkbox", "radio"}:
-            if input_tag.has_attr("checked"):
+            if "checked" in (input_tag.attrs or {}):
                 payload[name] = value
         else:
             payload[name] = value
+
+    if "txtUser" not in payload or "txtPass" not in payload:
+        for inp in soup.find_all("input"):
+            name = (inp.get("name") or "").lower()
+            if name in ("txtuser", "txtpass"):
+                payload[name] = inp.get("value") or ""
+
+    if "txtUser" not in payload:
+        for inp in soup.find_all("input"):
+            itype = (inp.get("type") or "").lower()
+            placeholder = (inp.get("placeholder") or "").lower()
+            if itype == "text" and ("benutzer" in placeholder or "user" in placeholder):
+                payload["txtUser"] = inp.get("value") or ""
+            elif itype == "password":
+                payload["txtPass"] = inp.get("value") or ""
 
     return payload
 
@@ -198,7 +233,9 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
     >>> api.dsb_login("F1234", "mypassword")
     {'success': True, 'session_cookie': 'abc123...', 'session_id': 'def456...'}
     """
-    session = _get_dsb_session(self)
+    session = _make_dsb_session()
+    self.dsb_username = username
+    self.dsb_password = password
 
     try:
         landing = session.get(BASE_DSB_URL, timeout=15)
@@ -207,9 +244,35 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
         login_page = session.get(urljoin(BASE_DSB_URL, "Login.aspx"), timeout=15)
         login_page.raise_for_status()
 
+        if not login_page.text or len(login_page.text.strip()) < 100:
+            return {
+                "success": False,
+                "error": "Login page returned empty or truncated content.",
+                "content_length": len(login_page.text),
+                "status_code": login_page.status_code,
+                "url": login_page.url,
+            }
+
         payload = _extract_login_payload(login_page.text)
         if not payload:
-            return {"success": False, "error": "Failed to parse login form"}
+            snippet = login_page.text[:800] if login_page.text else "(empty)"
+            return {
+                "success": False,
+                "error": "Failed to parse login form. No form or input fields found in the HTML.",
+                "html_snippet": snippet,
+                "url": login_page.url,
+                "status_code": login_page.status_code,
+            }
+
+        if "txtUser" not in payload or "txtPass" not in payload:
+            snippet = login_page.text[:800] if login_page.text else "(empty)"
+            return {
+                "success": False,
+                "error": "Login form found but missing txtUser/txtPass input fields.",
+                "extracted_fields": list(payload.keys()),
+                "html_snippet": snippet,
+                "url": login_page.url,
+            }
 
         payload["txtUser"] = username
         payload["txtPass"] = password
@@ -228,28 +291,37 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
             cookie.name.lower() == "dsbmobile" for cookie in session.cookies
         )
         is_default = "default.aspx" in response.url.lower()
-        self.dsb_logged_in = bool(has_cookie or is_default)
 
-        if not is_default:
+        if not is_default and not has_cookie:
             default_resp = session.get(
                 urljoin(BASE_DSB_URL, "default.aspx"), timeout=15
             )
             default_resp.raise_for_status()
+            is_default = "default.aspx" in default_resp.url.lower()
+            has_cookie = any(
+                cookie.name.lower() == "dsbmobile" for cookie in session.cookies
+            )
 
-        self.dsb_username = username
-        self.dsb_password = password
+        if has_cookie:
+            self._dsb_cookie = session.cookies.get("DSBmobile")
+            self._dsb_session_id = session.cookies.get("ASP.NET_SessionId")
+            self.dsb_logged_in = True
 
-        if not self.dsb_logged_in:
+        if not has_cookie:
+            snippet = response.text[:800] if response.text else "(empty)"
             return {
                 "success": False,
-                "error": "Login failed. Check credentials or response HTML.",
+                "error": "Login failed. No DSBmobile cookie set after form submission. Check credentials.",
                 "response_url": response.url,
+                "has_default_redirect": is_default,
+                "cookies_received": [c.name for c in session.cookies],
+                "html_snippet": snippet,
             }
 
         return {
             "success": True,
-            "session_cookie": session.cookies.get("DSBmobile"),
-            "session_id": session.cookies.get("ASP.NET_SessionId"),
+            "session_cookie": self._dsb_cookie,
+            "session_id": self._dsb_session_id,
             "response_url": response.url,
         }
     except requests.RequestException as e:

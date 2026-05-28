@@ -306,40 +306,156 @@ Args:
 Returns:
     Dict containing the matching schools and the total count.
 
-#### dsb_login
+### DSB API (DSBmobile Integration)
+
+The DSB API provides access to substitution plans (Vertretungsplaene) from [DSBmobile](https://www.dsbmobile.de), a separate third-party platform from Schulportal Hessen. Credentials are provided by the school administration (typically a combination of school ID and username, e.g. `F1234`).
+
+All endpoints require the `X-Session-Token` header (obtained from the regular SPH login).
+
+---
+
+#### POST /dsb/login
 
 Login to DSBmobile to access substitution plans.
 
-Args:
-    username: DSBmobile username or school identifier (e.g. {username}).
-    password: DSBmobile password (e.g. {password}).
+**Request body:**
+```json
+{
+  "username": "F1234",
+  "password": "your-password"
+}
+```
 
-Returns:
-    Dict with success status and session cookie data.
+**Success response:**
+```json
+{
+  "success": true,
+  "session_cookie": "DSBmobile_cookie_value",
+  "session_id": "ASP_NET_SessionId",
+  "response_url": "https://www.dsbmobile.de/default.aspx"
+}
+```
 
-#### dsb_get_plan_urls
+**Error response:**
+```json
+{
+  "success": false,
+  "error": "Login failed. Check credentials or response HTML.",
+  "response_url": "..."
+}
+```
 
-Fetch substitution plan iframe URLs after login.
+---
 
-Args:
-    username: DSBmobile username or school identifier (e.g. {username}).
-    password: DSBmobile password (e.g. {password}).
+#### POST /dsb/plan-urls
 
-Returns:
-    Dict with plan iframe URLs.
+Fetch available substitution plan URLs after a successful login. Call this after `/dsb/login` to discover available plans.
 
-#### dsb_get_substitution_plan
+**Request body:**
+```json
+{
+  "username": "F1234",
+  "password": "your-password"
+}
+```
 
-Fetch and parse the substitution plan table from DSBmobile.
+**Success response:**
+```json
+{
+  "success": true,
+  "plan_urls": [
+    "https://www.dsbmobile.de/.../Plan.aspx?...",
+    "https://www.dsbmobile.de/.../Plan.aspx?..."
+  ],
+  "count": 2,
+  "html_plan_url": "https://www.dsbmobile.de/.../plan.htm",
+  "menu_items": ["Heute", "Morgen"]
+}
+```
 
-Args:
-    username: DSBmobile username or school identifier (e.g. {username}).
-    password: DSBmobile password (e.g. {password}).
-    plan_index: Which iframe plan URL to parse (default: 0).
-    plan_url: Explicit plan URL to fetch (overrides plan_index).
+| Field | Description |
+|---|---|
+| `plan_urls` | All plan iframe-URLs extracted from the menu tree (may include non-HTML plans) |
+| `html_plan_url` | The first `.htm` plan page found (most commonly used for substitution plans) |
+| `menu_items` | Menu entry titles (e.g. "Heute", "Morgen") |
+| `count` | Total number of plan URLs found |
 
-Returns:
-    Dict with the plan URL, title, parsed tables, and optional raw HTML.
+---
+
+#### POST /dsb/plan
+
+Fetch and parse a substitution plan table. Accepts credentials or uses the already established DSB session. Returns the plan parsed into structured tables.
+
+**Request body:**
+```json
+{
+  "username": "F1234",
+  "password": "your-password",
+  "plan_index": 0,
+  "plan_url": null,
+  "include_raw": false
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `username` | string? | `null` | DSBmobile username (optional if already logged in via `/dsb/login`) |
+| `password` | string? | `null` | DSBmobile password (optional if already logged in) |
+| `plan_index` | int | `0` | Which plan URL to fetch (index into the `plan_urls` array from `/dsb/plan-urls`) |
+| `plan_url` | string? | `null` | Explicit plan URL to fetch. Overrides `plan_index` when set. Best practice: use the `html_plan_url` from `/dsb/plan-urls` |
+| `include_raw` | bool | `false` | If `true`, includes the raw HTML of the plan page in `raw_html` |
+
+**Success response:**
+```json
+{
+  "success": true,
+  "plan_url": "https://www.dsbmobile.de/.../plan.htm",
+  "title": "Vertretungsplan Heute - Klasse 10C",
+  "raw_html": null,
+  "tables": [
+    {
+      "caption": "25.03.2026",
+      "headers": ["Stunde", "Klasse(n)", "Vertretung", "Fach", "Raum", "Info"],
+      "rows": [
+        {
+          "Stunde": "1",
+          "Klasse(n)": "10C",
+          "Vertretung": "Herr Mustermann",
+          "Fach": "Mathe",
+          "Raum": "A203",
+          "Info": "statt B101"
+        },
+        {
+          "Stunde": "2-3",
+          "Klasse(n)": "05A, 05B",
+          "Vertretung": "Frau Beispiel",
+          "Fach": "Englisch",
+          "Raum": "B102",
+          "Info": ""
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Error response:**
+```json
+{
+  "success": false,
+  "error": "plan_index out of range. Found 2 plan URLs."
+}
+```
+
+Each table object in `tables` has:
+- `caption` — the table caption (usually the date)
+- `headers` — array of column header names
+- `rows` — array of objects mapping each header to its cell value (or plain lists if headers don't match)
+
+**Typical workflow:**
+1. `POST /dsb/login` with credentials
+2. `POST /dsb/plan-urls` to discover available plans
+3. `POST /dsb/plan` with `plan_url` set to `html_plan_url` from step 2 to get the parsed plan
 
 #### logout
 

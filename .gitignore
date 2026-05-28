@@ -21,6 +21,9 @@ __pycache__/
 .env
 
 data/user_metrics.db
+data/files/
 
 */__pycache__/*
 functions/tools/__pycache__/cryptor.cpython-311.pyc
+
+pg*.py
