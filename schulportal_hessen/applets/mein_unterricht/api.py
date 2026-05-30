@@ -228,6 +228,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                     "homework_done": False,
                     "attendance": "",
                     "files": [],
+                    "content": "",
                 }
 
                 # Extract date and hours
@@ -256,6 +257,14 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                     done_span = homework_span.find("span", {"class": "done"})
                     if done_span and "hidden" not in done_span.get("class", []):
                         entry["homework_done"] = True
+
+                # Extract detailed content (Ausführlicher Inhalt)
+                comment_icon = row.find("i", class_="fa-comment-alt")
+                if comment_icon:
+                    content_span = comment_icon.find_parent("span", {"class": "markup"})
+                    if content_span:
+                        comment_icon.decompose()
+                        entry["content"] = content_span.decode_contents().strip()
 
                 # Extract and decrypt attendance
                 encoded_tag = row.find("encoded")

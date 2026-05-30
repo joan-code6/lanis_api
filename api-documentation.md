@@ -683,21 +683,35 @@ Retrieve detailed information about a specific course.
 ```json
 {
   "success": true,
-  "course": {
-    "id": "{course_id}",
-    "name": "{course_name}",
-    "teacher": "{teacher_name}",
-    "entries": [
-      {
-        "id": "{entry_id}",
-        "title": "{entry_title}",
-        "date": "{date}",
-        "url": "{entry_url}",
-        "..."
-      },
-      "..."
-    ]
-  }
+  "course_id": "{course_id}",
+  "course_name": "{course_name}",
+  "semester": "{semester}",
+  "teacher_short": "{teacher_short}",
+  "teacher_full": "{teacher_full}",
+  "entry_count": 0,
+  "entries": [
+    {
+      "entry_id": "{entry_id}",
+      "date": "",
+      "hours": "{hours}",
+      "thema": "{thema}",
+      "homework": "{homework}",
+      "homework_done": false,
+      "attendance": "{attendance}",
+      "content": "{detail_content}",
+      "files": [
+        {
+          "name": "{file_name}",
+          "size": "{size}",
+          "url": "{file_url}",
+          "download_url": "{download_url}"
+        }
+      ]
+    }
+  ],
+  "exams": [],
+  "marks": [],
+  "attendance_summary": []
 }
 ```
 
