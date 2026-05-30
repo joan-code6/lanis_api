@@ -29,6 +29,7 @@ from schulportal_hessen.base import SchulportalHessenAPI
 
 from .queue import task_queue, Task, TaskPriority
 from .metrics import user_metrics_db
+from .documentation import router as documentation_router
 from .file_cache import (
     get_file_hash,
     is_file_cached,
@@ -392,6 +393,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],  # includes X-Session-Token
 )
+
+
+app.include_router(documentation_router)
 
 
 @app.on_event("startup")

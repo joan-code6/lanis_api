@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API Documentation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.6; }
+  .container { max-width: 960px; margin: 0 auto; padding: 40px 20px; }
+  h1 { font-size: 28px; margin-bottom: 8px; color: #f0f6fc; }
+  .subtitle { color: #8b949e; margin-bottom: 32px; }
+  .tag-section { margin-bottom: 40px; }
+  .tag-header { font-size: 18px; font-weight: 600; color: #f0f6fc; padding: 10px 16px; background: #161b22; border: 1px solid #30363d; border-radius: 6px 6px 0 0; border-bottom: none; }
+  .endpoint-list { border: 1px solid #30363d; border-radius: 0 0 6px 6px; overflow: hidden; }
+  .endpoint { display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid #21262d; text-decoration: none; color: inherit; transition: background 0.15s; }
+  .endpoint:last-child { border-bottom: none; }
+  .endpoint:hover { background: #161b22; }
+  .method { display: inline-block; font-size: 11px; font-weight: 700; min-width: 52px; padding: 2px 8px; border-radius: 4px; text-align: center; text-transform: uppercase; margin-right: 14px; }
+  .method.get { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
+  .method.post { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
+  .path { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 14px; color: #f0f6fc; flex: 1; }
+  .summary { font-size: 13px; color: #8b949e; margin-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+  .auth-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-left: 10px; background: #30363d; color: #8b949e; white-space: nowrap; }
+  .auth-badge.required { background: #da363322; color: #f85149; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Schulportal Hessen API</h1>
+  <p class="subtitle">Auto-generated documentation from the live API schema</p>
+
+  {% for tag, endpoints in grouped.items() %}
+  <div class="tag-section">
+    <div class="tag-header">{{ tag }}</div>
+    <div class="endpoint-list">
+      {% for ep in endpoints %}
+      <a class="endpoint" href="/documentation/{{ ep.encoded_path }}">
+        <span class="method {{ ep.method|lower }}">{{ ep.method }}</span>
+        <span class="path">{{ ep.display_path }}</span>
+        {% if ep.summary %}<span class="summary">{{ ep.summary }}</span>{% endif %}
+        {% if ep.auth_required %}<span class="auth-badge required">auth</span>{% else %}<span class="auth-badge">public</span>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+</body>
+</html>

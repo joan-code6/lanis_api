@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ ep.method }} {{ ep.path }} — API Docs</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.6; }
+  .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { font-size: 13px; margin-bottom: 24px; display: inline-block; }
+  .ep-header { margin-bottom: 24px; }
+  .ep-method { display: inline-block; font-size: 13px; font-weight: 700; padding: 4px 12px; border-radius: 6px; text-transform: uppercase; margin-right: 12px; }
+  .ep-method.get { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
+  .ep-method.post { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
+  .ep-path { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 20px; color: #f0f6fc; }
+  .ep-desc { margin-top: 12px; color: #8b949e; font-size: 14px; }
+  .ep-auth { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-top: 10px; }
+  .ep-auth.required { background: #da363322; color: #f85149; }
+  .ep-auth.public { background: #30363d; color: #8b949e; }
+  .section { margin-bottom: 28px; }
+  .section h2 { font-size: 16px; font-weight: 600; color: #f0f6fc; border-bottom: 1px solid #21262d; padding-bottom: 8px; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+  td.name { font-family: 'SF Mono', 'Fira Code', monospace; color: #f0f6fc; }
+  td.required-true { color: #f85149; font-weight: 600; }
+  td.required-false { color: #8b949e; }
+  .code-block { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 14px; overflow-x: auto; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; line-height: 1.5; white-space: pre; }
+  .status-badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 3px; margin-right: 8px; }
+  .status-2xx { background: #23863622; color: #3fb950; }
+  .status-4xx { background: #da363322; color: #f85149; }
+  .status-5xx { background: #da363322; color: #f85149; }
+  .no-data { color: #484f58; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="container">
+  <a class="back" href="/documentation">&larr; Back to all endpoints</a>
+
+  <div class="ep-header">
+    <span class="ep-method {{ ep.method|lower }}">{{ ep.method }}</span>
+    <span class="ep-path">{{ ep.path }}</span>
+    {% if ep.description %}<p class="ep-desc">{{ ep.description }}</p>{% endif %}
+    <span class="ep-auth {{ 'required' if ep.auth_required else 'public' }}">{{ 'auth required' if ep.auth_required else 'public' }}</span>
+  </div>
+
+  {% if ep.path_params %}
+  <div class="section">
+    <h2>Path Parameters</h2>
+    <table>
+      <tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr>
+      {% for p in ep.path_params %}
+      <tr>
+        <td class="name">{{ p.name }}</td>
+        <td>{{ p.type }}</td>
+        <td class="required-{{ 'true' if p.required else 'false' }}">{{ 'Yes' if p.required else 'No' }}</td>
+        <td>{{ p.description or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {% if ep.query_params %}
+  <div class="section">
+    <h2>Query Parameters</h2>
+    <table>
+      <tr><th>Name</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr>
+      {% for p in ep.query_params %}
+      <tr>
+        <td class="name">{{ p.name }}</td>
+        <td>{{ p.type }}</td>
+        <td class="required-{{ 'true' if p.required else 'false' }}">{{ 'Yes' if p.required else 'No' }}</td>
+        <td>{{ p.default or '-' }}</td>
+        <td>{{ p.description or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {% if ep.header_params %}
+  <div class="section">
+    <h2>Headers</h2>
+    <table>
+      <tr><th>Name</th><th>Required</th><th>Description</th></tr>
+      {% for p in ep.header_params %}
+      <tr>
+        <td class="name">{{ p.name }}</td>
+        <td class="required-{{ 'true' if p.required else 'false' }}">{{ 'Yes' if p.required else 'No' }}</td>
+        <td>{{ p.description or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {% if ep.request_body %}
+  <div class="section">
+    <h2>Request Body</h2>
+    <table>
+      <tr><th>Content-Type</th><th>Format</th></tr>
+      <tr>
+        <td>{{ ep.request_body.content_type }}</td>
+        <td><code>{{ ep.request_body.format }}</code></td>
+      </tr>
+    </table>
+    {% if ep.request_body.properties %}
+    <h3 style="font-size:14px;margin:16px 0 8px;color:#f0f6fc;">Schema</h3>
+    <table>
+      <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+      {% for p in ep.request_body.properties %}
+      <tr>
+        <td class="name">{{ p.name }}</td>
+        <td>{{ p.type }}</td>
+        <td class="required-{{ 'true' if p.required else 'false' }}">{{ 'Yes' if p.required else 'No' }}</td>
+        <td>{{ p.description or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+    {% if ep.request_body.example %}
+    <h3 style="font-size:14px;margin:16px 0 8px;color:#f0f6fc;">Example</h3>
+    <div class="code-block">{{ ep.request_body.example }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if ep.responses %}
+  <div class="section">
+    <h2>Responses</h2>
+    {% for resp in ep.responses %}
+    <div style="margin-bottom:16px;">
+      <span class="status-badge status-2xx">{{ resp.status }}</span>
+      <span style="color:#c9d1d9;">{{ resp.description }}</span>
+      {% if resp.example %}
+      <div class="code-block" style="margin-top:8px;">{{ resp.example }}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>
+</body>
+</html>
