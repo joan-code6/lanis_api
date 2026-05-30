@@ -185,6 +185,7 @@ class SchulportalHessenAPI:
                 "nachrichten_get_conversation",
                 "nachrichten_search_recipients",
                 "nachrichten_send_message",
+                "nachrichten_reply_message",
             ],
             "meinunterricht.php": [
                 "meinunterricht_get_overview",
@@ -303,6 +304,21 @@ class SchulportalHessenAPI:
         Returns:
             Dict with success status and the returned message id when sending
             succeeds.
+        """
+        ...
+
+    def nachrichten_reply_message(
+        self, conversation_id: str, body: str, to: str = "all"
+    ) -> Dict[str, Any]:
+        """Reply to an existing message conversation.
+
+        Args:
+            conversation_id: Conversation uniqid to reply to.
+            body: Reply message content.
+            to: Recipient selector ("all" or a user id).
+
+        Returns:
+            Dict with success status and response details.
         """
         ...
 
@@ -602,12 +618,14 @@ from .applets.nachrichten.api import (
     nachrichten_get_conversation,
     nachrichten_search_recipients,
     nachrichten_send_message,
+    nachrichten_reply_message,
 )
 
 SchulportalHessenAPI.nachrichten_get_headers = nachrichten_get_headers
 SchulportalHessenAPI.nachrichten_get_conversation = nachrichten_get_conversation
 SchulportalHessenAPI.nachrichten_search_recipients = nachrichten_search_recipients
 SchulportalHessenAPI.nachrichten_send_message = nachrichten_send_message
+SchulportalHessenAPI.nachrichten_reply_message = nachrichten_reply_message
 
 # Import and attach the mein_unterricht methods
 from .applets.mein_unterricht.api import (

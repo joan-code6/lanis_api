@@ -940,6 +940,24 @@ async def send_message(
     return await run_in_threadpool(client.nachrichten_send_message, message_data)
 
 
+@app.post("/nachrichten/reply")
+async def reply_message(
+    conversation_id: str = Body(..., description="Conversation uniqid to reply to"),
+    body: str = Body(..., description="Reply message body"),
+    to: str = Body("all", description="Recipient selector: 'all' or a user id"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    """
+    Send a reply to an existing conversation.
+    """
+    return await run_in_threadpool(
+        client.nachrichten_reply_message,
+        conversation_id,
+        body,
+        to,
+    )
+
+
 @app.get("/meinunterricht")
 async def meinunterricht_overview(
     x_session_token: str = Header(..., alias="X-Session-Token"),

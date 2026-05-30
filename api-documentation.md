@@ -615,7 +615,7 @@ Send a new message.
 {
   "recipients": ["{user_id_1}", "{user_id_2}"],
   "subject": "{message_subject}",
-  "content": "{message_content}"
+  "body": "{message_body}"
 }
 ```
 
@@ -623,14 +623,47 @@ Send a new message.
 ```json
 {
   "success": true,
-  "message_id": "{message_id}",
-  "sent_at": "{timestamp}"
+  "message_id": "{message_id}"
 }
 ```
 
 **Status Codes:**
 - `200 OK` - Message sent successfully
 - `400 Bad Request` - Invalid message format
+- `401 Unauthorized` - Invalid or expired session token
+
+---
+
+#### POST `/nachrichten/reply`
+
+Send a reply to an existing conversation.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Request Body:**
+```json
+{
+  "conversation_id": "{conversation_id}",
+  "body": "{reply_body}",
+  "to": "all"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "details": {
+    "back": true,
+    "id": "{message_id}"
+  }
+}
+```
+
+**Status Codes:**
+- `200 OK` - Reply sent successfully
+- `400 Bad Request` - Invalid reply payload
 - `401 Unauthorized` - Invalid or expired session token
 
 ---

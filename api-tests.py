@@ -7,6 +7,10 @@ via environment variables:
 - LANIS_API_USERNAME
 - LANIS_API_PASSWORD
 
+Optional message reply test env vars:
+- LANIS_API_CONVERSATION_ID
+- LANIS_API_REPLY_TEXT
+
 Run with: pytest api-tests.py
 """
 
@@ -25,6 +29,8 @@ USERNAME = os.environ.get("LANIS_API_USERNAME")
 PASSWORD = os.environ.get("LANIS_API_PASSWORD")
 DSB_USERNAME = os.environ.get("LANIS_DSB_USERNAME")
 DSB_PASSWORD = os.environ.get("LANIS_DSB_PASSWORD")
+CONVERSATION_ID = os.environ.get("LANIS_API_CONVERSATION_ID")
+REPLY_TEXT = os.environ.get("LANIS_API_REPLY_TEXT", "Automated reply test")
 
 
 @pytest.fixture(scope="session")
@@ -50,6 +56,13 @@ def session_token(base_url: str, require_credentials: Dict[str, str]):
 		requests.post(f"{base_url}/logout", headers={"X-Session-Token": token}, timeout=10)
 	except requests.RequestException:
 		pass
+
+
+@pytest.fixture(scope="session")
+def require_conversation_id() -> str:
+	if not CONVERSATION_ID:
+		pytest.skip("Set LANIS_API_CONVERSATION_ID to test message replies")
+	return CONVERSATION_ID
 
 
 def test_health_ok(base_url: str) -> None:
@@ -103,6 +116,35 @@ def test_modules_with_session(base_url: str, session_token: str) -> None:
 		assert isinstance(module.get("usage"), list)
 		if module.get("usable"):
 			assert len(module.get("usage")) > 0
+
+
+def test_messages_headers_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	resp = requests.get(f"{base_url}/nachrichten/headers", headers=headers, timeout=20)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /nachrichten/headers API Response ===")
+	print(body)
+	print("=============================\n")
+	assert body.get("success") is True
+	assert "conversations" in body
+	assert isinstance(body.get("conversations"), list)
+
+
+def test_messages_reply_with_session(
+	base_url: str, session_token: str, require_conversation_id: str
+) -> None:
+	headers = {"X-Session-Token": session_token}
+	payload = {"conversation_id": require_conversation_id, "body": REPLY_TEXT}
+	resp = requests.post(
+		f"{base_url}/nachrichten/reply", json=payload, headers=headers, timeout=20
+	)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /nachrichten/reply API Response ===")
+	print(body)
+	print("=============================\n")
+	assert body.get("success") is True
 
 
 def test_calendar_overview_with_session(base_url: str, session_token: str) -> None:

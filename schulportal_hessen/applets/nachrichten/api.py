@@ -229,7 +229,16 @@ def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
         return {"success": False, "error": "Not logged in"}
 
     if not self.cryptor or not self.cryptor.authenticated:
-        return {"success": False, "error": "Encryption not initialized"}
+        if not self.cryptor:
+            self.cryptor = Cryptor(self.session)
+        try:
+            if not self.cryptor.authenticate():
+                return {"success": False, "error": "Failed to authenticate encryption"}
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to initialize encryption: {str(e)}",
+            }
 
     try:
         response = self.session.post(
@@ -286,7 +295,16 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
         return {"success": False, "error": "Not logged in"}
 
     if not self.cryptor or not self.cryptor.authenticated:
-        return {"success": False, "error": "Encryption not initialized"}
+        if not self.cryptor:
+            self.cryptor = Cryptor(self.session)
+        try:
+            if not self.cryptor.authenticate():
+                return {"success": False, "error": "Failed to authenticate encryption"}
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to initialize encryption: {str(e)}",
+            }
 
     try:
         recipients = message_data.get("recipients", [])
@@ -332,3 +350,61 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
 
     except Exception as e:
         return {"success": False, "error": f"Failed to send message: {str(e)}"}
+
+
+def nachrichten_reply_message(
+    self, conversation_id: str, body: str, to: str = "all"
+) -> Dict[str, Any]:
+    """
+    Reply to an existing conversation/thread.
+
+    Args:
+        conversation_id: The conversation's message id (data-msg) as shown in
+            the read URL and returned by `nachrichten_get_headers()`.
+        body: The reply text content.
+        to: Recipient selector ("all" for group replies or a user id).
+
+    Returns:
+        Dict with success status and server result details.
+    """
+    if not self.logged_in:
+        return {"success": False, "error": "Not logged in"}
+
+    if not self.cryptor or not self.cryptor.authenticated:
+        return {"success": False, "error": "Encryption not initialized"}
+
+    try:
+        # Build payload expected by the portal for replies (read.js)
+        payload = {
+            "to": to,
+            "message": body,
+            "replyToMsg": conversation_id,
+        }
+
+        encrypted_payload = self.cryptor.encrypt(json.dumps(payload))
+
+        response = self.session.post(
+            f"{self.BASE_START_URL}/nachrichten.php",
+            data={"a": "reply", "c": encrypted_payload},
+            headers={
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        response.raise_for_status()
+
+        result = response.json()
+
+        # Portal typically returns {'back': True, ...} on success
+        if result.get("back") is True:
+            return {"success": True, "details": result}
+        else:
+            return {"success": False, "error": "Reply failed", "details": result}
+
+    except Exception as e:
+        return {"success": False, "error": f"Failed to send reply: {str(e)}"}
