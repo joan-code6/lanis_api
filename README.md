@@ -136,6 +136,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -711,6 +723,18 @@ Args:
 Returns:
     Dict with success status and the returned message id when sending
     succeeds.
+
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
 
 #### meinunterricht_get_overview
 
@@ -1288,6 +1312,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -1863,6 +1899,18 @@ Args:
 Returns:
     Dict with success status and the returned message id when sending
     succeeds.
+
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
 
 #### meinunterricht_get_overview
 
@@ -2440,6 +2488,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -3016,6 +3076,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -3593,6 +3665,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -4170,6 +4254,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -4746,6 +4842,18 @@ Args:
 Returns:
     Dict with success status and the returned message id when sending
     succeeds.
+
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
 
 #### meinunterricht_get_overview
 
@@ -5323,6 +5431,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -5898,6 +6018,18 @@ Args:
 Returns:
     Dict with success status and the returned message id when sending
     succeeds.
+
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
 
 #### meinunterricht_get_overview
 
@@ -6475,6 +6607,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -7050,6 +7194,18 @@ Args:
 Returns:
     Dict with success status and the returned message id when sending
     succeeds.
+
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
 
 #### meinunterricht_get_overview
 
@@ -7627,6 +7783,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -8202,6 +8370,18 @@ Args:
 Returns:
     Dict with success status and the returned message id when sending
     succeeds.
+
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
 
 #### meinunterricht_get_overview
 
@@ -8779,6 +8959,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -9355,6 +9547,18 @@ Returns:
     Dict with success status and the returned message id when sending
     succeeds.
 
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
+
 #### meinunterricht_get_overview
 
 Fetch the Mein Unterricht overview with current entries.
@@ -9930,6 +10134,18 @@ Args:
 Returns:
     Dict with success status and the returned message id when sending
     succeeds.
+
+#### nachrichten_reply_message
+
+Reply to an existing message conversation.
+
+Args:
+    conversation_id: Conversation uniqid to reply to.
+    body: Reply message content.
+    to: Recipient selector ("all" or a user id).
+
+Returns:
+    Dict with success status and response details.
 
 #### meinunterricht_get_overview
 
