@@ -41,6 +41,9 @@ from .file_cache import (
     get_content_path,
 )
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logger = logging.getLogger("api")
 
 
@@ -382,7 +385,9 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:4173",
         "http://localhost:5173",
+        "https://lanis.arg-server.de",
     ],
+    allow_origin_regex=r"https://.*\.appwrite\.network",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],  # includes X-Session-Token
@@ -996,8 +1001,7 @@ async def meinunterricht_course(
 @app.get("/meinunterricht/file/{file_hash}")
 async def meinunterricht_file(
     file_hash: str,
-    x_session_token: str = Header(..., alias="X-Session-Token"),
-    client: SchulportalHessenAPI = Depends(client_dependency),
+    x_session_token: str = Header(None, alias="X-Session-Token"),
 ):
     from fastapi.responses import FileResponse
 
@@ -1010,6 +1014,14 @@ async def meinunterricht_file(
             media_type=meta.get("content_type", "application/octet-stream"),
             filename=meta.get("filename", "download"),
         )
+
+    if not x_session_token:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        client = await sessions.get_client(x_session_token)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="File not found")
 
     if meta and meta.get("download_url"):
         result = await run_in_threadpool(
