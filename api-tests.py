@@ -128,7 +128,13 @@ def test_messages_headers_with_session(base_url: str, session_token: str) -> Non
 	print("=============================\n")
 	assert body.get("success") is True
 	assert "conversations" in body
-	assert isinstance(body.get("conversations"), list)
+	conversations = body.get("conversations")
+	assert isinstance(conversations, list)
+	if conversations:
+		conv = conversations[0]
+		assert "unread" in conv
+		assert "read" in conv
+		assert isinstance(conv.get("read"), bool)
 
 
 def test_messages_reply_with_session(

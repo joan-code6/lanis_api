@@ -100,6 +100,19 @@ def nachrichten_get_headers(
             decrypted = self.cryptor.decrypt(data["rows"])
             conversations = json.loads(decrypted)
 
+            # Normalize read/unread: portal provides unread (0/1) inconsistently.
+            for conv in conversations:
+                if "unread" in conv:
+                    unread_val = conv.get("unread")
+                    try:
+                        unread_bool = bool(int(unread_val))
+                    except Exception:
+                        unread_bool = bool(unread_val)
+                else:
+                    unread_bool = False
+                    conv["unread"] = 0
+                conv["read"] = not unread_bool
+
             return {
                 "success": True,
                 "total": data.get("total", 0),
@@ -408,3 +421,41 @@ def nachrichten_reply_message(
 
     except Exception as e:
         return {"success": False, "error": f"Failed to send reply: {str(e)}"}
+
+
+def nachrichten_mark_read(self, conversation_id: str) -> Dict[str, Any]:
+    """Mark a conversation as read by calling the same 'read' action used by the UI.
+
+    This posts the encrypted `uniqid` and returns the portal response.
+    """
+    if not self.logged_in:
+        return {"success": False, "error": "Not logged in"}
+
+    if not self.cryptor or not self.cryptor.authenticated:
+        if not self.cryptor:
+            self.cryptor = Cryptor(self.session)
+        try:
+            if not self.cryptor.authenticate():
+                return {"success": False, "error": "Failed to authenticate encryption"}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to initialize encryption: {str(e)}"}
+
+    try:
+        encrypted_id = self.cryptor.encrypt(conversation_id)
+        response = self.session.post(
+            f"{self.BASE_START_URL}/nachrichten.php",
+            data={"a": "read", "uniqid": encrypted_id},
+            headers={
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        response.raise_for_status()
+        try:
+            return response.json()
+        except Exception:
+            return {"success": True, "raw": response.text}
+    except Exception as e:
+        return {"success": False, "error": f"Failed to mark read: {str(e)}"}
+

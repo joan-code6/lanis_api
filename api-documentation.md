@@ -506,19 +506,25 @@ Retrieve message headers/list of conversations.
 ```json
 {
   "success": true,
-  "messages": [
+  "total": 40,
+  "conversations": [
     {
       "id": "{conversation_id}",
       "sender": "{sender_username}",
       "subject": "{subject}",
       "date": "{date}",
-      "unread": true,
+      "unread": 0,
+      "read": true,
       "..."
     },
     "..."
   ]
 }
 ```
+
+**Notes:**
+- Each conversation includes `unread` from the portal (0/1). If missing, the API sets `unread` to 0.
+- The API adds `read` as a derived boolean (`read = !unread`).
 
 **Status Codes:**
 - `200 OK` - Message headers retrieved successfully

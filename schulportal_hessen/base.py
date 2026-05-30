@@ -619,6 +619,7 @@ from .applets.nachrichten.api import (
     nachrichten_search_recipients,
     nachrichten_send_message,
     nachrichten_reply_message,
+    nachrichten_mark_read,
 )
 
 SchulportalHessenAPI.nachrichten_get_headers = nachrichten_get_headers
@@ -626,6 +627,7 @@ SchulportalHessenAPI.nachrichten_get_conversation = nachrichten_get_conversation
 SchulportalHessenAPI.nachrichten_search_recipients = nachrichten_search_recipients
 SchulportalHessenAPI.nachrichten_send_message = nachrichten_send_message
 SchulportalHessenAPI.nachrichten_reply_message = nachrichten_reply_message
+SchulportalHessenAPI.nachrichten_mark_read = nachrichten_mark_read
 
 # Import and attach the mein_unterricht methods
 from .applets.mein_unterricht.api import (

@@ -958,6 +958,14 @@ async def reply_message(
     )
 
 
+@app.post("/nachrichten/mark-read")
+async def mark_read(
+    conversation_id: str = Body(..., description="Conversation uniqid to mark read"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    return await run_in_threadpool(client.nachrichten_mark_read, conversation_id)
+
+
 @app.get("/meinunterricht")
 async def meinunterricht_overview(
     x_session_token: str = Header(..., alias="X-Session-Token"),
