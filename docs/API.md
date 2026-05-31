@@ -166,6 +166,17 @@ Returns:
     Dict containing course metadata, entries, attendance information,
     and attached files.
 
+#### meinunterricht_get_course_details
+
+Fetch extended detail widgets for a single course folder.
+
+Args:
+    course_id: Course/book id from the portal's data-book attribute.
+
+Returns:
+    Dict containing grades, exams, upcoming tests, attendance summary,
+    and additional detail sections.
+
 #### meinunterricht_get_entry_details
 
 Fetch a linked Mein Unterricht entry by URL.

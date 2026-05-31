@@ -190,6 +190,7 @@ class SchulportalHessenAPI:
             "meinunterricht.php": [
                 "meinunterricht_get_overview",
                 "meinunterricht_get_course",
+                "meinunterricht_get_course_details",
                 "meinunterricht_get_entry_details",
                 "meinunterricht_get_weekly_view",
                 "meinunterricht_get_submissions",
@@ -351,6 +352,18 @@ class SchulportalHessenAPI:
 
         Returns:
             Dict containing the fetched content and its detected content type.
+        """
+        ...
+
+    def meinunterricht_get_course_details(self, course_id: str) -> Dict[str, Any]:
+        """Fetch extended detail widgets for a single course folder.
+
+        Args:
+            course_id: Course/book id from the portal's data-book attribute.
+
+        Returns:
+            Dict containing grades, exams, upcoming tests, attendance
+            summary, and additional detail sections.
         """
         ...
 
@@ -633,6 +646,7 @@ SchulportalHessenAPI.nachrichten_mark_read = nachrichten_mark_read
 from .applets.mein_unterricht.api import (
     meinunterricht_get_overview,
     meinunterricht_get_course,
+    meinunterricht_get_course_details,
     meinunterricht_get_entry_details,
     meinunterricht_get_weekly_view,
     meinunterricht_get_submissions,
@@ -642,6 +656,7 @@ from .applets.mein_unterricht.api import (
 
 SchulportalHessenAPI.meinunterricht_get_overview = meinunterricht_get_overview
 SchulportalHessenAPI.meinunterricht_get_course = meinunterricht_get_course
+SchulportalHessenAPI.meinunterricht_get_course_details = meinunterricht_get_course_details
 SchulportalHessenAPI.meinunterricht_get_entry_details = meinunterricht_get_entry_details
 SchulportalHessenAPI.meinunterricht_get_weekly_view = meinunterricht_get_weekly_view
 SchulportalHessenAPI.meinunterricht_get_submissions = meinunterricht_get_submissions

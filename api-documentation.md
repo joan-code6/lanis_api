@@ -761,6 +761,67 @@ Retrieve detailed information about a specific course.
 
 ---
 
+#### GET `/meinunterricht/course/{course_id}/details`
+
+Retrieve extended detail information for a specific course, including grades,
+exam/test information, upcoming exams, attendance summary, and additional
+detail sections shown in the course detail view.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Path Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `course_id` | string | The ID of the course |
+
+**Response:**
+```json
+{
+  "success": true,
+  "course_id": "{course_id}",
+  "course_name": "{course_name}",
+  "grade_count": 0,
+  "grades": [
+    {
+      "id": "{grade_id}",
+      "name": "{grade_name}",
+      "date": "{date}",
+      "grade": "{grade_value}",
+      "type": "{type}",
+      "comment": "{comment}"
+    }
+  ],
+  "exam_count": 0,
+  "exams": [
+    {
+      "id": "{exam_id}",
+      "title": "{exam_title}",
+      "date": "{date}",
+      "type": "{type}",
+      "is_upcoming": false
+    }
+  ],
+  "upcoming_exam_count": 0,
+  "upcoming_exams": [],
+  "attendance_summary": {},
+  "additional_sections": [
+    {
+      "id": "{section_id}",
+      "title": "{section_title}",
+      "text": "{section_text}"
+    }
+  ]
+}
+```
+
+**Status Codes:**
+- `200 OK` - Course detail widgets retrieved successfully
+- `401 Unauthorized` - Invalid or expired session token
+- `404 Not Found` - Course not found
+
+---
+
 #### GET `/meinunterricht/entry`
 
 Retrieve detailed information about a specific course entry.
@@ -1197,4 +1258,3 @@ curl -X GET http://localhost:8000/meinunterricht/course/12345 \
 - Response data is anonymized in this documentation; placeholders like `{username}`, `{course_name}` represent actual values
 - Multiple concurrent users are supported through session isolation
 - The API automatically cleans up expired sessions
-

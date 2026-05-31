@@ -235,6 +235,39 @@ def test_lerngruppen_with_session(base_url: str, session_token: str) -> None:
 	assert "success" in body
 
 
+def test_meinunterricht_course_details_with_session(base_url: str, session_token: str) -> None:
+	headers = {"X-Session-Token": session_token}
+	overview_resp = requests.get(f"{base_url}/meinunterricht", headers=headers, timeout=20)
+	overview_resp.raise_for_status()
+	overview = overview_resp.json()
+	assert overview.get("success") is True
+	entries = overview.get("entries", [])
+	if not entries:
+		pytest.skip("No Mein Unterricht entries available for details endpoint test")
+
+	course_id = entries[0].get("book_id")
+	if not course_id:
+		pytest.skip("No usable course id found in Mein Unterricht overview")
+
+	resp = requests.get(
+		f"{base_url}/meinunterricht/course/{course_id}/details",
+		headers=headers,
+		timeout=20,
+	)
+	resp.raise_for_status()
+	body = resp.json()
+	print("\n=== /meinunterricht/course/{course_id}/details API Response ===")
+	print(body)
+	print("=============================\n")
+	assert body.get("success") is True
+	assert body.get("course_id") == str(course_id)
+	assert isinstance(body.get("grades"), list)
+	assert isinstance(body.get("exams"), list)
+	assert isinstance(body.get("upcoming_exams"), list)
+	assert isinstance(body.get("attendance_summary"), dict)
+	assert isinstance(body.get("additional_sections"), list)
+
+
 def test_invalid_token_rejected(base_url: str) -> None:
 	resp = requests.get(f"{base_url}/apps", headers={"X-Session-Token": "invalid"}, timeout=10)
 	print("\n=== /apps with invalid token Response ===")
@@ -434,4 +467,3 @@ def test_dsb_plan(base_url: str, session_token: str) -> None:
 	assert body.get("success") is True
 	assert body.get("count") == 0
 	assert body.get("results") == []
-

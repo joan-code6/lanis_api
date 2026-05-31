@@ -1028,6 +1028,27 @@ async def meinunterricht_course(
     return result
 
 
+@app.get("/meinunterricht/course/{course_id}/details")
+async def meinunterricht_course_details(
+    course_id: str,
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+    client: SchulportalHessenAPI = Depends(client_dependency),
+) -> Dict[str, object]:
+    params = _make_param_key({"course_id": course_id})
+
+    cached = await sessions.get_cached(
+        x_session_token, "/meinunterricht/course/details", params
+    )
+    if cached is not None:
+        return cached
+
+    result = await run_in_threadpool(client.meinunterricht_get_course_details, course_id)
+    await sessions.set_cache(
+        x_session_token, "/meinunterricht/course/details", result, params
+    )
+    return result
+
+
 @app.get("/meinunterricht/file/{file_hash}")
 async def meinunterricht_file(
     file_hash: str,

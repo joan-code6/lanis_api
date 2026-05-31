@@ -1,4 +1,5 @@
-from typing import Dict, Any, Optional
+from datetime import datetime
+from typing import Dict, Any, List, Optional
 import json
 import os
 import re
@@ -26,6 +27,79 @@ def _extract_filename(content_disposition: Optional[str], fallback_url: str) -> 
     fallback = fallback_url.split("?")[0].rstrip("/")
     name = os.path.basename(fallback)
     return name or "download.bin"
+
+
+def _extract_table_rows(section: Any) -> List[Dict[str, Any]]:
+    table = section.find("table") if section else None
+    if not table:
+        return []
+
+    headers = [th.get_text(" ", strip=True) for th in table.select("thead tr th")]
+    rows: List[Dict[str, Any]] = []
+
+    body_rows = table.select("tbody tr") or table.find_all("tr")
+    for row in body_rows:
+        cells = row.find_all("td")
+        if not cells:
+            continue
+
+        values = [cell.get_text(" ", strip=True) for cell in cells]
+        classes = row.get("class", [])
+        row_data: Dict[str, Any] = {
+            "id": row.get("data-id") or row.get("data-entry"),
+            "type": row.get("data-type"),
+            "course_id": row.get("data-lerngruppe") or row.get("data-book"),
+            "values": values,
+            "text": " | ".join(v for v in values if v),
+            "row_classes": classes,
+        }
+
+        if headers and len(headers) == len(values):
+            row_data["columns"] = {header: value for header, value in zip(headers, values)}
+        elif headers:
+            row_data["columns"] = {}
+
+        rows.append(row_data)
+
+    return rows
+
+
+def _extract_upcoming_flag(row: Dict[str, Any]) -> bool:
+    row_classes = " ".join(row.get("row_classes", []))
+    if any(token in row_classes for token in ("upcoming", "future", "next", "anstehend")):
+        return True
+
+    text = row.get("text", "")
+    lowered = text.lower()
+    if any(token in lowered for token in ("ansteh", "bevorsteh", "upcoming", "nächste", "naechste")):
+        return True
+
+    for candidate in row.get("values", []):
+        try:
+            parsed = datetime.strptime(candidate.strip(), "%d.%m.%Y").date()
+        except ValueError:
+            continue
+        if parsed >= datetime.now().date():
+            return True
+
+    return False
+
+
+def _extract_additional_sections(soup: Any) -> List[Dict[str, str]]:
+    sections = []
+    for tab in soup.select("div.tab-pane[id]"):
+        section_id = tab.get("id", "").strip()
+        if not section_id or section_id in {"marks", "klausuren"}:
+            continue
+        heading = tab.find(["h2", "h3", "h4"])
+        sections.append(
+            {
+                "id": section_id,
+                "title": heading.get_text(" ", strip=True) if heading else section_id,
+                "text": tab.get_text(" ", strip=True),
+            }
+        )
+    return sections
 
 
 def meinunterricht_get_overview(self) -> Dict[str, Any]:
@@ -384,6 +458,114 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         return {"success": False, "error": f"Failed to fetch course details: {str(e)}"}
+
+
+def meinunterricht_get_course_details(self, course_id: str) -> Dict[str, Any]:
+    """
+    Fetch the detail widgets of a specific Mein Unterricht course.
+
+    Includes grades, exams, upcoming tests, attendance summary, and
+    additional course detail sections from the course detail view.
+    """
+    if not self.logged_in:
+        return {"success": False, "error": "Not logged in"}
+
+    try:
+        response = self.session.get(
+            f"{self.BASE_START_URL}/meinunterricht.php",
+            params={"a": "sus_view", "id": course_id},
+        )
+        response.raise_for_status()
+
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return {
+                "success": False,
+                "error": "BeautifulSoup4 is required. Install with: pip install beautifulsoup4",
+            }
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        course_title = soup.find("h1", {"data-book": course_id})
+        course_name = ""
+        if course_title:
+            course_name = course_title.get_text(separator="\n").split("\n")[0].strip()
+
+        marks_section = soup.find("div", {"id": "marks"})
+        raw_grades = _extract_table_rows(marks_section)
+        grades = []
+        for row in raw_grades:
+            columns = row.get("columns", {})
+            grades.append(
+                {
+                    "id": row.get("id"),
+                    "name": columns.get("Leistung")
+                    or columns.get("Name")
+                    or (row.get("values", [""])[0] if row.get("values") else ""),
+                    "date": columns.get("Datum")
+                    or (row.get("values", ["", ""])[1] if len(row.get("values", [])) > 1 else ""),
+                    "grade": columns.get("Note")
+                    or columns.get("Punkte")
+                    or (row.get("values", ["", "", ""])[2] if len(row.get("values", [])) > 2 else ""),
+                    "type": row.get("type"),
+                    "comment": columns.get("Kommentar") or columns.get("Bemerkung"),
+                    "raw": row,
+                }
+            )
+
+        exams_section = soup.find("div", {"id": "klausuren"})
+        raw_exams = _extract_table_rows(exams_section)
+        exams = []
+        for row in raw_exams:
+            columns = row.get("columns", {})
+            exam = {
+                "id": row.get("id"),
+                "title": columns.get("Klausur")
+                or columns.get("Leistung")
+                or columns.get("Art")
+                or (row.get("values", [""])[0] if row.get("values") else ""),
+                "date": columns.get("Datum")
+                or (row.get("values", ["", ""])[1] if len(row.get("values", [])) > 1 else ""),
+                "type": row.get("type") or columns.get("Art"),
+                "is_upcoming": _extract_upcoming_flag(row),
+                "raw": row,
+            }
+            exams.append(exam)
+
+        upcoming_exams = [exam for exam in exams if exam.get("is_upcoming")]
+
+        attendance_summary = {}
+        attendance_table = soup.find("div", {"id": "attendanceTable"})
+        if attendance_table:
+            for row in attendance_table.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) >= 2:
+                    att_type = cells[0].get_text(separator="\n")
+                    att_hours = cells[1].get_text(separator="\n")
+                    attendance_summary[att_type] = att_hours
+
+        additional_sections = _extract_additional_sections(soup)
+
+        return {
+            "success": True,
+            "course_id": course_id,
+            "course_name": course_name,
+            "grades": grades,
+            "grade_count": len(grades),
+            "exams": exams,
+            "exam_count": len(exams),
+            "upcoming_exams": upcoming_exams,
+            "upcoming_exam_count": len(upcoming_exams),
+            "attendance_summary": attendance_summary,
+            "additional_sections": additional_sections,
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to fetch detailed course information: {str(e)}",
+        }
 
 
 def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:
