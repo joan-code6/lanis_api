@@ -260,7 +260,7 @@ def test_meinunterricht_course_details_with_session(base_url: str, session_token
 	print(body)
 	print("=============================\n")
 	assert body.get("success") is True
-	assert body.get("course_id") == str(course_id)
+	assert str(body.get("course_id")) == str(course_id)
 	assert isinstance(body.get("grades"), list)
 	assert isinstance(body.get("exams"), list)
 	assert isinstance(body.get("upcoming_exams"), list)

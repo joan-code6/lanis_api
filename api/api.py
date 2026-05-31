@@ -1034,18 +1034,15 @@ async def meinunterricht_course_details(
     x_session_token: str = Header(..., alias="X-Session-Token"),
     client: SchulportalHessenAPI = Depends(client_dependency),
 ) -> Dict[str, object]:
+    cache_path = f"/meinunterricht/course/{course_id}/details"
     params = _make_param_key({"course_id": course_id})
 
-    cached = await sessions.get_cached(
-        x_session_token, "/meinunterricht/course/details", params
-    )
+    cached = await sessions.get_cached(x_session_token, cache_path, params)
     if cached is not None:
         return cached
 
     result = await run_in_threadpool(client.meinunterricht_get_course_details, course_id)
-    await sessions.set_cache(
-        x_session_token, "/meinunterricht/course/details", result, params
-    )
+    await sessions.set_cache(x_session_token, cache_path, result, params)
     return result
 
 

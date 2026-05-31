@@ -7,6 +7,9 @@ from urllib.parse import urljoin
 
 from schulportal_hessen.tools.cryptor import Cryptor
 
+_UPCOMING_ROW_CLASS_TOKENS = ("upcoming", "future", "next", "anstehend")
+_UPCOMING_TEXT_TOKENS = ("ansteh", "bevorsteh", "upcoming", "nächste", "naechste")
+
 
 def _make_absolute_url(base_url: str, url: str) -> str:
     url = (url or "").strip()
@@ -66,12 +69,12 @@ def _extract_table_rows(section: Any) -> List[Dict[str, Any]]:
 
 def _extract_upcoming_flag(row: Dict[str, Any]) -> bool:
     row_classes = " ".join(row.get("row_classes", []))
-    if any(token in row_classes for token in ("upcoming", "future", "next", "anstehend")):
+    if any(token in row_classes for token in _UPCOMING_ROW_CLASS_TOKENS):
         return True
 
     text = row.get("text", "")
     lowered = text.lower()
-    if any(token in lowered for token in ("ansteh", "bevorsteh", "upcoming", "nächste", "naechste")):
+    if any(token in lowered for token in _UPCOMING_TEXT_TOKENS):
         return True
 
     for candidate in row.get("values", []):
@@ -438,9 +441,9 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
             for row in attendance_table.find_all("tr"):
                 cells = row.find_all("td")
                 if len(cells) >= 2:
-                    att_type = cells[0].get_text(separator="\n")
-                    att_hours = cells[1].get_text(separator="\n")
-                    attendance_summary[att_type] = att_hours
+                    attendance_type = cells[0].get_text(separator="\n")
+                    attendance_hours = cells[1].get_text(separator="\n")
+                    attendance_summary[attendance_type] = attendance_hours
 
         return {
             "success": True,
@@ -541,9 +544,9 @@ def meinunterricht_get_course_details(self, course_id: str) -> Dict[str, Any]:
             for row in attendance_table.find_all("tr"):
                 cells = row.find_all("td")
                 if len(cells) >= 2:
-                    att_type = cells[0].get_text(separator="\n")
-                    att_hours = cells[1].get_text(separator="\n")
-                    attendance_summary[att_type] = att_hours
+                    attendance_type = cells[0].get_text(separator="\n")
+                    attendance_hours = cells[1].get_text(separator="\n")
+                    attendance_summary[attendance_type] = attendance_hours
 
         additional_sections = _extract_additional_sections(soup)
 
