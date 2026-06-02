@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
+from schulportal_hessen.tools.search import value_matches_query
 
 
 def _normalize_header(value: str) -> str:
@@ -136,6 +137,61 @@ def dateispeicher_get_root(self) -> Dict[str, Any]:
     return dateispeicher_get_node(self, folder_id=0)
 
 
+def _is_empty_search_results(results: Any) -> bool:
+    if results is None:
+        return True
+    if isinstance(results, list):
+        return len(results) == 0
+    if isinstance(results, dict):
+        for key in ("results", "items", "files", "folders"):
+            value = results.get(key)
+            if isinstance(value, list) and value:
+                return False
+        return not bool(results)
+    return False
+
+
+def _local_dateispeicher_search(self, query: str, max_folders: int = 250) -> Dict[str, Any]:
+    """Fallback search by traversing folder nodes and matching locally."""
+    visited = set()
+    queue = [0]
+    matched_files: List[Dict[str, Any]] = []
+    matched_folders: List[Dict[str, Any]] = []
+
+    while queue and len(visited) < max_folders:
+        folder_id = queue.pop(0)
+        if folder_id in visited:
+            continue
+        visited.add(folder_id)
+
+        node = dateispeicher_get_node(self, folder_id)
+        if not node.get("success"):
+            continue
+
+        for file_entry in node.get("files", []):
+            if value_matches_query(file_entry, query):
+                entry = dict(file_entry)
+                entry["parent_folder_id"] = folder_id
+                matched_files.append(entry)
+
+        for folder_entry in node.get("folders", []):
+            child_id = folder_entry.get("id")
+            if value_matches_query(folder_entry, query):
+                entry = dict(folder_entry)
+                entry["parent_folder_id"] = folder_id
+                matched_folders.append(entry)
+            if isinstance(child_id, int) and child_id not in visited:
+                queue.append(child_id)
+
+    return {
+        "files": matched_files,
+        "folders": matched_folders,
+        "file_count": len(matched_files),
+        "folder_count": len(matched_folders),
+        "scanned_folders": len(visited),
+    }
+
+
 def dateispeicher_search_files(self, query: str) -> Dict[str, Any]:
     """Search files by name in the dateispeicher.
 
@@ -241,7 +297,36 @@ def dateispeicher_search_files(self, query: str) -> Dict[str, Any]:
             }
 
         results = payload[0] if isinstance(payload, list) and payload else payload
-        return {"success": True, "query": query, "results": results}
+
+        # Normalize strict server results with local tolerant matching.
+        filtered_results = results
+        if isinstance(results, list):
+            filtered_results = [item for item in results if value_matches_query(item, query)]
+        elif isinstance(results, dict):
+            filtered_results = dict(results)
+            for key in ("results", "items", "files", "folders"):
+                value = filtered_results.get(key)
+                if isinstance(value, list):
+                    filtered_results[key] = [
+                        item for item in value if value_matches_query(item, query)
+                    ]
+
+        if _is_empty_search_results(filtered_results):
+            local_results = _local_dateispeicher_search(self, query)
+            if local_results["file_count"] or local_results["folder_count"]:
+                return {
+                    "success": True,
+                    "query": query,
+                    "results": local_results,
+                    "source": "local-index",
+                }
+
+        return {
+            "success": True,
+            "query": query,
+            "results": filtered_results,
+            "source": "server",
+        }
     except requests.RequestException as exc:
         return {"success": False, "error": f"Failed to search dateispeicher: {exc}"}
     except Exception as exc:

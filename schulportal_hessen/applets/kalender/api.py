@@ -5,6 +5,7 @@ import re
 
 import requests
 from bs4 import BeautifulSoup
+from schulportal_hessen.tools.search import text_matches_query
 
 
 def _parse_bool(value: Any) -> bool:
@@ -193,6 +194,24 @@ def _normalize_event_payload(payload: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _event_matches_search(event: Dict[str, Any], query: str) -> bool:
+    raw = event.get("raw", {}) if isinstance(event.get("raw"), dict) else {}
+    searchable_text = " ".join(
+        str(part)
+        for part in (
+            event.get("title", ""),
+            event.get("description", ""),
+            raw.get("location", ""),
+            raw.get("ort", ""),
+            raw.get("raum", ""),
+            raw.get("room", ""),
+            raw.get("title", ""),
+            raw.get("description", ""),
+        )
+    )
+    return text_matches_query(searchable_text, query)
+
+
 def kalender_get_events(
     self,
     year: int = 0,
@@ -249,12 +268,14 @@ def kalender_get_events(
         groups = overview.get("groups", [])
         categories = overview.get("categories", [])
 
+        normalized_search = (search or "").strip()
         post_data = {
             "f": "getEvents",
             "year": year,
             "start": start,
             "k": category,
-            "s": search,
+            # Backend search is strict on some installations; filter locally for tolerance.
+            "s": "",
             "z": target,
             "u": selected_view,
         }
@@ -269,6 +290,8 @@ def kalender_get_events(
             payload = json.loads(response.text)
 
         events = _normalize_event_payload(payload)
+        if normalized_search:
+            events = [event for event in events if _event_matches_search(event, normalized_search)]
 
         for event in events:
             # Map category ID to category name and color
@@ -290,7 +313,7 @@ def kalender_get_events(
                 "year": year,
                 "start": start,
                 "category": category,
-                "search": search,
+                "search": normalized_search,
                 "target": target,
                 "view_id": selected_view,
             },

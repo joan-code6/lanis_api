@@ -34,6 +34,7 @@ from typing import Any, Dict
 import json
 
 import requests
+from schulportal_hessen.tools.search import text_matches_query
 
 
 def school_list_get_all(self) -> Dict[str, Any]:
@@ -250,20 +251,24 @@ def school_list_search_by_name(self, school_name: str) -> Dict[str, Any]:
         # Parse JSON response
         data = response.json()
         
-        # Search for matching schools
+        # Search for matching schools with tolerant matching (accents, typos, partials)
         results = []
-        search_term = school_name.lower()
+        query = (school_name or "").strip()
         
         for district in data:
+            district_name = district.get('Name', '')
             for school in district.get('Schulen', []):
-                if search_term in school.get('Name', '').lower():
+                school_name_value = school.get('Name', '')
+                school_location = school.get('Ort', '')
+                searchable_text = f"{school_name_value} {school_location} {district_name}"
+                if text_matches_query(searchable_text, query):
                     results.append({
                         'district_id': district.get('Id', ''),
-                        'district_name': district.get('Name', ''),
+                        'district_name': district_name,
                         'school': {
                             'id': school.get('Id', ''),
-                            'name': school.get('Name', ''),
-                            'location': school.get('Ort', '')
+                            'name': school_name_value,
+                            'location': school_location
                         }
                     })
         

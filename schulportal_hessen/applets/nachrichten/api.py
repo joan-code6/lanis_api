@@ -1,6 +1,27 @@
-from typing import Dict, Any
+from typing import Any, Dict, List
 import json
+
 from schulportal_hessen.tools.cryptor import Cryptor
+from schulportal_hessen.tools.search import normalize_search_text, value_matches_query
+
+
+def _extract_users(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("users", "results", "rows", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _recipient_key(user: Dict[str, Any]) -> str:
+    for key in ("id", "value", "userid", "user_id", "uid", "label"):
+        value = user.get(key)
+        if value:
+            return str(value)
+    return json.dumps(user, sort_keys=True, ensure_ascii=False)
 
 
 def nachrichten_get_headers(
@@ -254,31 +275,63 @@ def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
             }
 
     try:
-        response = self.session.post(
-            f"{self.BASE_START_URL}/nachrichten.php",
-            data={"a": "searchRecipt", "q": query},
-            headers={
-                "Accept": "*/*",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "X-Requested-With": "XMLHttpRequest",
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-origin",
-            },
-        )
-        response.raise_for_status()
+        def _fetch_users(search_term: str) -> List[Dict[str, Any]]:
+            response = self.session.post(
+                f"{self.BASE_START_URL}/nachrichten.php",
+                data={"a": "searchRecipt", "q": search_term},
+                headers={
+                    "Accept": "*/*",
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Site": "same-origin",
+                },
+            )
+            response.raise_for_status()
 
-        # Try to parse as JSON first (might not be encrypted)
-        try:
-            users = response.json()
-            return {"success": True, "users": users}
-        except json.JSONDecodeError:
-            # If not JSON, try to decrypt
-            encrypted_data = response.text
-            decrypted = self.cryptor.decrypt(encrypted_data)
-            users = json.loads(decrypted)
+            try:
+                payload = response.json()
+            except json.JSONDecodeError:
+                decrypted = self.cryptor.decrypt(response.text)
+                payload = json.loads(decrypted)
+            return _extract_users(payload)
 
-            return {"success": True, "users": users}
+        base_query = (query or "").strip()
+        normalized_query = normalize_search_text(base_query)
+
+        query_variants: List[str] = []
+        if base_query:
+            query_variants.append(base_query)
+        if normalized_query and normalized_query != base_query.lower():
+            query_variants.append(normalized_query)
+        query_variants.extend(token for token in normalized_query.split() if len(token) >= 2)
+        query_variants = list(dict.fromkeys(variant for variant in query_variants if variant))
+
+        if not query_variants:
+            return {"success": True, "query": base_query, "users": [], "count": 0}
+
+        aggregated_users: List[Dict[str, Any]] = []
+        seen = set()
+        for variant in query_variants:
+            for user in _fetch_users(variant):
+                key = _recipient_key(user)
+                if key in seen:
+                    continue
+                seen.add(key)
+                aggregated_users.append(user)
+
+        filtered_users = [
+            user for user in aggregated_users if value_matches_query(user, base_query)
+        ]
+        users_out = filtered_users or aggregated_users
+
+        return {
+            "success": True,
+            "query": base_query,
+            "users": users_out,
+            "count": len(users_out),
+        }
 
     except Exception as e:
         return {"success": False, "error": f"Failed to search recipients: {str(e)}"}
@@ -458,4 +511,3 @@ def nachrichten_mark_read(self, conversation_id: str) -> Dict[str, Any]:
             return {"success": True, "raw": response.text}
     except Exception as e:
         return {"success": False, "error": f"Failed to mark read: {str(e)}"}
-
