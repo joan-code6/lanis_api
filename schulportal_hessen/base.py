@@ -1,4 +1,5 @@
 import requests
+import threading
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlencode
 import json
@@ -91,6 +92,7 @@ class SchulportalHessenAPI:
         self.dsb_session: Optional[requests.Session] = None
         self.dsb_logged_in: bool = False
         self.dsb_plan_urls: List[str] = []
+        self._dsb_lock = threading.RLock()
 
     def get_apps(self) -> Dict[str, Any]:
         """Retrieve available apps/modules for the logged-in user.

@@ -3,6 +3,7 @@ import datetime
 import gzip
 import json
 import re
+import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
@@ -54,9 +55,17 @@ def _make_dsb_session(
 
 
 def _get_dsb_session(self) -> requests.Session:
+    existing_session = getattr(self, "dsb_session", None)
+    if existing_session is not None:
+        return existing_session
+
     dsb_cookie = getattr(self, "_dsb_cookie", None)
     dsb_sid = getattr(self, "_dsb_session_id", None)
     return _make_dsb_session(dsbmobile_cookie=dsb_cookie, asp_session_id=dsb_sid)
+
+
+def _get_dsb_lock(self) -> Optional[threading.RLock]:
+    return getattr(self, "_dsb_lock", None)
 
 
 DSB_GETDATA_FIXED_B64 = "H4sIAAAAAAAAA4WP20rEMBCGXyXkSsFNk7ZZNHuliCJ42Is9gOJFshnbsN2kNNvtovjuTiOLl8Iw/PP9wxy+6DJC92CpovQi6fnwq69NiFS9vaNq2xV00QWPTs4KJtB+1L7qdQWILGD9Ev96nsKnaxqdScbJ2dp5G4ZInhdEcMZnBMG0nJHjmLqDEhLpObmHzTZkORccQ5A718FHOGbJpemG05G3cHCbce8aDGIk8z7WJ/em97aBVFlgNTgPW+erHVinmfN16CMwG80uGNcAG8CMI/V+HJjzfDrh5aTgC1EoeaWKS1ZK+Zrejftla//p+/4B9MquQU8BAAA="
@@ -233,99 +242,105 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
     >>> api.dsb_login("F1234", "mypassword")
     {'success': True, 'session_cookie': 'abc123...', 'session_id': 'def456...'}
     """
-    session = _make_dsb_session()
-    self.dsb_username = username
-    self.dsb_password = password
+    lock = _get_dsb_lock(self)
+    if lock is None:
+        lock = threading.RLock()
 
-    try:
-        landing = session.get(BASE_DSB_URL, timeout=15)
-        landing.raise_for_status()
+    with lock:
+        session = _make_dsb_session()
+        self.dsb_username = username
+        self.dsb_password = password
 
-        login_page = session.get(urljoin(BASE_DSB_URL, "Login.aspx"), timeout=15)
-        login_page.raise_for_status()
+        try:
+            landing = session.get(BASE_DSB_URL, timeout=15)
+            landing.raise_for_status()
 
-        if not login_page.text or len(login_page.text.strip()) < 100:
-            return {
-                "success": False,
-                "error": "Login page returned empty or truncated content.",
-                "content_length": len(login_page.text),
-                "status_code": login_page.status_code,
-                "url": login_page.url,
-            }
+            login_page = session.get(urljoin(BASE_DSB_URL, "Login.aspx"), timeout=15)
+            login_page.raise_for_status()
 
-        payload = _extract_login_payload(login_page.text)
-        if not payload:
-            snippet = login_page.text[:800] if login_page.text else "(empty)"
-            return {
-                "success": False,
-                "error": "Failed to parse login form. No form or input fields found in the HTML.",
-                "html_snippet": snippet,
-                "url": login_page.url,
-                "status_code": login_page.status_code,
-            }
+            if not login_page.text or len(login_page.text.strip()) < 100:
+                return {
+                    "success": False,
+                    "error": "Login page returned empty or truncated content.",
+                    "content_length": len(login_page.text),
+                    "status_code": login_page.status_code,
+                    "url": login_page.url,
+                }
 
-        if "txtUser" not in payload or "txtPass" not in payload:
-            snippet = login_page.text[:800] if login_page.text else "(empty)"
-            return {
-                "success": False,
-                "error": "Login form found but missing txtUser/txtPass input fields.",
-                "extracted_fields": list(payload.keys()),
-                "html_snippet": snippet,
-                "url": login_page.url,
-            }
+            payload = _extract_login_payload(login_page.text)
+            if not payload:
+                snippet = login_page.text[:800] if login_page.text else "(empty)"
+                return {
+                    "success": False,
+                    "error": "Failed to parse login form. No form or input fields found in the HTML.",
+                    "html_snippet": snippet,
+                    "url": login_page.url,
+                    "status_code": login_page.status_code,
+                }
 
-        payload["txtUser"] = username
-        payload["txtPass"] = password
-        if "ctl03" not in payload:
-            payload["ctl03"] = "Anmelden"
+            if "txtUser" not in payload or "txtPass" not in payload:
+                snippet = login_page.text[:800] if login_page.text else "(empty)"
+                return {
+                    "success": False,
+                    "error": "Login form found but missing txtUser/txtPass input fields.",
+                    "extracted_fields": list(payload.keys()),
+                    "html_snippet": snippet,
+                    "url": login_page.url,
+                }
 
-        response = session.post(
-            urljoin(BASE_DSB_URL, "Login.aspx"),
-            data=payload,
-            timeout=15,
-            allow_redirects=True,
-        )
-        response.raise_for_status()
+            payload["txtUser"] = username
+            payload["txtPass"] = password
+            if "ctl03" not in payload:
+                payload["ctl03"] = "Anmelden"
 
-        has_cookie = any(
-            cookie.name.lower() == "dsbmobile" for cookie in session.cookies
-        )
-        is_default = "default.aspx" in response.url.lower()
-
-        if not is_default and not has_cookie:
-            default_resp = session.get(
-                urljoin(BASE_DSB_URL, "default.aspx"), timeout=15
+            response = session.post(
+                urljoin(BASE_DSB_URL, "Login.aspx"),
+                data=payload,
+                timeout=15,
+                allow_redirects=True,
             )
-            default_resp.raise_for_status()
-            is_default = "default.aspx" in default_resp.url.lower()
+            response.raise_for_status()
+
             has_cookie = any(
                 cookie.name.lower() == "dsbmobile" for cookie in session.cookies
             )
+            is_default = "default.aspx" in response.url.lower()
 
-        if has_cookie:
-            self._dsb_cookie = session.cookies.get("DSBmobile")
-            self._dsb_session_id = session.cookies.get("ASP.NET_SessionId")
-            self.dsb_logged_in = True
+            if not is_default and not has_cookie:
+                default_resp = session.get(
+                    urljoin(BASE_DSB_URL, "default.aspx"), timeout=15
+                )
+                default_resp.raise_for_status()
+                is_default = "default.aspx" in default_resp.url.lower()
+                has_cookie = any(
+                    cookie.name.lower() == "dsbmobile" for cookie in session.cookies
+                )
 
-        if not has_cookie:
-            snippet = response.text[:800] if response.text else "(empty)"
+            if has_cookie:
+                self.dsb_session = session
+                self._dsb_cookie = session.cookies.get("DSBmobile")
+                self._dsb_session_id = session.cookies.get("ASP.NET_SessionId")
+                self.dsb_logged_in = True
+
+            if not has_cookie:
+                snippet = response.text[:800] if response.text else "(empty)"
+                return {
+                    "success": False,
+                    "error": "Login failed. No DSBmobile cookie set after form submission. Check credentials.",
+                    "response_url": response.url,
+                    "has_default_redirect": is_default,
+                    "cookies_received": [c.name for c in session.cookies],
+                    "html_snippet": snippet,
+                }
+
             return {
-                "success": False,
-                "error": "Login failed. No DSBmobile cookie set after form submission. Check credentials.",
+                "success": True,
+                "session_cookie": self._dsb_cookie,
+                "session_id": self._dsb_session_id,
                 "response_url": response.url,
-                "has_default_redirect": is_default,
-                "cookies_received": [c.name for c in session.cookies],
-                "html_snippet": snippet,
             }
-
-        return {
-            "success": True,
-            "session_cookie": self._dsb_cookie,
-            "session_id": self._dsb_session_id,
-            "response_url": response.url,
-        }
-    except requests.RequestException as e:
-        return {"success": False, "error": f"Failed to login: {str(e)}"}
+        except requests.RequestException as e:
+            return {"success": False, "error": f"Failed to login: {str(e)}"}
 
 
 def dsb_get_plan_urls(
@@ -345,87 +360,92 @@ def dsb_get_plan_urls(
         >>> api.dsb_get_plan_urls("{username}", "{password}")
         {"success": True, "plan_urls": ["{plan_url}", ...]}
     """
-    if not getattr(self, "dsb_logged_in", False):
-        if not username or not password:
-            return {
-                "success": False,
-                "error": "Not logged in. Provide username and password.",
+    lock = _get_dsb_lock(self)
+    if lock is None:
+        lock = threading.RLock()
+
+    with lock:
+        if not getattr(self, "dsb_logged_in", False):
+            if not username or not password:
+                return {
+                    "success": False,
+                    "error": "Not logged in. Provide username and password.",
+                }
+            login = self.dsb_login(username, password)
+            if not login.get("success"):
+                return login
+
+        session = _get_dsb_session(self)
+        getdata_url = _find_getdata_endpoint(session)
+
+        if not getdata_url:
+            return {"success": False, "error": "Could not find GetData endpoint URL"}
+
+        payload = {
+            "req": {
+                "Data": _build_getdata_payload(
+                    getattr(self, "dsb_username", username or ""),
+                    getattr(self, "dsb_password", password or ""),
+                ),
+                "DataType": 1,
             }
-        login = self.dsb_login(username, password)
-        if not login.get("success"):
-            return login
-
-    session = _get_dsb_session(self)
-    getdata_url = _find_getdata_endpoint(session)
-
-    if not getdata_url:
-        return {"success": False, "error": "Could not find GetData endpoint URL"}
-
-    payload = {
-        "req": {
-            "Data": _build_getdata_payload(
-                getattr(self, "dsb_username", username or ""),
-                getattr(self, "dsb_password", password or ""),
-            ),
-            "DataType": 1,
         }
-    }
 
-    try:
-        response = session.post(
-            getdata_url,
-            json=payload,
-            timeout=15,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Accept-Encoding": "gzip, deflate, br",
-                "X-Requested-With": "XMLHttpRequest",
-                "Origin": "https://www.dsbmobile.de",
-                "Referer": "https://www.dsbmobile.de/default.aspx",
-            },
-        )
-        response.raise_for_status()
+        try:
+            response = session.post(
+                getdata_url,
+                json=payload,
+                timeout=15,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Origin": "https://www.dsbmobile.de",
+                    "Referer": "https://www.dsbmobile.de/default.aspx",
+                },
+            )
+            response.raise_for_status()
 
-        data = response.json()
-        if "d" not in data:
-            return {"success": False, "error": "Invalid GetData response", "raw": data}
+            data = response.json()
+            if "d" not in data:
+                return {"success": False, "error": "Invalid GetData response", "raw": data}
 
-        b64_data = data["d"]
-        if not b64_data:
-            return {"success": False, "error": "Empty response data"}
+            b64_data = data["d"]
+            if not b64_data:
+                return {"success": False, "error": "Empty response data"}
 
-        decompressed = gzip.decompress(base64.b64decode(b64_data))
-        menu_data = json.loads(decompressed.decode("utf-8"))
+            decompressed = gzip.decompress(base64.b64decode(b64_data))
+            menu_data = json.loads(decompressed.decode("utf-8"))
 
-        plan_urls: List[str] = []
-        html_plan_url: Optional[str] = None
-        _extract_plan_urls_from_menu(menu_data.get("ResultMenuItems", []), plan_urls)
+            plan_urls: List[str] = []
+            html_plan_url: Optional[str] = None
+            _extract_plan_urls_from_menu(menu_data.get("ResultMenuItems", []), plan_urls)
 
-        for item in menu_data.get("ResultMenuItems", []):
-            for child in item.get("Childs", []):
-                if "Pl" in str(child.get("Title", "")):
-                    root = child.get("Root", {})
-                    for rc in root.get("Childs", []):
-                        for rcc in rc.get("Childs", []):
-                            detail = rcc.get("Detail", "")
-                            if detail and detail.endswith(".htm"):
-                                html_plan_url = detail
+            for item in menu_data.get("ResultMenuItems", []):
+                for child in item.get("Childs", []):
+                    if "Pl" in str(child.get("Title", "")):
+                        root = child.get("Root", {})
+                        for rc in root.get("Childs", []):
+                            for rcc in rc.get("Childs", []):
+                                detail = rcc.get("Detail", "")
+                                if detail and detail.endswith(".htm"):
+                                    html_plan_url = detail
 
-        self.dsb_plan_urls = plan_urls
-        self.dsb_menu_data = menu_data
-        return {
-            "success": True,
-            "plan_urls": plan_urls,
-            "count": len(plan_urls),
-            "html_plan_url": html_plan_url,
-            "menu_items": [
-                i.get("Title") for i in menu_data.get("ResultMenuItems", [])
-            ],
-        }
-    except Exception as e:
-        return {"success": False, "error": f"Failed to fetch GetData: {str(e)}"}
+            self.dsb_plan_urls = plan_urls
+            self.dsb_menu_data = menu_data
+            return {
+                "success": True,
+                "plan_urls": plan_urls,
+                "count": len(plan_urls),
+                "html_plan_url": html_plan_url,
+                "menu_items": [
+                    i.get("Title") for i in menu_data.get("ResultMenuItems", [])
+                ],
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Failed to fetch GetData: {str(e)}"}
 
 
 def dsb_get_substitution_plan(
@@ -455,46 +475,51 @@ def dsb_get_substitution_plan(
         >>> api.dsb_get_substitution_plan("{username}", "{password}")
         {"success": True, "plan_url": "{plan_url}", "tables": [...]}
     """
-    if plan_url is None:
-        plan_urls_result = self.dsb_get_plan_urls(username=username, password=password)
-        if not plan_urls_result.get("success"):
-            return plan_urls_result
+    lock = _get_dsb_lock(self)
+    if lock is None:
+        lock = threading.RLock()
 
+    with lock:
         if plan_url is None:
-            plan_url = plan_urls_result.get("html_plan_url")
-        if not plan_url:
-            plan_urls = plan_urls_result.get("plan_urls", [])
-            if plan_index < 0 or plan_index >= len(plan_urls):
-                return {
-                    "success": False,
-                    "error": f"plan_index out of range. Found {len(plan_urls)} plan URLs.",
-                }
-            plan_url = plan_urls[plan_index]
+            plan_urls_result = self.dsb_get_plan_urls(username=username, password=password)
+            if not plan_urls_result.get("success"):
+                return plan_urls_result
 
-    session = _get_dsb_session(self)
-    try:
-        response = session.get(plan_url, timeout=15)
-        response.raise_for_status()
+            if plan_url is None:
+                plan_url = plan_urls_result.get("html_plan_url")
+            if not plan_url:
+                plan_urls = plan_urls_result.get("plan_urls", [])
+                if plan_index < 0 or plan_index >= len(plan_urls):
+                    return {
+                        "success": False,
+                        "error": f"plan_index out of range. Found {len(plan_urls)} plan URLs.",
+                    }
+                plan_url = plan_urls[plan_index]
 
-        raw_html = response.text
-        parsed = _parse_plan_tables(raw_html)
+        session = _get_dsb_session(self)
+        try:
+            response = session.get(plan_url, timeout=15)
+            response.raise_for_status()
 
-        tables = parsed.get("tables", [])
-        if klasse:
-            tables = _filter_tables_by_klasse(tables, klasse)
+            raw_html = response.text
+            parsed = _parse_plan_tables(raw_html)
 
-        return {
-            "success": True,
-            "plan_url": plan_url,
-            "raw_html": raw_html if include_raw else None,
-            "title": parsed.get("title", ""),
-            "tables": tables,
-        }
-    except requests.RequestException as e:
-        return {
-            "success": False,
-            "error": f"Failed to fetch substitution plan: {str(e)}",
-        }
+            tables = parsed.get("tables", [])
+            if klasse:
+                tables = _filter_tables_by_klasse(tables, klasse)
+
+            return {
+                "success": True,
+                "plan_url": plan_url,
+                "raw_html": raw_html if include_raw else None,
+                "title": parsed.get("title", ""),
+                "tables": tables,
+            }
+        except requests.RequestException as e:
+            return {
+                "success": False,
+                "error": f"Failed to fetch substitution plan: {str(e)}",
+            }
 
 
 def _filter_tables_by_klasse(tables: List[Dict], klasse: str) -> List[Dict]:
