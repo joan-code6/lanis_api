@@ -24,16 +24,16 @@ echo ""
 echo ">>> git pull origin main"
 git pull origin main
 
-# ── 2. Install/update dependencies ───────────────────────────────────────────
-if [ -d "${VENV_DIR}" ]; then
+# ── 2. Create venv if missing ─────────────────────────────────────────────────
+if [ ! -d "${VENV_DIR}" ]; then
     echo ""
-    echo ">>> pip install -r requirements.txt"
-    "${VENV_DIR}/bin/pip" install -r requirements.txt
-else
-    echo ""
-    echo "# No venv found at ${VENV_DIR}, using system python"
-    pip install -r requirements.txt
+    echo ">>> Creating venv at ${VENV_DIR}"
+    python3 -m venv "${VENV_DIR}"
 fi
+
+echo ""
+echo ">>> pip install -r requirements.txt"
+"${VENV_DIR}/bin/pip" install -r requirements.txt
 
 # ── 3. Resolve python binary ─────────────────────────────────────────────────
 PYTHON_BIN="${VENV_DIR}/bin/python3"
