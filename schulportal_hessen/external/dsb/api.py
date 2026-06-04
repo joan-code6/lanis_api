@@ -4,6 +4,7 @@ import gzip
 import json
 import re
 import threading
+from datetime import date
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
@@ -117,6 +118,23 @@ def _extract_login_payload(html: str) -> Dict[str, str]:
     return payload
 
 
+def _extract_date_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+
+    match = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})", text)
+    if match:
+        day_str, month_str, year_str = match.groups()
+        year_str = "20" + year_str if len(year_str) == 2 else year_str
+        try:
+            d = date(int(year_str), int(month_str), int(day_str))
+            return d.isoformat()
+        except ValueError:
+            pass
+
+    return None
+
+
 def _parse_table(table: Any) -> Dict[str, Any]:
     header_cells = table.find_all("th")
     headers = (
@@ -142,7 +160,14 @@ def _parse_table(table: Any) -> Dict[str, Any]:
     caption_tag = table.find("caption")
     caption = caption_tag.get_text(" ", strip=True) if caption_tag else ""
 
-    return {"caption": caption, "headers": headers, "rows": rows}
+    table_date = _extract_date_from_text(caption)
+
+    return {
+        "caption": caption,
+        "headers": headers,
+        "rows": rows,
+        "date": table_date,
+    }
 
 
 def _parse_plan_tables(html: str) -> Dict[str, Any]:
@@ -150,9 +175,21 @@ def _parse_plan_tables(html: str) -> Dict[str, Any]:
     title_tag = soup.find(["h1", "h2", "h3"])
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
 
+    mon_dates: List[str] = []
+    for div in soup.find_all("div", class_="mon_title"):
+        d = _extract_date_from_text(div.get_text(" ", strip=True))
+        if d:
+            mon_dates.append(d)
+
     tables = []
+    mon_idx = 0
     for table in soup.find_all("table"):
-        tables.append(_parse_table(table))
+        parsed = _parse_table(table)
+        if not parsed.get("date") and "Klasse" in str(parsed.get("headers", [])):
+            if mon_idx < len(mon_dates):
+                parsed["date"] = mon_dates[mon_idx]
+                mon_idx += 1
+        tables.append(parsed)
 
     return {"title": title, "tables": tables}
 
