@@ -29,6 +29,7 @@ from schulportal_hessen.base import SchulportalHessenAPI
 
 from .queue import task_queue, Task, TaskPriority
 from .metrics import user_metrics_db
+from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .documentation import router as documentation_router
 from .file_cache import (
     get_file_hash,
@@ -304,6 +305,7 @@ class SessionManager:
 
 
 sessions = SessionManager()
+_dsb_scheduler_task = None
 
 
 # --- Background Task: Fetch and Store User Data ---
@@ -400,14 +402,20 @@ app.include_router(documentation_router)
 
 @app.on_event("startup")
 async def _startup() -> None:
-    """Initialize task queue and database on startup."""
+    """Initialize task queue, databases, and DSB snapshot scheduler on startup."""
+    global _dsb_scheduler_task
     await user_metrics_db.initialize()
+    await dsb_snapshot_db.initialize()
     await task_queue.start()
-    logger.info("API started with task queue and user metrics database")
+    _dsb_scheduler_task = await run_dsb_scheduler()
+    logger.info("API started with task queue, databases, and DSB snapshot scheduler")
 
 
 @app.on_event("shutdown")
 async def _cleanup_sessions() -> None:
+    global _dsb_scheduler_task
+    if _dsb_scheduler_task:
+        _dsb_scheduler_task.cancel()
     await task_queue.stop(wait=True, timeout=10.0)
     await sessions.shutdown()
 
