@@ -1,0 +1,16 @@
+[Unit]
+Description=Schulportal Hessen API (lanis_api)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/lanis_api
+EnvironmentFile=/opt/lanis_api/.env
+ExecStart=/opt/lanis_api/venv/bin/python3 -m uvicorn api.api:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
