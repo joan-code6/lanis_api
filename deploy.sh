@@ -35,29 +35,52 @@ else
     pip install -r requirements.txt
 fi
 
-# ── 3. Restart the server ────────────────────────────────────────────────────
+# ── 3. Resolve python binary ─────────────────────────────────────────────────
+PYTHON_BIN="${VENV_DIR}/bin/python3"
+[ -f "${PYTHON_BIN}" ] || PYTHON_BIN="python3"
+echo ""
+echo "  Python:  ${PYTHON_BIN}"
+
+# ── 4. Install systemd service (auto-generate from template) ─────────────────
+SERVICE_SRC="${PROJECT_DIR}/lanis-api.service"
+SERVICE_DST="/etc/systemd/system/${SERVICE_NAME}.service"
+SERVICE_TMP="/tmp/${SERVICE_NAME}.service"
+
+if [ -f "${SERVICE_SRC}" ]; then
+    echo ""
+    echo ">>> Installing systemd service from template"
+    sed -e "s|{{PROJECT_DIR}}|${PROJECT_DIR}|g" \
+        -e "s|{{PYTHON_BIN}}|${PYTHON_BIN}|g" \
+        "${SERVICE_SRC}" > "${SERVICE_TMP}"
+    cp "${SERVICE_TMP}" "${SERVICE_DST}"
+    systemctl daemon-reload
+fi
+
+# ── 5. Restart the server ────────────────────────────────────────────────────
 if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
     echo ""
     echo ">>> systemctl restart ${SERVICE_NAME}"
-    sudo systemctl restart "${SERVICE_NAME}"
+    systemctl restart "${SERVICE_NAME}"
     echo ""
     echo "=== Service restarted ==="
-    sudo systemctl status --no-pager "${SERVICE_NAME}"
+    systemctl status --no-pager "${SERVICE_NAME}"
+elif [ -f "${SERVICE_DST}" ]; then
+    echo ""
+    echo ">>> systemctl start ${SERVICE_NAME}"
+    systemctl start "${SERVICE_NAME}"
+    echo ""
+    echo "=== Service started ==="
+    systemctl status --no-pager "${SERVICE_NAME}"
 else
     echo ""
-    echo "# systemd service '${SERVICE_NAME}' not found — restarting directly"
+    echo "# No systemd — starting directly"
 
-    # Kill any existing uvicorn on our port
     EXISTING_PID=$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)
     if [ -n "${EXISTING_PID}" ]; then
         echo ">>> Killing existing process on port ${PORT} (pid ${EXISTING_PID})"
         kill "${EXISTING_PID}" 2>/dev/null || true
         sleep 1
     fi
-
-    # Start without --reload (production mode)
-    PYTHON_BIN="${VENV_DIR}/bin/python3"
-    [ -f "${PYTHON_BIN}" ] || PYTHON_BIN="python3"
 
     echo ">>> Starting uvicorn (host=${HOST}, port=${PORT})"
     nohup "${PYTHON_BIN}" -m uvicorn api.api:app \
