@@ -244,7 +244,7 @@ Follow the prompts to enter your school ID, username, and password.
 | `GET` | `/meinunterricht/weekly` | Token | Weekly overview |
 | `GET` | `/meinunterricht/submissions` | Token | Assignments/submissions |
 | `POST` | `/meinunterricht/homework-done` | Token | Toggle homework status |
-| `GET` | `/meinunterricht/file/{hash}` | Token* | Download cached file |
+| `GET` | `/meinunterricht/file/{hash}` | Token\* | Download cached file\* |
 
 ### Calendar (Kalender)
 
@@ -303,6 +303,8 @@ Follow the prompts to enter your school ID, username, and password.
 | `GET` | `/documentation` | — | Auto-generated API docs |
 | `GET` | `/documentation/{path}` | — | Single endpoint docs |
 
+\* Token required for uncached files; cached files served without authentication.
+
 ---
 
 ## Session & Caching
@@ -348,7 +350,7 @@ graph LR
 
 ## Project Structure
 
-```
+```text
 lanis_api/
 ├── api/                      # FastAPI server
 │   ├── api.py               # Main app & endpoints
