@@ -10,9 +10,7 @@ An unofficial Python API client, FastAPI server, and terminal UI for **Schulport
 
 ## AI Declaration
 
-This project was developed with heavy AI assistance — but not through "vibe coding." Every line of AI-generated code is reviewed, understood, and approved before merge. I know what the AI is writing and why.
-
-I prefer to call this **agentic coding**: the AI acts as an agent that drafts code under my direction, while I remain responsible for design decisions, correctness, security, and architecture. You can see this review process in action across the PRs in the [LANiS UI repository](https://github.com/joan-code6/lanis_ui/pulls).
+Heavy AI assistance, but no vibe coding. Every line is reviewed and understood before merge. I call it **agentic coding**: the AI drafts, I direct and approve. Review history in the [LANiS UI PRs](https://github.com/joan-code6/lanis_ui/pulls).
 
 ---
 
