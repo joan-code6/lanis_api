@@ -50,7 +50,7 @@ def session_token(base_url: str, require_credentials: Dict[str, str]):
 	resp = requests.post(f"{base_url}/login", json=require_credentials, timeout=15)
 	resp.raise_for_status()
 	body = resp.json()
-	token = body["token"]
+	token = body["access_token"]
 	yield token
 	try:
 		requests.post(f"{base_url}/logout", headers={"X-Session-Token": token}, timeout=10)
@@ -82,11 +82,13 @@ def test_login_and_encryption_ready(base_url: str, require_credentials: Dict[str
 	print("\n=== /login API Response ===")
 	print(body)
 	print("=============================\n")
-	assert body["token"]
+	assert body["access_token"]
+	assert body["refresh_token"]
 	assert body["school_id"] == require_credentials["school_id"]
 	assert body["username"] == require_credentials["username"]
 	assert isinstance(body["encryption_ready"], bool)
-	requests.post(f"{base_url}/logout", headers={"X-Session-Token": body['token']}, timeout=10)
+	assert isinstance(body["expires_in"], int)
+	requests.post(f"{base_url}/logout", headers={"X-Session-Token": body['access_token']}, timeout=10)
 
 
 def test_apps_requires_valid_session(base_url: str, session_token: str) -> None:
@@ -256,10 +258,10 @@ def test_multiple_sessions_independent(base_url: str, require_credentials: Dict[
 	print("\n=== Second /login API Response ===")
 	print(body2)
 	print("=============================\n")
-	assert body1["token"] != body2["token"]
+	assert body1["access_token"] != body2["access_token"]
 	try:
-		headers1 = {"X-Session-Token": body1["token"]}
-		headers2 = {"X-Session-Token": body2["token"]}
+		headers1 = {"X-Session-Token": body1["access_token"]}
+		headers2 = {"X-Session-Token": body2["access_token"]}
 		apps1 = requests.get(f"{base_url}/apps", headers=headers1, timeout=15)
 		apps2 = requests.get(f"{base_url}/apps", headers=headers2, timeout=15)
 		apps1.raise_for_status()
@@ -275,8 +277,8 @@ def test_multiple_sessions_independent(base_url: str, require_credentials: Dict[
 		assert body_apps1.get("success") is True
 		assert body_apps2.get("success") is True
 	finally:
-		requests.post(f"{base_url}/logout", headers={"X-Session-Token": body1["token"]}, timeout=10)
-		requests.post(f"{base_url}/logout", headers={"X-Session-Token": body2["token"]}, timeout=10)
+		requests.post(f"{base_url}/logout", headers={"X-Session-Token": body1["access_token"]}, timeout=10)
+		requests.post(f"{base_url}/logout", headers={"X-Session-Token": body2["access_token"]}, timeout=10)
 
 
 def test_school_list_get_all(base_url: str) -> None:

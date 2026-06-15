@@ -25,8 +25,13 @@ class LanisAPI {
         password: credentials.password,
       });
       
-      this.sessionToken = response.data.token;
-      return response.data;
+      this.sessionToken = response.data.access_token;
+      return {
+        token: response.data.access_token,
+        schoolId: response.data.school_id,
+        username: response.data.username,
+        encryptionReady: response.data.encryption_ready,
+      };
     } catch (error) {
       throw new Error(`Login failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
