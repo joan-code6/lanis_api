@@ -490,10 +490,7 @@ app.add_middleware(
         "http://localhost:5173",
         "https://lanis.arg-server.de",
     ],
-    allow_origin_regex=[
-        r"https://.*\.appwrite\.network",
-        r"https://.*\.surge.sh",
-    ],
+    allow_origin_regex=r"https://.*\.surge\.sh|https://.*\.appwrite\.network",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
