@@ -1289,4 +1289,30 @@ async def school_list_search(q: str) -> Dict[str, object]:
     return result
 
 
+# --- Semantic Search ---
+
+
+from .semantic_search import semantic_engine
+
+
+@app.get("/search/semantic")
+async def semantic_search(
+    q: str,
+    top_k: int = 20,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    results = await semantic_engine.search(
+        user_id=auth.user_id,
+        query=q,
+        auth_client=auth.client,
+        top_k=top_k,
+    )
+    return {
+        "success": True,
+        "query": q,
+        "results": results,
+        "count": len(results),
+    }
+
+
 __all__ = ["app"]
