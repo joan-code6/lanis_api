@@ -1391,7 +1391,8 @@ async def app_proxy(
     app_name: str,
     request: Request,
     path: str = "",
-    auth: AuthSession = Depends(client_dependency),
+    token: str = "",
+    x_session_token: Optional[str] = Header(None, alias="X-Session-Token"),
 ):
     """Reverse proxy for OAuth/SSO apps (e.g. bettermarks).
 
@@ -1399,11 +1400,24 @@ async def app_proxy(
     target application, then proxies requests through the server so the
     user's browser receives content with proper authentication.
     """
-    cache_key = f"{auth.user_id}:{app_name}"
+    session_token = x_session_token or token
+    if not session_token:
+        raise HTTPException(status_code=401, detail="X-Session-Token header or token query parameter required")
+
+    try:
+        payload = sessions.decode_access_token(session_token)
+        user_id = payload["sub"]
+        session_data = await sessions._get_or_create_schulportal_client(user_id)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    client = session_data.client
+
+    cache_key = f"{user_id}:{app_name}"
 
     if cache_key not in _app_auth_cache:
         try:
-            modules = await run_in_threadpool(auth.client.get_available_modules)
+            modules = await run_in_threadpool(client.get_available_modules)
         except Exception:
             modules = []
 
@@ -1424,7 +1438,7 @@ async def app_proxy(
         if not portal_url:
             raise HTTPException(status_code=404, detail="No portal URL for app")
 
-        auth_data = await run_in_threadpool(_follow_oauth_flow, auth.client, portal_url)
+        auth_data = await run_in_threadpool(_follow_oauth_flow, client, portal_url)
         if not auth_data or not auth_data.get("cookies"):
             raise HTTPException(status_code=502, detail="Failed to obtain app auth session")
 
