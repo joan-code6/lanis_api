@@ -1339,10 +1339,15 @@ def _follow_oauth_flow(client: SchulportalHessenAPI, portal_url: str) -> Optiona
 
 
 def _rewrite_html(content: bytes, target_host: str, proxy_prefix: str) -> bytes:
-    """Rewrite URLs in HTML to route through the proxy."""
-    text = content.decode("utf-8", errors="replace")
+    """Rewrite URLs in HTML to route through the proxy.
 
-    # Rewrite root-relative URLs in src/href attributes to include proxy prefix
+    Handles multiple subdomains by encoding the subdomain in the proxy path:
+    https://sub.example.com/path -> {proxy_prefix}/sub:path
+    """
+    text = content.decode("utf-8", errors="replace")
+    base_domain = target_host.split(".", 1)[-1] if "." in target_host else target_host
+
+    # Rewrite root-relative URLs to include proxy prefix
     def _prefix_root_relative(m: re.Match) -> str:
         attr = m.group(1)
         quote = m.group(2) or ""
@@ -1357,14 +1362,26 @@ def _rewrite_html(content: bytes, target_host: str, proxy_prefix: str) -> bytes:
         text,
     )
 
-    # Replace absolute URLs to the target host with proxy URLs
-    host_variants = [
-        f"https://{target_host}",
-        f"http://{target_host}",
-        f"//{target_host}",
-    ]
-    for variant in host_variants:
-        text = text.replace(variant, proxy_prefix)
+    # Rewrite ANY *.base_domain URL to use proxy with subdomain prefix
+    def _rewrite_external(m: re.Match) -> str:
+        subdomain = m.group(1) or ""
+        path = m.group(2) or ""
+        if subdomain:
+            return f"{proxy_prefix}/{subdomain}:{path}"
+        return f"{proxy_prefix}{path}"
+
+    escaped_domain = re.escape(base_domain)
+    # Match https?://(subdomain.)base_domain/path and //(subdomain.)base_domain/path
+    text = re.sub(
+        rf'https?://(?:([a-zA-Z0-9.-]+)\.)?{escaped_domain}(/[\w.,@?^=%&:/~+#!-]*)?',
+        _rewrite_external,
+        text,
+    )
+    text = re.sub(
+        rf'//(?:([a-zA-Z0-9.-]+)\.)?{escaped_domain}(/[\w.,@?^=%&:/~+#!-]*)?',
+        _rewrite_external,
+        text,
+    )
 
     return text.encode("utf-8")
 
@@ -1373,9 +1390,20 @@ def _rewrite_location(location: str, target_host: str, proxy_prefix: str) -> str
     """Rewrite a Location header to route through the proxy."""
     if location.startswith("/"):
         return f"{proxy_prefix}{location}"
+
     parsed = urlparse(location)
-    if parsed.hostname and target_host in (parsed.hostname or ""):
-        return f"{proxy_prefix}{parsed.path}{'?' + parsed.query if parsed.query else ''}"
+    hostname = parsed.hostname or ""
+    base_domain = target_host.split(".", 1)[-1] if "." in target_host else target_host
+
+    if hostname.endswith("." + base_domain) or hostname == base_domain:
+        subdomain = hostname.split(".")[0] if hostname != base_domain else ""
+        path_and_query = parsed.path
+        if parsed.query:
+            path_and_query += "?" + parsed.query
+        if subdomain and subdomain != target_host.split(".")[0]:
+            return f"{proxy_prefix}/{subdomain}:{path_and_query}"
+        return f"{proxy_prefix}{path_and_query}"
+
     return location
 
 
@@ -1387,18 +1415,18 @@ def _rewrite_location(location: str, target_host: str, proxy_prefix: str) -> str
     "/app/{app_name}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
 )
-async def app_proxy(
+async def app_launch(
     app_name: str,
     request: Request,
     path: str = "",
     token: str = "",
     x_session_token: Optional[str] = Header(None, alias="X-Session-Token"),
 ):
-    """Reverse proxy for OAuth/SSO apps (e.g. bettermarks).
+    """Launch OAuth/SSO apps by resolving the OAuth flow to a callback URL.
 
-    Follows the Schulportal OAuth flow to obtain auth cookies for the
-    target application, then proxies requests through the server so the
-    user's browser receives content with proper authentication.
+    Returns an HTML page that sets the initial auth cookie via a redirect
+    through the app's domain, then navigates to the OAuth callback URL to
+    complete authentication in the user's browser.
     """
     session_token = x_session_token or token
     if not session_token:
@@ -1413,113 +1441,106 @@ async def app_proxy(
 
     client = session_data.client
 
-    cache_key = f"{user_id}:{app_name}"
-
-    if cache_key not in _app_auth_cache:
-        try:
-            modules = await run_in_threadpool(client.get_available_modules)
-        except Exception:
-            modules = []
-
-        module = next(
-            (m for m in modules if m.get("name", "").lower() == app_name.lower()),
-            None,
-        )
-        if not module:
-            # Fuzzy match
-            module = next(
-                (m for m in modules if app_name.lower() in m.get("name", "").lower()),
-                None,
-            )
-        if not module:
-            raise HTTPException(status_code=404, detail=f"App '{app_name}' not found in modules")
-
-        portal_url = module.get("url", "")
-        if not portal_url:
-            raise HTTPException(status_code=404, detail="No portal URL for app")
-
-        auth_data = await run_in_threadpool(_follow_oauth_flow, client, portal_url)
-        if not auth_data or not auth_data.get("cookies"):
-            raise HTTPException(status_code=502, detail="Failed to obtain app auth session")
-
-        _app_auth_cache[cache_key] = auth_data
-
-    auth_data = _app_auth_cache[cache_key]
-    target_host = auth_data["target_host"]
-    cookies = auth_data["cookies"]
-    base_url = auth_data.get("base_url", f"https://{target_host}/")
-
-    # Build target URL
-    if path:
-        target_url = f"https://{target_host}/{path}"
-    else:
-        target_url = base_url
-
-    # Forward query string
-    if request.url.query:
-        sep = "&" if "?" in target_url else "?"
-        target_url += sep + request.url.query
-
-    # Prepare proxy prefix for URL rewriting
-    scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
-    proxy_prefix = f"{scheme}://{request.headers.get('host', request.base_url.netloc)}/app/{app_name}"
-
-    # Forward request
-    method = request.method
-    headers = dict(request.headers)
-    headers.pop("host", None)
-    headers.pop("x-session-token", None)
-    headers.pop("x-forwarded-proto", None)
-    headers["accept-encoding"] = "identity"
-
-    body = await request.body() if method in ("POST", "PUT", "PATCH") else None
-
+    # Look up the app
     try:
-        resp = await run_in_threadpool(
-            lambda: http_requests.request(
-                method=method,
-                url=target_url,
-                headers=headers,
-                data=body,
-                cookies=cookies,
-                allow_redirects=False,
-                timeout=30,
-                stream=True,
-            )
-        )
-    except http_requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
+        modules = await run_in_threadpool(client.get_available_modules)
+    except Exception:
+        modules = []
 
-    # Build response
-    response_headers = dict(resp.headers)
-    response_headers.pop("transfer-encoding", None)
-    response_headers.pop("content-encoding", None)
+    module = next((m for m in modules if m.get("name", "").lower() == app_name.lower()), None)
+    if not module:
+        module = next((m for m in modules if app_name.lower() in m.get("name", "").lower()), None)
+    if not module:
+        raise HTTPException(status_code=404, detail=f"App '{app_name}' not found")
 
-    # Rewrite Location header for redirects
-    if "location" in response_headers:
-        response_headers["location"] = _rewrite_location(
-            response_headers["location"], target_host, proxy_prefix
-        )
+    portal_url = module.get("url", "")
+    if not portal_url:
+        raise HTTPException(status_code=404, detail="No portal URL")
 
-    # Strip Set-Cookie from proxied responses (cookies belong to target domain)
-    response_headers.pop("set-cookie", None)
-    response_headers.pop("Set-Cookie", None)
+    # Follow flow to get OAuth URLs
+    launch_data = await run_in_threadpool(_build_launch_urls, client, portal_url)
+    if not launch_data:
+        raise HTTPException(status_code=502, detail="Failed to build launch URLs")
 
-    content = resp.content
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{app_name}</title></head>
+<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#f5f5f5">
+<div style="text-align:center"><p>Redirecting to {app_name}&hellip;</p></div>
+<script>
+(function(){{
+    var cookieUrl = {json.dumps(launch_data["cookie_url"])};
+    var callbackUrl = {json.dumps(launch_data["callback_url"])};
 
-    # Rewrite URLs in HTML content
-    content_type = resp.headers.get("content-type", "")
-    if "text/html" in content_type and content:
-        content = _rewrite_html(content, target_host, proxy_prefix)
-        response_headers["content-length"] = str(len(content))
+    // Step 1: set initial auth cookie by loading the cookie-set URL
+    var img = new Image();
+    img.onload = img.onerror = function() {{
+        // Step 2: cookie is set, now visit the callback to complete auth
+        setTimeout(function(){{ window.location.replace(callbackUrl); }}, 200);
+    }};
+    img.src = cookieUrl;
+}})();
+</script>
+</body></html>"""
 
-    resp.close()
+    return Response(content=html, media_type="text/html")
 
-    return Response(
-        content=content,
-        status_code=resp.status_code,
-        headers=response_headers,
-    )
+
+def _build_launch_urls(client: SchulportalHessenAPI, portal_url: str) -> Optional[Dict[str, str]]:
+    """Follow OAuth flow to extract cookie-set and callback URLs.
+
+    The cookie-set URL (first page that redirects to the target app's
+    domain) sets the initial auth cookie via its redirect response.
+    The callback URL then exchanges the OAuth code for the final session.
+
+    Returns dict with cookie_url and callback_url, or None on failure.
+    """
+    oauth_indicators = ("vidis", "oauth", "openid", "oidc")
+    portal_hosts = ("schulportal.hessen.de", "login.schulportal.hessen.de")
+    current_url = portal_url
+    cookie_url = None
+    callback_url = None
+    seen_oauth = False
+
+    for _ in range(12):
+        try:
+            resp = client.session.get(current_url, allow_redirects=False, timeout=10, stream=True)
+            resp.close()
+        except Exception:
+            break
+
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location", "")
+            if not location:
+                break
+            next_url = urljoin(current_url, location)
+            next_host = urlparse(next_url).hostname or ""
+
+            if not seen_oauth:
+                if any(ind in next_url.lower() for ind in oauth_indicators):
+                    seen_oauth = True
+
+            # Capture the first redirect that lands on the target app's domain
+            # (this response sets the initial auth cookie)
+            if cookie_url is None and next_host:
+                if not any(next_host.endswith(h) for h in portal_hosts) and "vidis" not in next_host:
+                    cookie_url = next_url
+
+            if seen_oauth and "code=" in next_url:
+                if "vidis" not in next_host and not any(next_host.endswith(h) for h in portal_hosts):
+                    callback_url = next_url
+                    break
+
+            current_url = next_url
+        else:
+            break
+
+    if not cookie_url:
+        cookie_url = portal_url
+
+    if not callback_url:
+        callback_url = current_url
+
+    return {"cookie_url": cookie_url, "callback_url": callback_url}
 
 
 __all__ = ["app", "app_proxy"]
