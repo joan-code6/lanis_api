@@ -146,10 +146,12 @@ class SchulportalHessenAPI:
     def _resolve_direct_url(self, url: str, timeout: int = 5) -> str:
         """Follow redirects for a URL and return the final destination.
 
-        Uses a GET request with allow_redirects=True and stream=True to
-        follow the full redirect chain including OAuth/OIDC flows that
-        HEAD requests cannot resolve. Falls back to the original URL if
-        resolution fails.
+        Manually follows redirects step by step. For OAuth/OIDC flows
+        (vidis, oauth, openid) the auth-callback URL (containing the
+        OAuth code parameter) is returned so the user's browser can
+        receive auth cookies directly from the target application.
+        Simple redirects are resolved to their final destination.
+        Falls back to the original URL on any error.
 
         Parameters
         ----------
@@ -161,18 +163,54 @@ class SchulportalHessenAPI:
         Returns
         -------
         str
-            The final URL after redirects, or the original URL if resolution fails.
+            The final URL after redirects, or the auth-callback URL for
+            OAuth flows, or the original URL if resolution fails.
         """
+        oauth_indicators = ("vidis", "oauth", "openid", "oidc")
+        portal_hosts = ("schulportal.hessen.de", "login.schulportal.hessen.de")
+        current_url = url
+        max_redirects = 10
+        seen_oauth = False
+
         try:
-            response = self.session.get(
-                url,
-                allow_redirects=True,
-                timeout=timeout,
-                stream=True,
-            )
-            final_url = response.url
-            response.close()
-            return final_url
+            for _ in range(max_redirects):
+                response = self.session.get(
+                    current_url,
+                    allow_redirects=False,
+                    timeout=timeout,
+                    stream=True,
+                )
+                response.close()
+
+                # Detect OAuth flow by checking current URL
+                if not seen_oauth and any(
+                    indicator in current_url.lower()
+                    for indicator in oauth_indicators
+                ):
+                    seen_oauth = True
+
+                if response.status_code in (301, 302, 303, 307, 308):
+                    location = response.headers.get("Location", "")
+                    if not location:
+                        return current_url
+
+                    from urllib.parse import urljoin, urlparse
+                    next_url = urljoin(current_url, location)
+                    next_host = urlparse(next_url).hostname or ""
+
+                    # In an OAuth flow: return the callback URL that
+                    # contains the authorization code — visiting it
+                    # in the browser sets the target app's auth cookies
+                    if seen_oauth and "code=" in next_url and next_host:
+                        portal_base = "schulportal.hessen.de"
+                        if portal_base not in next_host and "vidis" not in next_host.lower():
+                            return next_url
+
+                    current_url = next_url
+                else:
+                    return current_url
+
+            return current_url
         except requests.RequestException:
             return url
 
@@ -261,11 +299,31 @@ class SchulportalHessenAPI:
             # Resolve portal redirects to get the actual destination URL
             direct_url = self._resolve_direct_url(full_url)
 
+            # Detect if this app requires OAuth/SSO proxy (redirect chain
+            # passes through vidis/oauth — cannot be resolved directly)
+            proxy_app = direct_url == full_url and any(
+                indicator in full_url.lower()
+                for indicator in ("vidis", "oauth", "openid", "oidc")
+            )
+            if not proxy_app:
+                try:
+                    r = self.session.get(full_url, allow_redirects=False, timeout=5, stream=True)
+                    loc = r.headers.get("Location", "")
+                    r.close()
+                    from urllib.parse import urlparse
+                    proxy_app = any(
+                        indicator in loc.lower()
+                        for indicator in ("vidis", "oauth", "openid", "oidc")
+                    )
+                except Exception:
+                    pass
+
             modules.append(
                 {
                     "name": entry.get("Name"),
                     "url": full_url,
                     "direct_url": direct_url,
+                    "proxy_app": proxy_app,
                     "color": entry.get("Farbe"),
                     "logo": entry.get("Logo"),
                     "folders": entry.get("Ordner", []),

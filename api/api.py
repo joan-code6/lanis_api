@@ -17,14 +17,18 @@ import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 
-from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, status
+import requests as http_requests
+from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 import jwt
@@ -1289,4 +1293,219 @@ async def school_list_search(q: str) -> Dict[str, object]:
     return result
 
 
-__all__ = ["app"]
+# --- App Proxy (for OAuth/SSO apps like bettermarks) ---
+
+_app_auth_cache: Dict[str, Dict[str, Any]] = {}
+"""Cache: (user_id, app_name) -> {cookies: dict, base_url: str, target_host: str}"""
+
+
+def _follow_oauth_flow(client: SchulportalHessenAPI, portal_url: str) -> Optional[Dict[str, Any]]:
+    """Follow the full OAuth redirect chain for an app and extract auth cookies.
+
+    Uses allow_redirects=True to follow the complete chain including all
+    OAuth/OIDC handshakes. Returns the final cookies from the target app
+    domain (non-Schulportal, non-vidis).
+
+    Returns a dict with:
+        cookies: dict of cookie_name -> cookie_value for the target domain
+        target_host: the hostname of the final app (e.g. apps.bettermarks.com)
+        base_url: the final URL (e.g. https://apps.bettermarks.com/one/)
+    """
+    try:
+        resp = client.session.get(
+            portal_url, allow_redirects=True, timeout=30, stream=True
+        )
+        final_url = resp.url
+        resp.close()
+
+        target_host = urlparse(final_url).hostname or ""
+
+        cookies: Dict[str, str] = {}
+        for cookie in client.session.cookies:
+            domain = (cookie.domain or "").lstrip(".")
+            if domain and "schulportal" not in domain and "vidis" not in domain:
+                cookies[cookie.name] = cookie.value
+
+        if not cookies:
+            return None
+
+        return {
+            "cookies": cookies,
+            "target_host": target_host,
+            "base_url": final_url,
+        }
+    except Exception:
+        return None
+
+
+def _rewrite_html(content: bytes, target_host: str, proxy_prefix: str) -> bytes:
+    """Rewrite URLs in HTML to route through the proxy."""
+    text = content.decode("utf-8", errors="replace")
+
+    # Rewrite root-relative URLs in src/href attributes to include proxy prefix
+    def _prefix_root_relative(m: re.Match) -> str:
+        attr = m.group(1)
+        quote = m.group(2) or ""
+        url = m.group(3)
+        if url.startswith("/") and not url.startswith("//"):
+            return f'{attr}={quote}{proxy_prefix}{url}{quote}'
+        return m.group(0)
+
+    text = re.sub(
+        r'(src|href|action)=("|\'?)(/[^"\' >]+)("|\'?)',
+        _prefix_root_relative,
+        text,
+    )
+
+    # Replace absolute URLs to the target host with proxy URLs
+    host_variants = [
+        f"https://{target_host}",
+        f"http://{target_host}",
+        f"//{target_host}",
+    ]
+    for variant in host_variants:
+        text = text.replace(variant, proxy_prefix)
+
+    return text.encode("utf-8")
+
+
+def _rewrite_location(location: str, target_host: str, proxy_prefix: str) -> str:
+    """Rewrite a Location header to route through the proxy."""
+    if location.startswith("/"):
+        return f"{proxy_prefix}{location}"
+    parsed = urlparse(location)
+    if parsed.hostname and target_host in (parsed.hostname or ""):
+        return f"{proxy_prefix}{parsed.path}{'?' + parsed.query if parsed.query else ''}"
+    return location
+
+
+@app.api_route(
+    "/app/{app_name}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+@app.api_route(
+    "/app/{app_name}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+)
+async def app_proxy(
+    app_name: str,
+    request: Request,
+    path: str = "",
+    auth: AuthSession = Depends(client_dependency),
+):
+    """Reverse proxy for OAuth/SSO apps (e.g. bettermarks).
+
+    Follows the Schulportal OAuth flow to obtain auth cookies for the
+    target application, then proxies requests through the server so the
+    user's browser receives content with proper authentication.
+    """
+    cache_key = f"{auth.user_id}:{app_name}"
+
+    if cache_key not in _app_auth_cache:
+        try:
+            modules = await run_in_threadpool(auth.client.get_available_modules)
+        except Exception:
+            modules = []
+
+        module = next(
+            (m for m in modules if m.get("name", "").lower() == app_name.lower()),
+            None,
+        )
+        if not module:
+            # Fuzzy match
+            module = next(
+                (m for m in modules if app_name.lower() in m.get("name", "").lower()),
+                None,
+            )
+        if not module:
+            raise HTTPException(status_code=404, detail=f"App '{app_name}' not found in modules")
+
+        portal_url = module.get("url", "")
+        if not portal_url:
+            raise HTTPException(status_code=404, detail="No portal URL for app")
+
+        auth_data = await run_in_threadpool(_follow_oauth_flow, auth.client, portal_url)
+        if not auth_data or not auth_data.get("cookies"):
+            raise HTTPException(status_code=502, detail="Failed to obtain app auth session")
+
+        _app_auth_cache[cache_key] = auth_data
+
+    auth_data = _app_auth_cache[cache_key]
+    target_host = auth_data["target_host"]
+    cookies = auth_data["cookies"]
+    base_url = auth_data.get("base_url", f"https://{target_host}/")
+
+    # Build target URL
+    if path:
+        target_url = f"https://{target_host}/{path}"
+    else:
+        target_url = base_url
+
+    # Forward query string
+    if request.url.query:
+        sep = "&" if "?" in target_url else "?"
+        target_url += sep + request.url.query
+
+    # Prepare proxy prefix for URL rewriting
+    scheme = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+    proxy_prefix = f"{scheme}://{request.headers.get('host', request.base_url.netloc)}/app/{app_name}"
+
+    # Forward request
+    method = request.method
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    headers.pop("x-session-token", None)
+    headers.pop("x-forwarded-proto", None)
+    headers["accept-encoding"] = "identity"
+
+    body = await request.body() if method in ("POST", "PUT", "PATCH") else None
+
+    try:
+        resp = await run_in_threadpool(
+            lambda: http_requests.request(
+                method=method,
+                url=target_url,
+                headers=headers,
+                data=body,
+                cookies=cookies,
+                allow_redirects=False,
+                timeout=30,
+                stream=True,
+            )
+        )
+    except http_requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
+
+    # Build response
+    response_headers = dict(resp.headers)
+    response_headers.pop("transfer-encoding", None)
+    response_headers.pop("content-encoding", None)
+
+    # Rewrite Location header for redirects
+    if "location" in response_headers:
+        response_headers["location"] = _rewrite_location(
+            response_headers["location"], target_host, proxy_prefix
+        )
+
+    # Strip Set-Cookie from proxied responses (cookies belong to target domain)
+    response_headers.pop("set-cookie", None)
+    response_headers.pop("Set-Cookie", None)
+
+    content = resp.content
+
+    # Rewrite URLs in HTML content
+    content_type = resp.headers.get("content-type", "")
+    if "text/html" in content_type and content:
+        content = _rewrite_html(content, target_host, proxy_prefix)
+        response_headers["content-length"] = str(len(content))
+
+    resp.close()
+
+    return Response(
+        content=content,
+        status_code=resp.status_code,
+        headers=response_headers,
+    )
+
+
+__all__ = ["app", "app_proxy"]
