@@ -56,10 +56,12 @@ Example
 
 Follow redirects for a URL and return the final destination.
 
-Uses a GET request with allow_redirects=True and stream=True to
-follow the full redirect chain including OAuth/OIDC flows that
-HEAD requests cannot resolve. Falls back to the original URL if
-resolution fails.
+Manually follows redirects step by step. For OAuth/OIDC flows
+(vidis, oauth, openid) the auth-callback URL (containing the
+OAuth code parameter) is returned so the user's browser can
+receive auth cookies directly from the target application.
+Simple redirects are resolved to their final destination.
+Falls back to the original URL on any error.
 
 Parameters
 ----------
@@ -71,7 +73,8 @@ timeout : int
 Returns
 -------
 str
-    The final URL after redirects, or the original URL if resolution fails.
+    The final URL after redirects, or the auth-callback URL for
+    OAuth flows, or the original URL if resolution fails.
 
 #### get_available_modules
 
