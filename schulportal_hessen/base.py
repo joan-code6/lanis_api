@@ -143,19 +143,54 @@ class SchulportalHessenAPI:
         except json.JSONDecodeError as e:
             return {"success": False, "error": f"Failed to parse response: {str(e)}"}
 
+    def _resolve_direct_url(self, url: str, timeout: int = 5) -> str:
+        """Follow redirects for a URL and return the final destination.
+
+        Uses a GET request with allow_redirects=True and stream=True to
+        follow the full redirect chain including OAuth/OIDC flows that
+        HEAD requests cannot resolve. Falls back to the original URL if
+        resolution fails.
+
+        Parameters
+        ----------
+        url : str
+            The URL to resolve.
+        timeout : int
+            Request timeout in seconds.
+
+        Returns
+        -------
+        str
+            The final URL after redirects, or the original URL if resolution fails.
+        """
+        try:
+            response = self.session.get(
+                url,
+                allow_redirects=True,
+                timeout=timeout,
+                stream=True,
+            )
+            final_url = response.url
+            response.close()
+            return final_url
+        except requests.RequestException:
+            return url
+
     def get_available_modules(self) -> List[Dict[str, Any]]:
         """Return the logged-in user's available modules with resolved URLs.
 
         This helper reads the raw app list returned by :meth:`get_apps` and
         normalizes each entry into a compact structure that is easier to use in
-        client code. Relative links are converted to absolute URLs.
+        client code. Relative links are converted to absolute URLs and portal
+        tracking redirects are resolved to their final destinations.
 
         Returns
         -------
         List[Dict[str, str]]
             A list of modules containing:
             - name: Display name of the module
-            - url: Absolute access URL
+            - url: Absolute access URL (portal wrapper)
+            - direct_url: Resolved final URL after redirects
             - color: Module color value from the portal
             - logo: Icon class for the module
             - folders: Folder/group metadata attached to the module
@@ -223,10 +258,14 @@ class SchulportalHessenAPI:
             else:
                 full_url = f"{self.BASE_START_URL}/{link}"
 
+            # Resolve portal redirects to get the actual destination URL
+            direct_url = self._resolve_direct_url(full_url)
+
             modules.append(
                 {
                     "name": entry.get("Name"),
                     "url": full_url,
+                    "direct_url": direct_url,
                     "color": entry.get("Farbe"),
                     "logo": entry.get("Logo"),
                     "folders": entry.get("Ordner", []),
