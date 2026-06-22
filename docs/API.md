@@ -52,20 +52,43 @@ Example
     'till': 1765299123
 }}
 
+#### _resolve_direct_url
+
+Follow redirects for a URL and return the final destination.
+
+Uses a GET request with allow_redirects=True and stream=True to
+follow the full redirect chain including OAuth/OIDC flows that
+HEAD requests cannot resolve. Falls back to the original URL if
+resolution fails.
+
+Parameters
+----------
+url : str
+    The URL to resolve.
+timeout : int
+    Request timeout in seconds.
+
+Returns
+-------
+str
+    The final URL after redirects, or the original URL if resolution fails.
+
 #### get_available_modules
 
 Return the logged-in user's available modules with resolved URLs.
 
 This helper reads the raw app list returned by :meth:`get_apps` and
 normalizes each entry into a compact structure that is easier to use in
-client code. Relative links are converted to absolute URLs.
+client code. Relative links are converted to absolute URLs and portal
+tracking redirects are resolved to their final destinations.
 
 Returns
 -------
 List[Dict[str, str]]
     A list of modules containing:
     - name: Display name of the module
-    - url: Absolute access URL
+    - url: Absolute access URL (portal wrapper)
+    - direct_url: Resolved final URL after redirects
     - color: Module color value from the portal
     - logo: Icon class for the module
     - folders: Folder/group metadata attached to the module
