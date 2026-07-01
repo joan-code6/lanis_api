@@ -150,7 +150,9 @@ class SemanticSearchEngine:
         for uid in stale:
             self.indices.pop(uid, None)
             self._last_access.pop(uid, None)
-            self._build_locks.pop(uid, None)
+            lock = self._build_locks.get(uid)
+            if lock is None or not lock.locked():
+                self._build_locks.pop(uid, None)
             logger.debug("Evicted stale semantic index for user %s", uid)
 
     def _get_client(self) -> Optional[EmbeddingClient]:
@@ -174,7 +176,9 @@ class SemanticSearchEngine:
     def invalidate(self, user_id: str) -> None:
         self.indices.pop(user_id, None)
         self._last_access.pop(user_id, None)
-        self._build_locks.pop(user_id, None)
+        lock = self._build_locks.get(user_id)
+        if lock is None or not lock.locked():
+            self._build_locks.pop(user_id, None)
 
     # --- Document preparation helpers ---
 
@@ -373,6 +377,13 @@ class SemanticSearchEngine:
             embeddings = await run_in_threadpool(client.embed, texts)
         except Exception as e:
             logger.error("Failed to batch-embed documents: %s", e)
+            return
+
+        if len(embeddings) != len(all_docs):
+            logger.error(
+                "Embedding count mismatch for user %s: got %d, expected %d",
+                user_id, len(embeddings), len(all_docs),
+            )
             return
 
         # Build index
