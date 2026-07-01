@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, status
+from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -1298,7 +1298,7 @@ from .semantic_search import semantic_engine
 @app.get("/search/semantic")
 async def semantic_search(
     q: str,
-    top_k: int = 20,
+    top_k: int = Query(default=20, ge=1, le=100),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     results = await semantic_engine.search(

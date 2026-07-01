@@ -5,6 +5,7 @@ Provides vector-based search across messages, courses, calendar events,
 and modules using cosine similarity on text embeddings.
 """
 
+import asyncio
 import logging
 import math
 import os
@@ -13,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+
+from fastapi.concurrency import run_in_threadpool
 
 logger = logging.getLogger("semantic_search")
 
@@ -71,7 +74,7 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
     """Compute cosine similarity between two vectors."""
     a_norm = _normalize(a)
     b_norm = _normalize(b)
-    return sum(x * y for x, y in zip(a_norm, b_norm))
+    return sum(x * y for x, y in zip(a_norm, b_norm, strict=True))
 
 
 # --- Embedded document ---
@@ -133,6 +136,22 @@ class SemanticSearchEngine:
     def __init__(self):
         self.indices: Dict[str, SemanticIndex] = {}
         self._client: Optional[EmbeddingClient] = None
+        self._build_locks: Dict[str, asyncio.Lock] = {}
+        self._last_access: Dict[str, float] = {}
+
+    def _get_build_lock(self, user_id: str) -> asyncio.Lock:
+        if user_id not in self._build_locks:
+            self._build_locks[user_id] = asyncio.Lock()
+        return self._build_locks[user_id]
+
+    def _evict_stale(self) -> None:
+        cutoff = time.time() - 2 * SemanticIndex.INDEX_TTL
+        stale = [uid for uid, ts in self._last_access.items() if ts < cutoff]
+        for uid in stale:
+            self.indices.pop(uid, None)
+            self._last_access.pop(uid, None)
+            self._build_locks.pop(uid, None)
+            logger.debug("Evicted stale semantic index for user %s", uid)
 
     def _get_client(self) -> Optional[EmbeddingClient]:
         if self._client is None:
@@ -147,12 +166,15 @@ class SemanticSearchEngine:
         return self._client
 
     def get_index(self, user_id: str) -> SemanticIndex:
+        self._last_access[user_id] = time.time()
         if user_id not in self.indices:
             self.indices[user_id] = SemanticIndex(user_id)
         return self.indices[user_id]
 
     def invalidate(self, user_id: str) -> None:
         self.indices.pop(user_id, None)
+        self._last_access.pop(user_id, None)
+        self._build_locks.pop(user_id, None)
 
     # --- Document preparation helpers ---
 
@@ -229,21 +251,6 @@ class SemanticSearchEngine:
             docs.append((doc_id, text, title, subtitle, href))
         return docs
 
-    @staticmethod
-    def _prepare_dsb_docs(plans: List[Dict]) -> List[Tuple[str, str, str, str, str]]:
-        """Extract (id, text, title, subtitle, href) from DSB plan entries."""
-        docs = []
-        for t in plans:
-            caption = t.get("caption") or ""
-
-            text = f"Vertretungsplan: {caption}"
-            title = caption or "Vertretungsplan"
-            subtitle = "Vertretungsplan Eintrag"
-            href = "/dsb"
-            doc_id = f"sem-dsb-{caption}"
-            docs.append((doc_id, text, title, subtitle, href))
-        return docs
-
     async def search(
         self,
         user_id: str,
@@ -261,18 +268,19 @@ class SemanticSearchEngine:
         if not client:
             return []
 
+        self._evict_stale()
         index = self.get_index(user_id)
 
-        # Build index if empty or stale
         if index.is_empty() or index.is_stale():
-            await self._build_index(user_id, index, auth_client)
+            async with self._get_build_lock(user_id):
+                if index.is_empty() or index.is_stale():
+                    await self._build_index(user_id, index, auth_client)
 
         if index.is_empty():
             return []
 
-        # Embed the query
         try:
-            query_embedding = client.embed_single(query)
+            query_embedding = await run_in_threadpool(client.embed_single, query)
         except Exception as e:
             logger.error("Failed to embed query: %s", e)
             return []
@@ -280,13 +288,12 @@ class SemanticSearchEngine:
         # Search
         results = index.search(query_embedding, top_k=top_k)
 
-        # Map icon names to match frontend expectations
-        icon_map = {
-            "ChatBubbleLeftRightIcon": "ChatBubbleLeftRightIcon",
-            "AcademicCapIcon": "AcademicCapIcon",
-            "CalendarDaysIcon": "CalendarDaysIcon",
-            "HomeIcon": "HomeIcon",
-            "ClipboardDocumentListIcon": "ClipboardDocumentListIcon",
+        known_icons = {
+            "ChatBubbleLeftRightIcon",
+            "AcademicCapIcon",
+            "CalendarDaysIcon",
+            "HomeIcon",
+            "ClipboardDocumentListIcon",
         }
 
         return [
@@ -296,7 +303,7 @@ class SemanticSearchEngine:
                 "title": doc.title,
                 "subtitle": doc.subtitle,
                 "href": doc.href,
-                "icon": icon_map.get(doc.icon, "MagnifyingGlassIcon"),
+                "icon": doc.icon if doc.icon in known_icons else "MagnifyingGlassIcon",
                 "score": round(score, 4),
             }
             for doc, score in results
@@ -318,7 +325,6 @@ class SemanticSearchEngine:
 
         # --- Messages ---
         try:
-            from fastapi.concurrency import run_in_threadpool
             msg_res = await run_in_threadpool(auth_client.nachrichten_get_headers, "All", 0)
             if msg_res.get("success") and msg_res.get("conversations"):
                 messages = msg_res["conversations"]
@@ -329,7 +335,6 @@ class SemanticSearchEngine:
 
         # --- Courses ---
         try:
-            from fastapi.concurrency import run_in_threadpool
             course_res = await run_in_threadpool(auth_client.meinunterricht_get_overview)
             if course_res.get("success") and course_res.get("entries"):
                 courses = course_res["entries"]
@@ -340,7 +345,6 @@ class SemanticSearchEngine:
 
         # --- Calendar ---
         try:
-            from fastapi.concurrency import run_in_threadpool
             cal_res = await run_in_threadpool(auth_client.kalender_get_events, "", "", "", "", "", "")
             if cal_res.get("success") and cal_res.get("events"):
                 events = cal_res["events"]
@@ -351,7 +355,6 @@ class SemanticSearchEngine:
 
         # --- Modules ---
         try:
-            from fastapi.concurrency import run_in_threadpool
             mod_res = await run_in_threadpool(auth_client.apps_get_modules)
             if mod_res.get("success") and mod_res.get("modules"):
                 modules = mod_res["modules"]
@@ -367,7 +370,7 @@ class SemanticSearchEngine:
         # Batch embed all texts
         texts = [doc[1] for doc in all_docs]
         try:
-            embeddings = client.embed(texts)
+            embeddings = await run_in_threadpool(client.embed, texts)
         except Exception as e:
             logger.error("Failed to batch-embed documents: %s", e)
             return
