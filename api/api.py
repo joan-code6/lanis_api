@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import requests as http_requests
-from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Request, status
+from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -1293,6 +1293,7 @@ async def school_list_search(q: str) -> Dict[str, object]:
     return result
 
 
+
 # --- App Proxy (for OAuth/SSO apps like bettermarks) ---
 
 _app_auth_cache: Dict[str, Dict[str, Any]] = {}
@@ -1544,3 +1545,28 @@ def _build_launch_urls(client: SchulportalHessenAPI, portal_url: str) -> Optiona
 
 
 __all__ = ["app", "app_proxy"]
+
+# --- Semantic Search ---
+
+
+from .semantic_search import semantic_engine
+
+
+@app.get("/search/semantic")
+async def semantic_search(
+    q: str,
+    top_k: int = Query(default=20, ge=1, le=100),
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    results = await semantic_engine.search(
+        user_id=auth.user_id,
+        query=q,
+        auth_client=auth.client,
+        top_k=top_k,
+    )
+    return {
+        "success": True,
+        "query": q,
+        "results": results,
+        "count": len(results),
+    }
