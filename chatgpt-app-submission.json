@@ -1,0 +1,524 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Lanis",
+    "subtitle": "Access the Schulportal Hessen",
+    "description": "Lanis lets users interact with Schulportal Hessen so they can view timetables, substitutions, calendars, messages, courses, files, and homework, and perform approved message and homework actions through ChatGPT.",
+    "category": "EDUCATION"
+  },
+  "tools": {
+    "lanis_health": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the hosted LANIS API health status without changing data.",
+        "open_world_justification": "Does not publish content or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    },
+    "lanis_metrics_stats": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves aggregate API database and task-queue statistics.",
+        "open_world_justification": "Does not publish content or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    },
+    "lanis_login": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Authenticates the user and establishes a private Schulportal session with new access credentials.",
+        "open_world_justification": "The session change is confined to the user's private LANIS and Schulportal account.",
+        "destructive_justification": "Creates a session but does not delete data, revoke access, or send content."
+      }
+    },
+    "lanis_refresh_access_token": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Exchanges a refresh credential for a new private access credential.",
+        "open_world_justification": "The authentication change is confined to the user's private LANIS session.",
+        "destructive_justification": "Refreshes authentication without deleting data, revoking access, or sending content."
+      }
+    },
+    "lanis_logout": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Invalidates the user's tokens and server-side Schulportal session.",
+        "open_world_justification": "The logout affects only the user's private authentication state.",
+        "destructive_justification": "Revokes the active session and credentials, requiring the user to authenticate again."
+      }
+    },
+    "lanis_list_schools": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only lists Hessian school districts and schools.",
+        "open_world_justification": "Does not publish content or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    },
+    "lanis_get_district_schools": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only lists schools belonging to the selected Hessian district.",
+        "open_world_justification": "Does not publish content or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    },
+    "lanis_search_schools": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only searches the Hessian school directory by name or location.",
+        "open_world_justification": "Does not publish content or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    },
+    "lanis_get_apps": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the Schulportal apps available to the authenticated user.",
+        "open_world_justification": "Does not launch apps, publish content, or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    },
+    "lanis_get_modules": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves enabled Schulportal modules and their launch metadata.",
+        "open_world_justification": "Does not launch modules, publish content, or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    },
+    "lanis_get_user": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the authenticated user's Schulportal profile.",
+        "open_world_justification": "Does not publish profile data or change an external system.",
+        "destructive_justification": "Does not modify or remove the user's profile."
+      }
+    },
+    "lanis_get_calendar": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the user's calendar overview, filters, and views.",
+        "open_world_justification": "Does not create, publish, or modify calendar events.",
+        "destructive_justification": "Does not delete or overwrite calendar data."
+      }
+    },
+    "lanis_get_calendar_events": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves calendar events matching the supplied filters.",
+        "open_world_justification": "Does not create, publish, or modify calendar events.",
+        "destructive_justification": "Does not delete or overwrite calendar data."
+      }
+    },
+    "lanis_get_calendar_event": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves details for one selected calendar event.",
+        "open_world_justification": "Does not create, publish, or modify calendar events.",
+        "destructive_justification": "Does not delete or overwrite calendar data."
+      }
+    },
+    "lanis_get_substitution_plan": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the authenticated user's Schulportal substitution plan.",
+        "open_world_justification": "Does not publish or alter the school's substitution plan.",
+        "destructive_justification": "Does not delete or overwrite schedule data."
+      }
+    },
+    "lanis_get_timetable": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the authenticated user's timetable.",
+        "open_world_justification": "Does not publish or alter timetable data.",
+        "destructive_justification": "Does not delete or overwrite schedule data."
+      }
+    },
+    "lanis_get_file_storage": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only lists the contents of a selected private Schulportal storage folder.",
+        "open_world_justification": "Does not upload, share, or publish stored files.",
+        "destructive_justification": "Does not delete, move, or overwrite files."
+      }
+    },
+    "lanis_search_file_storage": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only searches the authenticated user's private Schulportal file storage.",
+        "open_world_justification": "Does not upload, share, or publish stored files.",
+        "destructive_justification": "Does not delete, move, or overwrite files."
+      }
+    },
+    "lanis_get_study_groups": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the user's private LernGruppen overview.",
+        "open_world_justification": "Does not create groups, contact members, or publish content.",
+        "destructive_justification": "Does not alter or remove study-group data."
+      }
+    },
+    "lanis_get_message_headers": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves message and conversation headers from the selected mailbox.",
+        "open_world_justification": "Does not send messages or change message state.",
+        "destructive_justification": "Does not delete, overwrite, or mark messages."
+      }
+    },
+    "lanis_get_conversation": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves messages from one private Schulportal conversation.",
+        "open_world_justification": "Does not reply, forward, or publish conversation content.",
+        "destructive_justification": "Does not delete, overwrite, or mark messages."
+      }
+    },
+    "lanis_search_message_recipients": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only searches the private Schulportal recipient directory.",
+        "open_world_justification": "Does not contact recipients or publish directory data.",
+        "destructive_justification": "Does not delete, overwrite, or send anything."
+      }
+    },
+    "lanis_send_message": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Sends a new message to the selected Schulportal recipients.",
+        "open_world_justification": "Changes an external school communication system by delivering content to other users.",
+        "destructive_justification": "Message delivery is an irreversible external communication and the tool requires prior confirmation."
+      }
+    },
+    "lanis_reply_to_message": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Adds and sends a reply in an existing Schulportal conversation.",
+        "open_world_justification": "Changes an external school communication system by delivering content to other users.",
+        "destructive_justification": "Reply delivery is an irreversible external communication and the tool requires prior confirmation."
+      }
+    },
+    "lanis_mark_message_read": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes the selected private conversation's read state.",
+        "open_world_justification": "The state change remains inside the user's private mailbox.",
+        "destructive_justification": "Marks the conversation read without exposing a corresponding undo action and requires prior confirmation."
+      }
+    },
+    "lanis_get_courses": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the user's private Mein Unterricht course overview.",
+        "open_world_justification": "Does not create courses or publish course content.",
+        "destructive_justification": "Does not alter or remove course data."
+      }
+    },
+    "lanis_get_course": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves one course and its entries and file metadata.",
+        "open_world_justification": "Does not create courses or publish course content.",
+        "destructive_justification": "Does not alter or remove course data."
+      }
+    },
+    "lanis_download_course_file": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the selected private course file and returns its content.",
+        "open_world_justification": "Does not upload, share, or publish the downloaded file.",
+        "destructive_justification": "Does not delete, move, or overwrite files."
+      }
+    },
+    "lanis_get_course_entry": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves detailed content for a selected course entry.",
+        "open_world_justification": "Does not publish or alter course content.",
+        "destructive_justification": "Does not alter or remove course data."
+      }
+    },
+    "lanis_get_weekly_course_view": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the user's private weekly Mein Unterricht view.",
+        "open_world_justification": "Does not publish or alter weekly course content.",
+        "destructive_justification": "Does not alter or remove course data."
+      }
+    },
+    "lanis_get_submissions": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves the authenticated user's private course submissions.",
+        "open_world_justification": "Does not submit, publish, or alter coursework.",
+        "destructive_justification": "Does not delete or overwrite submissions."
+      }
+    },
+    "lanis_set_homework_done": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Sets or clears the selected course entry's private homework-done state.",
+        "open_world_justification": "The state change remains inside the user's private Schulportal account.",
+        "destructive_justification": "The change is reversible by calling the tool with the opposite state and requires prior confirmation."
+      }
+    },
+    "lanis_dsb_login": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Authenticates to DSBmobile and establishes private session state.",
+        "open_world_justification": "The authentication change is confined to the user's private DSBmobile session.",
+        "destructive_justification": "Creates a session without deleting data, revoking access, or sending content."
+      }
+    },
+    "lanis_get_dsb_plan_urls": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Authenticates to DSBmobile before retrieving private substitution-plan URLs.",
+        "open_world_justification": "The session and returned plan references remain within the user's private school workflow.",
+        "destructive_justification": "Does not delete data, revoke access, publish content, or send messages."
+      }
+    },
+    "lanis_get_dsb_plan": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "May authenticate to DSBmobile before fetching and parsing a private substitution plan.",
+        "open_world_justification": "The session and retrieved plan remain within the user's private school workflow.",
+        "destructive_justification": "Does not delete data, revoke access, publish content, or send messages."
+      }
+    },
+    "lanis_semantic_search": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only searches and returns matching content from the user's LANIS data.",
+        "open_world_justification": "Does not publish search terms or results or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    },
+    "lanis_get_app_launch_url": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only computes and returns a sensitive SSO launch URL without opening it.",
+        "open_world_justification": "Does not navigate to the URL, launch the app, or change an external system.",
+        "destructive_justification": "Does not delete, overwrite, revoke, or send anything."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Find the Schulportal school identifier for a Hessian school before login.",
+      "user_prompt": "Find the Schulportal Hessen school ID for Goetheschule in Kassel.",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_search_schools",
+      "expected_output": "Returns matching Hessian schools with enough identifying information to select the correct school ID.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Retrieve the authenticated student's timetable.",
+      "user_prompt": "Show me my Schulportal timetable.",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_get_timetable",
+      "expected_output": "Returns the authenticated user's timetable in a concise, readable form.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Filter the user's Schulportal calendar for a specific event topic.",
+      "user_prompt": "Search my Schulportal calendar for events containing Elternabend this year.",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_get_calendar_events",
+      "expected_output": "Returns matching calendar events and clearly states when no events match.",
+      "expected_output_url": null
+    },
+    {
+      "description": "List message headers from the authenticated user's inbox.",
+      "user_prompt": "Show the first page of messages in my Schulportal inbox.",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_get_message_headers",
+      "expected_output": "Returns the inbox conversation headers without changing their read state.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Send a Schulportal message only after the user explicitly confirms its contents and recipient identifier.",
+      "user_prompt": "I confirm: send a Schulportal message to recipient ID 12345 with subject 'Projektgruppe' and body 'Treffen wir uns morgen um 14 Uhr?'.",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_send_message",
+      "expected_output": "Sends the confirmed message once and reports whether delivery succeeded without exposing credentials.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not trigger for school-directory searches outside Hessen.",
+      "user_prompt": "Find every secondary school in Bavaria.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because its school directory covers Hessen rather than Bavaria.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for unsupported account-recovery actions.",
+      "user_prompt": "Reset my Schulportal Hessen password for me.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because it cannot reset or recover Schulportal credentials.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for general educational help unrelated to the user's Schulportal data.",
+      "user_prompt": "Explain how photosynthesis works for my biology homework.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "The app should not be invoked because the request does not require Schulportal data or actions.",
+      "expected_output_url": null
+    }
+  ]
+}
