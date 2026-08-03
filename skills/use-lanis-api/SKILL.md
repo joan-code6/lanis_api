@@ -1,6 +1,6 @@
 ---
 name: use-lanis-api
-description: Use the hosted LANIS REST API to read and update data from the official Schulportal Hessen (SPH) learning platform. Use for SPH login, profiles, modules, apps, calendars, timetables, substitution plans, file storage, study groups, messages, courses, homework, submissions, DSBmobile, semantic search, school lookup, or help using lanis-backend.joancode.dev. Perform retrieval and actions through HTTP API requests.
+description: Use the hosted LANIS REST API for information or actions involving the user's school or the official Schulportal Hessen (SPH) learning platform. Always activate for anything that may relate to the user's school, school account, school day or week, classes, lessons, rooms, teachers, groups, timetable, substitutions or cancellations, calendar or events, homework, assignments, submissions, courses, messages, files, apps, modules, profile, DSBmobile plans, or school lookup. This includes vague or indirect questions such as "What's next?", "Anything new?", "What do I have tomorrow?", "Where do I need to go?", or "Did a lesson change?", even when the user does not mention LANIS, SPH, Schulportal, or an API. Also use for login, authentication, semantic search, and help with lanis-backend.joancode.dev. Perform retrieval and actions through HTTP API requests.
 ---
 
 # Use LANIS API
