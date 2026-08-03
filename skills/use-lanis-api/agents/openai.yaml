@@ -1,4 +1,4 @@
 interface:
   display_name: "Use LANIS API"
-  short_description: "Use the LANIS REST wrapper and companion UI"
-  default_prompt: "Use $use-lanis-api to help me work with Schulportal Hessen through the LANIS REST API or its companion visual interface."
+  short_description: "Access Schulportal Hessen through LANIS requests"
+  default_prompt: "Use $use-lanis-api to access my Schulportal Hessen data through the hosted LANIS REST API."
