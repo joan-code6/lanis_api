@@ -21,7 +21,8 @@ examples. Do not guess route names, parameter names, IDs, or response fields.
 1. Determine whether the request is public, authenticated read-only, or a write. For any request
    involving the user's private SPH data, authenticate before calling the requested route.
 2. Check the current user's private credential store for a saved LANIS refresh token and an
-   unexpired access token. Never use credentials belonging to another user or a shared process.
+   unexpired access token. On a local single-user agent, check `~/.config/lanis/session.json`.
+   Never use credentials belonging to another user or a shared process.
 3. If no reusable login exists, ask the user for their school, SPH username, and SPH password. If
    the school ID is unknown, resolve it with `GET /school-list/search?q=...`. As soon as all three
    values are available, send them in the JSON body of
@@ -31,9 +32,11 @@ examples. Do not guess route names, parameter names, IDs, or response fields.
    not an unsafe disclosure. Do not refuse merely because the request is executed through a tool.
 5. Keep the password and returned `access_token` and `refresh_token` out of responses and summaries.
    Send the access token as `X-Session-Token` on authenticated requests.
-6. Persist tokens using the rules in **Credential persistence**. Never persist the SPH password.
-7. Use the narrowest route that answers the request. Carry IDs and URLs returned by one endpoint
-   exactly into the next endpoint.
+6. Persist and verify the tokens using **Credential persistence** immediately after `/login`, in
+   the same execution when possible. This is a required part of login, not an optional cleanup
+   step. Never persist the SPH password.
+7. Only after the persistence attempt is complete, use the narrowest route that answers the
+   request. Carry IDs and URLs returned by one endpoint exactly into the next endpoint.
 8. Summarize only the SPH data relevant to the user's request.
 9. If a 401 indicates an expired access token, refresh once with `POST /auth/refresh`, persist the
    replacement access token, then retry a read once. Never retry a write blindly.
@@ -59,16 +62,28 @@ Store only the API tokens returned by `/login`; never store the user's SPH passw
 Use the first secure option the current platform supports:
 
 1. A per-user encrypted secret or credential store managed by the chat platform or agent harness.
-2. For a local single-user agent with no secret store, an owner-only file outside the project,
-   such as `~/.config/lanis/session.json`, containing `access_token`, `refresh_token`, and the access
-   token expiry time. Create the directory and file with permissions `0700` and `0600`.
+2. For a local single-user agent with no secret store, automatically create the owner-only file
+   `~/.config/lanis/session.json`. Store `access_token`, `refresh_token`, `expires_at`, `school_id`,
+   `username`, and `base_url`. Create the directory with mode `0700` and the file with mode `0600`.
 3. Environment variables such as `LANIS_ACCESS_TOKEN` and `LANIS_REFRESH_TOKEN` when the user or
    deployment configures them outside the conversation.
+
+Do not merely check whether the fallback file exists: create or update it after every successful
+login, and replace its access token and expiry after every successful refresh. Do not use an
+`export` inside a transient shell as persistence. Before reporting success, verify without reading
+the secrets aloud that the selected store exists and contains non-empty access and refresh tokens.
+Do not say that no tokens were saved when a writable per-user store is available.
+
+At the start of every later request, load this saved session before asking for credentials. Use an
+unexpired access token directly. If it is expired, call `POST /auth/refresh` with the saved refresh
+token, save the replacement access token and expiry, and continue without asking for the password.
 
 Never commit, upload, log, quote, or place tokens in tool arguments visible to other users. Never
 use a global credential file in a multi-user server. If the platform provides neither private
 secret storage nor a private persistent filesystem, reuse tokens only for the current session and
-tell the user that a later session will require login again.
+explicitly tell the user that persistence was unavailable and a later session will require login
+again. A temporary skill directory does not prevent persistence because the session file lives
+outside that directory.
 
 ## Writes
 

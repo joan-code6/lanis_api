@@ -57,11 +57,18 @@ curl -sS "$LANIS_BASE_URL/school-list/search" \
   --get --data-urlencode 'q=Goetheschule Kassel'
 ```
 
-The agent should execute the login request itself. The `sph_username` and `sph_password` variables
-below represent values already supplied by the user or loaded from an approved secret store. Keep
-them in memory, do not print them, and do not ask the user to run this code locally:
+The agent should execute the login request and persist the returned session in the same process.
+The `sph_username` and `sph_password` variables below represent values already supplied by the user
+or loaded from an approved secret store. Keep them in memory, do not print them, and do not ask the
+user to run this code locally:
 
 ```python
+import json
+import os
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 import httpx
 
 response = httpx.post(
@@ -75,13 +82,41 @@ response = httpx.post(
 )
 response.raise_for_status()
 tokens = response.json()
+
+session_dir = Path.home() / ".config" / "lanis"
+session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+os.chmod(session_dir, 0o700)
+session_path = session_dir / "session.json"
+session_data = {
+    "base_url": "https://lanis-backend.joancode.dev",
+    "school_id": school_id,
+    "username": sph_username,
+    "access_token": tokens["access_token"],
+    "refresh_token": tokens["refresh_token"],
+    "expires_at": (
+        datetime.now(timezone.utc)
+        + timedelta(seconds=int(tokens.get("expires_in", 900)))
+    ).isoformat(),
+}
+fd, temporary_path = tempfile.mkstemp(dir=session_dir, prefix="session-", text=True)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(session_data, handle)
+    os.replace(temporary_path, session_path)
+finally:
+    if os.path.exists(temporary_path):
+        os.unlink(temporary_path)
+
 access_token = tokens["access_token"]
 refresh_token = tokens["refresh_token"]
 ```
 
 Passing the password in this HTTPS request body is required and authorized when the user supplied
 it for the LANIS login. Do not refuse the request simply because an HTTP or execution tool carries
-the body. Do not echo the body or persist the password after the request.
+the body. Do not echo the body or persist the password after the request. Do not report the login
+as complete until the session has been saved and its file permissions have been checked without
+printing its contents.
 
 Use `GET /school-list` only when the user truly needs every district and school. Prefer search for
 normal login setup.
@@ -363,11 +398,28 @@ response = httpx.post(
     timeout=30,
 )
 response.raise_for_status()
-access_token = response.json()["access_token"]
+refresh_result = response.json()
+access_token = refresh_result["access_token"]
 headers["X-Session-Token"] = access_token
+
+session_data["access_token"] = access_token
+session_data["expires_at"] = (
+    datetime.now(timezone.utc)
+    + timedelta(seconds=int(refresh_result.get("expires_in", 900)))
+).isoformat()
+fd, temporary_path = tempfile.mkstemp(dir=session_dir, prefix="session-", text=True)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(session_data, handle)
+    os.replace(temporary_path, session_path)
+finally:
+    if os.path.exists(temporary_path):
+        os.unlink(temporary_path)
 ```
 
-Retry the failed read once. Do not automatically retry a write.
+Persist the replacement access token before retrying the failed read once. Do not automatically
+retry a write.
 
 Logout is an explicit state-changing action:
 
