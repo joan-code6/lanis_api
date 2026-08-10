@@ -86,6 +86,7 @@ def _parse_single_hour(
     lesson_index: int,
     time_slots: List[Optional[TimeSlot]],
     day_index: int,
+    period: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     subjects: List[Dict[str, Any]] = []
     try:
@@ -129,7 +130,7 @@ def _parse_single_hour(
                 "duration": duration,
                 "start_time": start_time.copy(),
                 "end_time": end_time.copy(),
-                "stunde": lesson_index,
+                "stunde": period if period is not None else lesson_index,
             }
         )
     return subjects
@@ -140,7 +141,9 @@ def _parse_room_plan(tbody: Any) -> List[List[Dict[str, Any]]]:
     if not rows:
         return []
 
-    header_cells = rows[0].find_all(["td", "th"], recursive=False)
+    thead = tbody.parent.find("thead", recursive=False) if tbody.parent else None
+    header = thead.find("tr", recursive=False) if thead else None
+    header_cells = (header or rows[0]).find_all(["td", "th"], recursive=False)
     day_count = max(len(header_cells) - 1, 0)
     result: List[List[Dict[str, Any]]] = [[] for _ in range(day_count)]
     if not day_count:
@@ -150,10 +153,17 @@ def _parse_room_plan(tbody: Any) -> List[List[Dict[str, Any]]]:
     occupied = [[False] * day_count for _ in rows]
     lesson_index = 0
 
-    for row_index, row in enumerate(rows[1:], start=1):
+    # Older fixtures/pages put the header inside tbody; the live portal uses
+    # a sibling thead. Only skip the first tbody row when it is actually a
+    # header, otherwise period zero would be dropped and all times shifted.
+    first_data_row = 0 if rows[0].select_one(".VonBis") else 1
+    for row_index, row in enumerate(rows[first_data_row:], start=first_data_row):
         if row.select_one(".VonBis"):
             lesson_index += 1
         cells = row.find_all(["td", "th"], recursive=False)
+        label_node = row.select_one(".print-show b") or row.select_one(".print-show")
+        label_match = re.search(r"\d+", label_node.get_text(" ", strip=True)) if label_node else None
+        period = int(label_match.group()) if label_match else None
         # The first cell is always the lesson/time column. Rowspans only occur
         # in day columns, so locate each remaining cell in the next free day.
         actual_day = 0
@@ -170,7 +180,7 @@ def _parse_room_plan(tbody: Any) -> List[List[Dict[str, Any]]]:
                 if row_index + offset < len(occupied):
                     occupied[row_index + offset][actual_day] = True
             result[actual_day].extend(
-                _parse_single_hour(cell, lesson_index, time_slots, actual_day)
+                _parse_single_hour(cell, lesson_index, time_slots, actual_day, period)
             )
             actual_day += 1
     return result
@@ -199,7 +209,8 @@ def _parse_rows(tbody: Any) -> List[Dict[str, Any]]:
 
 
 def _day_labels(tbody: Any) -> List[str]:
-    header = tbody.find("tr", recursive=False)
+    thead = tbody.parent.find("thead", recursive=False) if tbody.parent else None
+    header = thead.find("tr", recursive=False) if thead else tbody.find("tr", recursive=False)
     if not header:
         return []
     cells = header.find_all(["td", "th"], recursive=False)[1:]

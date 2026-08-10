@@ -88,3 +88,24 @@ def test_room_extraction_handles_labels_nested_in_badge() -> None:
     )
 
     assert _extract_room_text(soup.div) == "Halle 1"
+
+
+def test_live_portal_thead_does_not_shift_lesson_times() -> None:
+    html = """
+    <div id="all"><table>
+      <thead><tr><th>Stunde</th><th>Montag</th></tr></thead>
+      <tbody>
+        <tr><td><span class="print-show"><b>0. Stunde</b></span><span class="VonBis">07:00 - 07:45</span></td><td></td></tr>
+        <tr><td><span class="print-show"><b>1. Stunde</b></span><span class="VonBis">07:50 - 08:35</span></td>
+            <td><div class="stunde"><b>Mathematik</b><small>AB</small> A208</div></td></tr>
+      </tbody>
+    </table></div>
+    """
+
+    result = parse_timetable_html(html)
+
+    assert result["days"] == ["Montag"]
+    lesson = result["plan_for_all"][0][0]
+    assert lesson["stunde"] == 1
+    assert lesson["start_time"] == {"hour": 7, "minute": 50}
+    assert lesson["end_time"] == {"hour": 8, "minute": 35}
