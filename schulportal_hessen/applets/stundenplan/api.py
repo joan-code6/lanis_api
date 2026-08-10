@@ -32,23 +32,51 @@ def _parse_time_range(text: str) -> Optional[TimeSlot]:
     )
 
 
-def _parse_time_slots(tbody: Any) -> List[TimeSlot]:
-    return [
-        parsed
-        for node in tbody.select(".VonBis")
-        if (parsed := _parse_time_range(node.get_text(" ", strip=True)))
-    ]
+def _parse_time_slots(tbody: Any) -> List[Optional[TimeSlot]]:
+    """Return one entry per lesson row, preserving malformed time rows.
+
+    Keeping ``None`` placeholders is important: filtering malformed values out
+    would shift every subsequent lesson to an earlier time slot.
+    """
+    slots: List[Optional[TimeSlot]] = []
+    for row in tbody.find_all("tr", recursive=False):
+        node = row.find(class_="VonBis")
+        if node:
+            slots.append(_parse_time_range(node.get_text(" ", strip=True)))
+    return slots
 
 
-def _make_subject_id(name: str, room: str, day: int, start_time: Time) -> str:
-    seed = f"{name}|{room}|{day}|{start_time.get('hour')}|{start_time.get('minute')}"
-    return hashlib.sha1(seed.encode("utf-8")).hexdigest()
+def _make_subject_id(
+    name: str,
+    room: str,
+    teacher: str,
+    badge: str,
+    day: int,
+    start_time: Time,
+) -> str:
+    seed = "|".join(
+        (
+            name,
+            room,
+            teacher,
+            badge,
+            str(day),
+            str(start_time.get("hour")),
+            str(start_time.get("minute")),
+        )
+    )
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
 def _extract_room_text(block: Any) -> str:
     """Get the unlabelled room text without corrupting overlapping words."""
     copy = BeautifulSoup(str(block), "html.parser")
-    for node in copy.select("b, small, .badge"):
+    # Remove parents before looking for their children. Calling ``decompose``
+    # on both a parent badge and a nested label leaves a destroyed Tag object
+    # in BeautifulSoup's selector result on some supported bs4 releases.
+    for node in copy.select(".badge"):
+        node.decompose()
+    for node in copy.select("b, small"):
         node.decompose()
     return " ".join(copy.stripped_strings).strip()
 
@@ -56,7 +84,7 @@ def _extract_room_text(block: Any) -> str:
 def _parse_single_hour(
     cell: Any,
     lesson_index: int,
-    time_slots: List[TimeSlot],
+    time_slots: List[Optional[TimeSlot]],
     day_index: int,
 ) -> List[Dict[str, Any]]:
     subjects: List[Dict[str, Any]] = []
@@ -70,8 +98,12 @@ def _parse_single_hour(
     if start_index < 0 or end_index >= len(time_slots):
         return subjects
 
-    start_time = time_slots[start_index][0]
-    end_time = time_slots[end_index][1]
+    start_slot = time_slots[start_index]
+    end_slot = time_slots[end_index]
+    if start_slot is None or end_slot is None:
+        return subjects
+    start_time = start_slot[0]
+    end_time = end_slot[1]
     for block in cell.select(".stunde"):
         name_node = block.find("b")
         teacher_node = block.find("small")
@@ -83,7 +115,9 @@ def _parse_single_hour(
 
         subject_id = str(block.get("data-mix", "")).strip()
         if not subject_id:
-            subject_id = _make_subject_id(name, room, day_index, start_time)
+            subject_id = _make_subject_id(
+                name, room, teacher, badge, day_index, start_time
+            )
 
         subjects.append(
             {

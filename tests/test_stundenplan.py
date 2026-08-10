@@ -1,4 +1,7 @@
+from bs4 import BeautifulSoup
+
 from schulportal_hessen.applets.stundenplan.api import (
+    _extract_room_text,
     _parse_time_range,
     parse_timetable_html,
 )
@@ -58,3 +61,30 @@ def test_parse_timetable_reports_missing_table() -> None:
         "success": False,
         "error": "Timetable table not found",
     }
+
+
+def test_malformed_time_does_not_shift_later_lessons() -> None:
+    html = """
+    <div id="all"><table><tbody>
+      <tr><th>Stunde</th><th>Montag</th></tr>
+      <tr><td><span class="VonBis">08:00 - 08:45</span></td><td></td></tr>
+      <tr><td><span class="VonBis">unknown</span></td><td></td></tr>
+      <tr><td><span class="VonBis">10:00 - 10:45</span></td>
+          <td><div class="stunde"><b>Deutsch</b> A 1</div></td></tr>
+    </tbody></table></div>
+    """
+
+    result = parse_timetable_html(html)
+
+    lesson = result["plan_for_all"][0][0]
+    assert lesson["start_time"] == {"hour": 10, "minute": 0}
+    assert lesson["end_time"] == {"hour": 10, "minute": 45}
+
+
+def test_room_extraction_handles_labels_nested_in_badge() -> None:
+    soup = BeautifulSoup(
+        '<div class="stunde"><b>Sport</b><span class="badge"><small>EF</small></span> Halle 1</div>',
+        "html.parser",
+    )
+
+    assert _extract_room_text(soup.div) == "Halle 1"
