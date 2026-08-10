@@ -293,6 +293,9 @@ Fetch the timetable (stundenplan.php).
 Returns:
     Dict containing timetable data for all and personal views.
 
+    The response also contains ``days`` with the table's localized weekday
+    headings and ``hours`` with the start and end time of each lesson.
+
 #### dateispeicher_get_root
 
 Fetch the root folder for the file storage (dateispeicher.php).

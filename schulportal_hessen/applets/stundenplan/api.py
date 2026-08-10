@@ -1,93 +1,123 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
 
 
-def _parse_time_range(text: str) -> Optional[Tuple[Dict[str, int], Dict[str, int]]]:
-    parts = [part.strip() for part in text.split("-")]
-    if len(parts) != 2:
+Time = Dict[str, int]
+TimeSlot = Tuple[Time, Time]
+
+
+def _parse_time_range(text: str) -> Optional[TimeSlot]:
+    """Parse a portal time range, accepting both hyphens and en dashes."""
+    match = re.search(r"(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})", text)
+    if not match:
         return None
 
-    def to_dict(value: str) -> Dict[str, int]:
-        hh_mm = value.split(":")
-        if len(hh_mm) != 2:
-            return {"hour": 0, "minute": 0}
-        return {"hour": int(hh_mm[0]), "minute": int(hh_mm[1])}
+    start_hour, start_minute, end_hour, end_minute = map(int, match.groups())
+    if not (
+        0 <= start_hour <= 23
+        and 0 <= end_hour <= 23
+        and 0 <= start_minute <= 59
+        and 0 <= end_minute <= 59
+    ):
+        return None
+    return (
+        {"hour": start_hour, "minute": start_minute},
+        {"hour": end_hour, "minute": end_minute},
+    )
 
-    return to_dict(parts[0]), to_dict(parts[1])
 
+def _parse_time_slots(tbody: Any) -> List[Optional[TimeSlot]]:
+    """Return one entry per lesson row, preserving malformed time rows.
 
-def _parse_time_slots(tbody: Any) -> List[Tuple[Dict[str, int], Dict[str, int]]]:
-    slots: List[Tuple[Dict[str, int], Dict[str, int]]] = []
-    for node in tbody.select(".VonBis"):
-        parsed = _parse_time_range(node.get_text(" ", strip=True))
-        if parsed:
-            slots.append(parsed)
+    Keeping ``None`` placeholders is important: filtering malformed values out
+    would shift every subsequent lesson to an earlier time slot.
+    """
+    slots: List[Optional[TimeSlot]] = []
+    for row in tbody.find_all("tr", recursive=False):
+        node = row.find(class_="VonBis")
+        if node:
+            slots.append(_parse_time_range(node.get_text(" ", strip=True)))
     return slots
 
 
-def _make_subject_id(name: str, room: str, day: int, start_time: Dict[str, int]) -> str:
-    seed = f"{name}|{room}|{day}|{start_time.get('hour')}|{start_time.get('minute')}"
-    return hashlib.sha1(seed.encode("utf-8")).hexdigest()
+def _make_subject_id(
+    name: str,
+    room: str,
+    teacher: str,
+    badge: str,
+    day: int,
+    start_time: Time,
+) -> str:
+    seed = "|".join(
+        (
+            name,
+            room,
+            teacher,
+            badge,
+            str(day),
+            str(start_time.get("hour")),
+            str(start_time.get("minute")),
+        )
+    )
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
-def _extract_room_text(row: Any, name: str, teacher: str, badge: str) -> str:
-    text = " ".join(row.stripped_strings)
-    for value in (name, teacher, badge):
-        if value:
-            text = text.replace(value, " ")
-    return " ".join(text.split()).strip()
+def _extract_room_text(block: Any) -> str:
+    """Get the unlabelled room text without corrupting overlapping words."""
+    copy = BeautifulSoup(str(block), "html.parser")
+    # Remove parents before looking for their children. Calling ``decompose``
+    # on both a parent badge and a nested label leaves a destroyed Tag object
+    # in BeautifulSoup's selector result on some supported bs4 releases.
+    for node in copy.select(".badge"):
+        node.decompose()
+    for node in copy.select("b, small"):
+        node.decompose()
+    return " ".join(copy.stripped_strings).strip()
 
 
 def _parse_single_hour(
     cell: Any,
-    row_index: int,
-    time_slots: List[Tuple[Dict[str, int], Dict[str, int]]],
-    timeslot_offset: bool,
+    lesson_index: int,
+    time_slots: List[Optional[TimeSlot]],
     day_index: int,
 ) -> List[Dict[str, Any]]:
     subjects: List[Dict[str, Any]] = []
-    duration = int(cell.get("rowspan", "1") or "1")
+    try:
+        duration = max(int(cell.get("rowspan", "1") or "1"), 1)
+    except (TypeError, ValueError):
+        duration = 1
 
+    start_index = lesson_index - 1
+    end_index = start_index + duration - 1
+    if start_index < 0 or end_index >= len(time_slots):
+        return subjects
+
+    start_slot = time_slots[start_index]
+    end_slot = time_slots[end_index]
+    if start_slot is None or end_slot is None:
+        return subjects
+    start_time = start_slot[0]
+    end_time = end_slot[1]
     for block in cell.select(".stunde"):
-        name = ""
-        name_tag = block.find("b")
-        if name_tag:
-            name = name_tag.get_text(" ", strip=True)
+        name_node = block.find("b")
+        teacher_node = block.find("small")
+        badge_node = block.find(class_="badge")
+        name = name_node.get_text(" ", strip=True) if name_node else ""
+        teacher = teacher_node.get_text(" ", strip=True) if teacher_node else ""
+        badge = badge_node.get_text(" ", strip=True) if badge_node else ""
+        room = _extract_room_text(block)
 
-        teacher = ""
-        teacher_tag = block.find("small")
-        if teacher_tag:
-            teacher = teacher_tag.get_text(" ", strip=True)
-
-        badge = ""
-        badge_tag = block.find(class_="badge")
-        if badge_tag:
-            badge = badge_tag.get_text(" ", strip=True)
-
-        room = _extract_room_text(block, name, teacher, badge)
-
-        if timeslot_offset:
-            start_index = row_index
-        else:
-            start_index = row_index - 1
-
-        end_index = start_index + duration - 1
-        if start_index < 0 or end_index >= len(time_slots):
-            start_time = {"hour": 0, "minute": 0}
-            end_time = {"hour": 0, "minute": 0}
-        else:
-            start_time = time_slots[start_index][0]
-            end_time = time_slots[end_index][1]
-
-        data_mix = block.get("data-mix", "")
-        subject_id = data_mix.strip()
+        subject_id = str(block.get("data-mix", "")).strip()
         if not subject_id:
-            subject_id = _make_subject_id(name, room, day_index, start_time)
+            subject_id = _make_subject_id(
+                name, room, teacher, badge, day_index, start_time
+            )
 
         subjects.append(
             {
@@ -97,12 +127,11 @@ def _parse_single_hour(
                 "teacher": teacher or None,
                 "badge": badge or None,
                 "duration": duration,
-                "start_time": start_time,
-                "end_time": end_time,
-                "stunde": row_index,
+                "start_time": start_time.copy(),
+                "end_time": end_time.copy(),
+                "stunde": lesson_index,
             }
         )
-
     return subjects
 
 
@@ -111,127 +140,101 @@ def _parse_room_plan(tbody: Any) -> List[List[Dict[str, Any]]]:
     if not rows:
         return []
 
-    first_row_cells = rows[0].find_all(["td", "th"], recursive=False)
-    day_count = max(len(first_row_cells) - 1, 0)
-    if day_count == 0:
-        return []
-
+    header_cells = rows[0].find_all(["td", "th"], recursive=False)
+    day_count = max(len(header_cells) - 1, 0)
     result: List[List[Dict[str, Any]]] = [[] for _ in range(day_count)]
+    if not day_count:
+        return result
+
     time_slots = _parse_time_slots(tbody)
-    already_parsed = [[False for _ in range(day_count)] for _ in range(len(rows) + 1)]
+    occupied = [[False] * day_count for _ in rows]
+    lesson_index = 0
 
-    timeslot_offset = first_row_cells[0].get_text(" ", strip=True) != ""
-
-    for row_index, row in enumerate(rows):
-        if row_index == 0:
-            continue
+    for row_index, row in enumerate(rows[1:], start=1):
+        if row.select_one(".VonBis"):
+            lesson_index += 1
         cells = row.find_all(["td", "th"], recursive=False)
-        for col_index, cell in enumerate(cells):
-            if col_index == 0:
-                continue
-            row_span = int(cell.get("rowspan", "1") or "1")
-            actual_day = col_index - 1
-            while actual_day < day_count and already_parsed[row_index][actual_day]:
+        # The first cell is always the lesson/time column. Rowspans only occur
+        # in day columns, so locate each remaining cell in the next free day.
+        actual_day = 0
+        for cell in cells[1:]:
+            while actual_day < day_count and occupied[row_index][actual_day]:
                 actual_day += 1
             if actual_day >= day_count:
-                continue
+                break
+            try:
+                row_span = max(int(cell.get("rowspan", "1") or "1"), 1)
+            except (TypeError, ValueError):
+                row_span = 1
             for offset in range(row_span):
-                if row_index + offset < len(already_parsed):
-                    already_parsed[row_index + offset][actual_day] = True
+                if row_index + offset < len(occupied):
+                    occupied[row_index + offset][actual_day] = True
             result[actual_day].extend(
-                _parse_single_hour(
-                    cell,
-                    row_index,
-                    time_slots,
-                    timeslot_offset,
-                    actual_day,
-                )
+                _parse_single_hour(cell, lesson_index, time_slots, actual_day)
             )
-
+            actual_day += 1
     return result
 
 
 def _parse_rows(tbody: Any) -> List[Dict[str, Any]]:
-    rows = tbody.find_all("tr", recursive=False)
     result: List[Dict[str, Any]] = []
-
-    for row_index, row in enumerate(rows):
-        if row_index == 0:
-            continue
+    for row in tbody.find_all("tr", recursive=False):
         time_cell = row.find(class_="VonBis")
         if not time_cell:
             continue
         parsed = _parse_time_range(time_cell.get_text(" ", strip=True))
         if not parsed:
             continue
-
         label_node = row.select_one(".print-show b") or row.select_one(".print-show")
-        label = label_node.get_text(" ", strip=True) if label_node else ""
-
         result.append(
             {
                 "type": "lesson",
                 "start_time": parsed[0],
                 "end_time": parsed[1],
-                "label": label,
-                "lesson_index": row_index,
+                "label": label_node.get_text(" ", strip=True) if label_node else "",
+                "lesson_index": len(result) + 1,
             }
         )
-
     return result
 
 
+def _day_labels(tbody: Any) -> List[str]:
+    header = tbody.find("tr", recursive=False)
+    if not header:
+        return []
+    cells = header.find_all(["td", "th"], recursive=False)[1:]
+    return [cell.get_text(" ", strip=True) for cell in cells]
+
+
+def parse_timetable_html(html: str) -> Dict[str, Any]:
+    """Parse a ``stundenplan.php`` response without making a request."""
+    soup = BeautifulSoup(html, "html.parser")
+    tbody_all = soup.select_one("#all tbody")
+    if not tbody_all:
+        return {"success": False, "error": "Timetable table not found"}
+
+    tbody_own = soup.select_one("#own tbody")
+    badge_node = soup.select_one("#aktuelleWoche")
+    return {
+        "success": True,
+        "days": _day_labels(tbody_all),
+        "plan_for_all": _parse_room_plan(tbody_all),
+        "plan_for_own": _parse_room_plan(tbody_own) if tbody_own else None,
+        "hours": _parse_rows(tbody_all),
+        "week_badge": badge_node.get_text(" ", strip=True) if badge_node else None,
+    }
+
+
 def stundenplan_get_plan(self) -> Dict[str, Any]:
-    """Fetch the timetable (stundenplan.php) for the logged-in user.
-
-    Returns the timetable for all classes and, when available, the
-    personalized timetable for the logged-in user.
-
-    Returns:
-        Dict with timetable data and hour metadata.
-
-    Example:
-        >>> api.stundenplan_get_plan()
-        {"success": True, "plan_for_all": [...], "hours": [...]}
-    """
+    """Fetch and parse the authenticated user's School Portal timetable."""
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
 
     try:
         response = self.session.get(f"{self.BASE_START_URL}/stundenplan.php")
         response.raise_for_status()
-
-        html = response.text
-        soup = BeautifulSoup(html, "html.parser")
-        tbody_all = soup.select_one("#all tbody")
-        if not tbody_all and response.headers.get("Location"):
-            redirect = response.headers.get("Location")
-            response = self.session.get(f"{self.BASE_START_URL}/{redirect}")
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            tbody_all = soup.select_one("#all tbody")
-        tbody_own = soup.select_one("#own tbody")
-
-        if not tbody_all:
-            return {"success": False, "error": "Timetable table not found"}
-
-        plan_all = _parse_room_plan(tbody_all)
-        plan_own = _parse_room_plan(tbody_own) if tbody_own else None
-        week_badge = ""
-        badge_node = soup.select_one("#aktuelleWoche")
-        if badge_node:
-            week_badge = badge_node.get_text(" ", strip=True)
-
-        hours = _parse_rows(tbody_all)
-
-        return {
-            "success": True,
-            "plan_for_all": plan_all,
-            "plan_for_own": plan_own,
-            "hours": hours,
-            "week_badge": week_badge or None,
-        }
+        return parse_timetable_html(response.text)
     except requests.RequestException as exc:
         return {"success": False, "error": f"Failed to fetch stundenplan: {exc}"}
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         return {"success": False, "error": f"Failed to parse stundenplan: {exc}"}
