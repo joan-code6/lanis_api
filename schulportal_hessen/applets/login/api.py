@@ -126,13 +126,13 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
             self.cryptor = Cryptor(self.session)
             try:
                 if self.cryptor.authenticate():
-                    print("✓ Encryption initialized successfully")
+                    print("Encryption initialized successfully")
                 else:
                     print(
-                        "⚠ Encryption initialization failed - encrypted features may not work"
+                        "Encryption initialization failed - encrypted features may not work"
                     )
             except Exception as e:
-                print(f"⚠ Encryption setup error: {e}")
+                print(f"Encryption setup error: {e}")
                 self.cryptor = None
 
             return {
