@@ -1043,6 +1043,7 @@ Retrieve the timetable from stundenplan.php (all and personal views).
 ```json
 {
   "success": true,
+  "days": ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag"],
   "plan_for_all": [[{"name": "{subject}", "room": "{room}"}]],
   "plan_for_own": [[{"name": "{subject}"}]],
   "hours": [{"label": "1", "start_time": {"hour": 8, "minute": 0}}],
@@ -1197,4 +1198,3 @@ curl -X GET http://localhost:8000/meinunterricht/course/12345 \
 - Response data is anonymized in this documentation; placeholders like `{username}`, `{course_name}` represent actual values
 - Multiple concurrent users are supported through session isolation
 - The API automatically cleans up expired sessions
-
