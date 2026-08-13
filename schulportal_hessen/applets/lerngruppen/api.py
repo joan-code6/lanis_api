@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import re
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -70,6 +72,21 @@ def _parse_teacher_group(group: Any) -> dict[str, Any]:
     email_match = _EMAIL_RE.search(f"{text} {href}")
     email = email_match.group(0) if email_match else None
 
+    recipient_id = None
+    for message_anchor in group.select("a[href]"):
+        values = parse_qs(urlparse(message_anchor.get("href", "")).query).get("to[]")
+        if not values:
+            continue
+        try:
+            encoded_id = values[0]
+            encoded_id += "=" * (-len(encoded_id) % 4)
+            decoded_id = base64.b64decode(encoded_id, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if re.fullmatch(r"[a-z]-\d+", decoded_id, re.IGNORECASE):
+            recipient_id = decoded_id
+            break
+
     name_text = text
     if email:
         name_text = name_text.replace(email, "").strip(" ,")
@@ -93,6 +110,7 @@ def _parse_teacher_group(group: Any) -> dict[str, Any]:
         "first_name": first_name,
         "last_name": last_name,
         "email": email,
+        "recipient_id": recipient_id,
     }
 
 

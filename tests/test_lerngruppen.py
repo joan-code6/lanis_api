@@ -10,7 +10,10 @@ LIVE_STYLE_HTML = """
         <td>
           <div class="btn-group">
             <button class="btn btn-primary dropdown-toggle">MST</button>
-            <ul class="dropdown-menu"><li><a href="mailto:max.mustermann@example.org"><i class="fa"></i>Mustermann, Max</a></li></ul>
+            <ul class="dropdown-menu">
+              <li><a href="mailto:max.mustermann@example.org"><i class="fa"></i>Mustermann, Max</a></li>
+              <li><a href="nachrichten.php?to[]=bC0xMjg2NTY=">Nachricht schreiben</a></li>
+            </ul>
           </div>
         </td>
         <td>1. Halbjahr 2026/27</td>
@@ -60,6 +63,7 @@ def test_parse_live_table_labels_and_td_headers() -> None:
                 "first_name": "Max",
                 "last_name": "Mustermann",
                 "email": "max.mustermann@example.org",
+                "recipient_id": "l-128656",
             }
         ],
         "exams": [result["exams"][0]],
