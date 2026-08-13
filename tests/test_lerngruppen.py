@@ -12,7 +12,7 @@ LIVE_STYLE_HTML = """
             <button class="btn btn-primary dropdown-toggle">MST</button>
             <ul class="dropdown-menu">
               <li><a href="mailto:max.mustermann@example.org"><i class="fa"></i>Mustermann, Max</a></li>
-              <li><a href="nachrichten.php?to[]=bC0xMjg2NTY=">Nachricht schreiben</a></li>
+              <li><a href="nachrichten.php?to[]=bC0xMjg2NTY=}">Nachricht schreiben</a></li>
             </ul>
           </div>
         </td>

@@ -78,7 +78,12 @@ def _parse_teacher_group(group: Any) -> dict[str, Any]:
         if not values:
             continue
         try:
-            encoded_id = values[0]
+            # Schulportal currently appends a stray closing brace to this query
+            # value (for example ``bC0xMjg2NTY=}``). Keep only the Base64 token.
+            token_match = re.match(r"[A-Za-z0-9+/]+={0,2}", values[0])
+            if not token_match:
+                continue
+            encoded_id = token_match.group(0)
             encoded_id += "=" * (-len(encoded_id) % 4)
             decoded_id = base64.b64decode(encoded_id, validate=True).decode("utf-8")
         except (ValueError, UnicodeDecodeError):
