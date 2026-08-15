@@ -165,6 +165,7 @@ class AuthSession:
 class CacheEntry:
     """Represents a cached response with timestamp."""
 
+    user_id: str
     data: Any
     created_at: datetime
     is_long_term: bool = False
@@ -394,14 +395,16 @@ class AuthManager:
         cache_key = self._make_cache_key(user_id, endpoint, params)
         async with self._lock:
             self._cache[cache_key] = CacheEntry(
-                data=data, created_at=datetime.utcnow(), is_long_term=is_long_term
+                user_id=user_id,
+                data=data,
+                created_at=datetime.utcnow(),
+                is_long_term=is_long_term,
             )
 
     async def invalidate_user_cache(self, user_id: str) -> None:
-        user_prefix = self._make_cache_key(user_id, "")[:64]
         async with self._lock:
             expired = [
-                key for key in self._cache.keys() if key.startswith(user_prefix)
+                key for key, entry in self._cache.items() if entry.user_id == user_id
             ]
             for key in expired:
                 self._cache.pop(key)
@@ -857,9 +860,10 @@ async def get_stundenplan(
             course_overview = await run_in_threadpool(
                 auth.client.meinunterricht_get_overview
             )
-            await sessions.set_cache(
-                auth.user_id, "/meinunterricht", course_overview
-            )
+            if course_overview.get("success"):
+                await sessions.set_cache(
+                    auth.user_id, "/meinunterricht", course_overview
+                )
         result = enrich_timetable(result, course_overview)
     await sessions.set_cache(auth.user_id, "/stundenplan", result)
     return result
@@ -1100,7 +1104,8 @@ async def meinunterricht_overview(
         return cached
 
     result = await run_in_threadpool(auth.client.meinunterricht_get_overview)
-    await sessions.set_cache(auth.user_id, "/meinunterricht", result)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/meinunterricht", result)
     return result
 
 

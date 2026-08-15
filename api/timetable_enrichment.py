@@ -4,7 +4,6 @@ import copy
 import re
 import unicodedata
 from collections import defaultdict
-from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -141,18 +140,49 @@ def _matching_course(
     return subject_matches[0] if len(subject_matches) == 1 else None
 
 
-def _eligible_occurrences(
-    plan: list[list[dict[str, Any]]],
-    monday: date,
+def _week_type_for_date(
+    value: date, current_monday: date, active_week: str | None
+) -> str | None:
+    if active_week not in {"A", "B"}:
+        return None
+    value_monday = value - timedelta(days=value.weekday())
+    week_offset = (value_monday - current_monday).days // 7
+    if week_offset % 2 == 0:
+        return active_week
+    return "B" if active_week == "A" else "A"
+
+
+def _next_course_slot(
+    slots: list[tuple[int, int, str]],
+    assigned_date: date,
+    current_monday: date,
     active_week: str | None,
-) -> Iterable[tuple[date, int, int, dict[str, Any]]]:
-    for day_index, lessons in enumerate(plan):
-        lesson_date = monday + timedelta(days=day_index)
-        for lesson_index, lesson in enumerate(lessons):
-            badge = str(lesson.get("badge") or "").upper()
-            if active_week and badge in {"A", "B"} and badge != active_week:
-                continue
-            yield lesson_date, day_index, lesson_index, lesson
+) -> tuple[int, int] | None:
+    """Return the recurring timetable slot immediately after an assignment.
+
+    The timetable is a weekly template rather than a dated event list. Search
+    forward from the assignment itself, then map the found occurrence back to
+    its weekday/lesson slot in that template. Fourteen days covers a complete
+    A/B-week cycle.
+    """
+    for days_after in range(1, 15):
+        candidate_date = assigned_date + timedelta(days=days_after)
+        candidate_week = _week_type_for_date(
+            candidate_date, current_monday, active_week
+        )
+        candidates = [
+            (day_index, lesson_index)
+            for day_index, lesson_index, badge in slots
+            if day_index == candidate_date.weekday()
+            and (
+                badge not in {"A", "B"}
+                or candidate_week is None
+                or badge == candidate_week
+            )
+        ]
+        if candidates:
+            return min(candidates, key=lambda item: item[1])
+    return None
 
 
 def _enrich_plan(
@@ -165,7 +195,7 @@ def _enrich_plan(
     if not isinstance(plan, list):
         return plan
 
-    occurrences_by_course: dict[str, list[tuple[date, int, int]]] = defaultdict(list)
+    slots_by_course: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
 
     for day_index, lessons in enumerate(plan):
         for lesson_index, lesson in enumerate(lessons):
@@ -177,39 +207,28 @@ def _enrich_plan(
                 continue
             lesson["course_id"] = course_id
             lesson["course_name"] = str(course.get("name") or lesson.get("name") or "")
-
-    for lesson_date, day_index, lesson_index, lesson in _eligible_occurrences(
-        plan, monday, active_week
-    ):
-        course_id = str(lesson.get("course_id") or "")
-        if course_id:
-            occurrences_by_course[course_id].append(
-                (lesson_date, day_index, lesson_index)
+            slots_by_course[course_id].append(
+                (
+                    day_index,
+                    lesson_index,
+                    str(lesson.get("badge") or "").upper(),
+                )
             )
 
     for entry in course_entries:
         homework_text = str(entry.get("homework") or "").strip()
         assigned_date = _parse_entry_date(entry.get("datum"))
         course_id = str(entry.get("book_id") or "")
-        if (
-            not homework_text
-            or not assigned_date
-            or not occurrences_by_course[course_id]
-        ):
+        if not homework_text or not assigned_date or not slots_by_course[course_id]:
             continue
 
-        next_occurrence = next(
-            (
-                occurrence
-                for occurrence in occurrences_by_course[course_id]
-                if occurrence[0] > assigned_date
-            ),
-            None,
+        next_occurrence = _next_course_slot(
+            slots_by_course[course_id], assigned_date, monday, active_week
         )
         if not next_occurrence:
             continue
 
-        _, day_index, lesson_index = next_occurrence
+        day_index, lesson_index = next_occurrence
         lesson = plan[day_index][lesson_index]
         lesson.setdefault("homework", []).append(
             {

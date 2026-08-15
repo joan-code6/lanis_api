@@ -213,6 +213,55 @@ def test_homework_is_not_attached_to_a_lesson_on_the_assignment_date():
     assert result["plan_for_all"][3][0]["homework"][0]["entry_id"] == "entry-1"
 
 
+def test_assignment_from_previous_week_maps_to_its_immediate_next_weekday_slot():
+    timetable = _timetable(
+        [_lesson("Mathematik")],
+        [],
+        [_lesson("Mathematik")],
+        [],
+        [],
+    )
+    result = enrich_timetable(
+        timetable,
+        {"success": True, "entries": [_entry(datum="04.08.2026")]},
+        today=date(2026, 8, 12),
+    )
+    assert "homework" not in result["plan_for_all"][0][0]
+    assert result["plan_for_all"][2][0]["homework"][0]["entry_id"] == "entry-1"
+
+
+def test_friday_assignment_maps_to_monday_in_the_next_week():
+    timetable = _timetable([_lesson("Mathematik")], [], [], [], [])
+    result = enrich_timetable(
+        timetable,
+        {"success": True, "entries": [_entry(datum="14.08.2026")]},
+        today=date(2026, 8, 12),
+    )
+    assert result["plan_for_all"][0][0]["homework"][0]["entry_id"] == "entry-1"
+
+
+def test_next_week_transition_respects_alternating_week_type():
+    timetable = _timetable(
+        [
+            _lesson("Mathematik", badge="A"),
+            _lesson("Mathematik", badge="B"),
+        ],
+        [],
+        [],
+        [],
+        [],
+        week_badge="Woche A",
+    )
+    result = enrich_timetable(
+        timetable,
+        {"success": True, "entries": [_entry(datum="14.08.2026")]},
+        today=date(2026, 8, 12),
+    )
+    monday_a, monday_b = result["plan_for_all"][0]
+    assert "homework" not in monday_a
+    assert monday_b["homework"][0]["entry_id"] == "entry-1"
+
+
 def test_missing_or_unparseable_homework_data_keeps_course_link_only():
     timetable = _timetable([], [], [_lesson("Mathematik")], [], [])
     result = enrich_timetable(
