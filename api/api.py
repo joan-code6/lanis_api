@@ -58,6 +58,7 @@ from .file_cache import (
     get_meta,
     get_content_path,
 )
+from .timetable_enrichment import enrich_timetable
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -850,6 +851,16 @@ async def get_stundenplan(
         return cached
 
     result = await run_in_threadpool(auth.client.stundenplan_get_plan)
+    if result.get("success"):
+        course_overview = await sessions.get_cached(auth.user_id, "/meinunterricht")
+        if course_overview is None:
+            course_overview = await run_in_threadpool(
+                auth.client.meinunterricht_get_overview
+            )
+            await sessions.set_cache(
+                auth.user_id, "/meinunterricht", course_overview
+            )
+        result = enrich_timetable(result, course_overview)
     await sessions.set_cache(auth.user_id, "/stundenplan", result)
     return result
 
