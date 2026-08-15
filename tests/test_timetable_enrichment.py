@@ -1,6 +1,8 @@
 from datetime import date
 
-from api.timetable_enrichment import enrich_timetable
+import pytest
+
+from api.timetable_enrichment import _course_subject_aliases, enrich_timetable
 
 
 def _timetable(*lessons_by_day, week_badge="Woche A"):
@@ -85,6 +87,83 @@ def test_uses_teacher_to_disambiguate_courses_with_the_same_name():
         timetable, {"success": True, "entries": entries}, today=date(2026, 8, 12)
     )
     assert result["plan_for_all"][1][0]["course_id"] == "course-b"
+
+
+@pytest.mark.parametrize(
+    ("timetable_name", "course_name"),
+    [
+        ("CH", "Chemie 10b"),
+        ("E 1.FS", "Englisch 10b"),
+        ("ETH", "Ethik 10"),
+        ("KU", "Kunst 10b (1.HJ)"),
+        ("PW", "Politik und Wirtschaft 10b"),
+        ("WU", "WU Informatik (10a, 10b)"),
+    ],
+)
+def test_derives_subject_abbreviations_without_a_subject_map(
+    timetable_name, course_name
+):
+    timetable = _timetable([_lesson(timetable_name, teacher="XY")], [], [], [], [])
+    result = enrich_timetable(
+        timetable,
+        {
+            "success": True,
+            "entries": [
+                _entry(
+                    book_id="derived-course",
+                    name=course_name,
+                    teacher_short="XY",
+                    homework="",
+                )
+            ],
+        },
+        today=date(2026, 8, 12),
+    )
+    assert result["plan_for_all"][0][0]["course_id"] == "derived-course"
+
+
+def test_uses_teacher_code_from_trailing_parentheses():
+    timetable = _timetable([_lesson("M", teacher="ST")], [], [], [], [])
+    entries = [
+        _entry(
+            book_id="chemistry",
+            name="Chemie 10b",
+            teacher_short="",
+            teacher_full_name="Stohr, Corinna (ST)",
+            homework="",
+        ),
+        _entry(
+            book_id="mathematics",
+            name="Mathematik 10b",
+            teacher_short="",
+            teacher_full_name="Stohr, Corinna (ST)",
+            homework="",
+        ),
+    ]
+    result = enrich_timetable(
+        timetable, {"success": True, "entries": entries}, today=date(2026, 8, 12)
+    )
+    assert result["plan_for_all"][0][0]["course_id"] == "mathematics"
+
+
+def test_unique_teacher_match_supports_unfamiliar_subject_codes():
+    timetable = _timetable([_lesson("XYZ", teacher="AB")], [], [], [], [])
+    result = enrich_timetable(
+        timetable,
+        {
+            "success": True,
+            "entries": [
+                _entry(name="Unbekanntes Wahlfach 10b", teacher_short="AB", homework="")
+            ],
+        },
+        today=date(2026, 8, 12),
+    )
+    assert result["plan_for_all"][0][0]["course_id"] == "course-1"
+
+
+def test_course_aliases_are_derived_from_words_and_connectors():
+    aliases = _course_subject_aliases("Politik und Wirtschaft 10b")
+    assert {"pw", "powi", "politikundwirtschaft"} <= aliases
 
 
 def test_does_not_guess_when_duplicate_courses_remain_ambiguous():

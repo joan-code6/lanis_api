@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 BERLIN = ZoneInfo("Europe/Berlin")
+CONNECTOR_WORDS = {"and", "e", "et", "oder", "or", "und", "y"}
 
 
 def _normalise(value: object) -> str:
@@ -46,26 +47,98 @@ def _active_week(value: object) -> str | None:
     return match.group(1) if match else None
 
 
+def _tokens(value: object) -> list[str]:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.findall(r"[^\W_]+", text, flags=re.UNICODE)
+
+
+def _lesson_subject_code(value: object) -> str:
+    parts: list[str] = []
+    for token in _tokens(value):
+        if any(character.isdigit() for character in token):
+            break
+        parts.append(token)
+    return "".join(parts)
+
+
+def _course_subject_words(value: object) -> list[str]:
+    # Parenthesized and digit-bearing suffixes describe classes/semesters, not
+    # the subject itself (for example "10b" or "(1.HJ)").
+    without_parentheses = re.sub(r"\([^)]*\)", " ", str(value or ""))
+    words: list[str] = []
+    for token in _tokens(without_parentheses):
+        if any(character.isdigit() for character in token):
+            break
+        words.append(token)
+    return words
+
+
+def _course_subject_aliases(value: object) -> set[str]:
+    words = _course_subject_words(value)
+    if not words:
+        return set()
+
+    significant = [word for word in words if word not in CONNECTOR_WORDS] or words
+    aliases = {"".join(words), "".join(significant)}
+    aliases.update(
+        word[:length]
+        for word in significant
+        for length in range(1, min(len(word), 3) + 1)
+    )
+    aliases.add("".join(word[0] for word in words))
+    aliases.add("".join(word[0] for word in significant))
+
+    # Multi-word subjects are commonly abbreviated with one or two leading
+    # letters per word (for example a two-word subject can become XY or XxYy).
+    if len(significant) > 1:
+        for prefix_length in (1, 2):
+            aliases.add("".join(word[:prefix_length] for word in significant))
+    return {alias for alias in aliases if alias}
+
+
+def _teacher_code(value: object) -> str:
+    return "".join(_tokens(value))
+
+
+def _course_teacher_codes(course: dict[str, Any]) -> set[str]:
+    codes = {_teacher_code(course.get("teacher_short"))}
+    full_name = str(course.get("teacher_full_name") or "").strip()
+    trailing_code = re.search(r"\(([^()]+)\)\s*$", full_name)
+    if trailing_code:
+        codes.add(_teacher_code(trailing_code.group(1)))
+    return {code for code in codes if code}
+
+
+def _subject_matches(lesson: dict[str, Any], course: dict[str, Any]) -> bool:
+    if _normalise(lesson.get("name")) == _normalise(course.get("name")):
+        return True
+    lesson_code = _lesson_subject_code(lesson.get("name"))
+    return bool(
+        lesson_code and lesson_code in _course_subject_aliases(course.get("name"))
+    )
+
+
 def _matching_course(
-    lesson: dict[str, Any], courses_by_name: dict[str, list[dict[str, Any]]]
+    lesson: dict[str, Any], courses: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-    candidates = courses_by_name.get(_normalise(lesson.get("name")), [])
-    if not candidates:
+    lesson_teacher = _teacher_code(lesson.get("teacher"))
+    teacher_matches = [
+        course
+        for course in courses
+        if lesson_teacher and lesson_teacher in _course_teacher_codes(course)
+    ]
+    if teacher_matches:
+        combined_matches = [
+            course for course in teacher_matches if _subject_matches(lesson, course)
+        ]
+        if len(combined_matches) == 1:
+            return combined_matches[0]
+        if len(teacher_matches) == 1:
+            return teacher_matches[0]
         return None
 
-    by_id = {str(entry.get("book_id") or ""): entry for entry in candidates}
-    by_id.pop("", None)
-    unique_candidates = list(by_id.values())
-    if len(unique_candidates) == 1:
-        return unique_candidates[0]
-
-    teacher = _normalise(lesson.get("teacher"))
-    teacher_matches = [
-        entry
-        for entry in unique_candidates
-        if teacher and _normalise(entry.get("teacher_short")) == teacher
-    ]
-    return teacher_matches[0] if len(teacher_matches) == 1 else None
+    subject_matches = [course for course in courses if _subject_matches(lesson, course)]
+    return subject_matches[0] if len(subject_matches) == 1 else None
 
 
 def _eligible_occurrences(
@@ -85,7 +158,7 @@ def _eligible_occurrences(
 def _enrich_plan(
     plan: object,
     course_entries: list[dict[str, Any]],
-    courses_by_name: dict[str, list[dict[str, Any]]],
+    courses: list[dict[str, Any]],
     monday: date,
     active_week: str | None,
 ) -> object:
@@ -96,7 +169,7 @@ def _enrich_plan(
 
     for day_index, lessons in enumerate(plan):
         for lesson_index, lesson in enumerate(lessons):
-            course = _matching_course(lesson, courses_by_name)
+            course = _matching_course(lesson, courses)
             if not course:
                 continue
             course_id = str(course.get("book_id") or "")
@@ -171,9 +244,10 @@ def enrich_timetable(
         for entry in course_overview.get("entries", [])
         if isinstance(entry, dict) and entry.get("book_id") and entry.get("name")
     ]
-    courses_by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    courses_by_id: dict[str, dict[str, Any]] = {}
     for entry in course_entries:
-        courses_by_name[_normalise(entry.get("name"))].append(entry)
+        courses_by_id[str(entry.get("book_id"))] = entry
+    courses = list(courses_by_id.values())
 
     current_date = today or datetime.now(BERLIN).date()
     monday = current_date - timedelta(days=current_date.weekday())
@@ -182,7 +256,7 @@ def enrich_timetable(
         result[key] = _enrich_plan(
             copy.deepcopy(result.get(key)),
             course_entries,
-            courses_by_name,
+            courses,
             monday,
             active_week,
         )
