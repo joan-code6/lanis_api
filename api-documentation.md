@@ -1044,12 +1044,35 @@ Retrieve the timetable from stundenplan.php (all and personal views).
 {
   "success": true,
   "days": ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag"],
-  "plan_for_all": [[{"name": "{subject}", "room": "{room}"}]],
-  "plan_for_own": [[{"name": "{subject}"}]],
+  "plan_for_all": [[{
+    "name": "{subject}",
+    "room": "{room}",
+    "course_id": "{matching_meinunterricht_book_id}",
+    "course_name": "{matching_course_name}",
+    "homework": [{
+      "entry_id": "{homework_entry_id}",
+      "text": "{homework_text}",
+      "done": false,
+      "assigned_date": "2026-08-11"
+    }]
+  }]],
+  "plan_for_own": [[{"name": "{subject}", "course_id": "{course_id}"}]],
   "hours": [{"label": "1", "start_time": {"hour": 8, "minute": 0}}],
   "week_badge": "{week}"
 }
 ```
+
+Timetable lessons are matched to `Mein Unterricht` courses using the teacher
+abbreviation and subject name together. The abbreviation is read from the
+dedicated teacher field or a trailing parenthesized Kürzel in the full teacher
+name. Short timetable subject codes are matched against aliases derived from
+the words in each course name (prefixes and initials); there is no fixed subject
+mapping table. Matching lessons include `course_id` and `course_name`. A
+homework item is included only on the first active A/B-week lesson after the
+Unterricht entry date; completed homework remains present with `done: true`.
+Enrichment is automatic for all requests. If the course overview cannot be
+loaded, the regular timetable is returned without the optional course and
+homework fields.
 
 **Status Codes:**
 - `200 OK` - Timetable retrieved successfully
