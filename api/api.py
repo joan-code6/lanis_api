@@ -951,6 +951,36 @@ async def get_message_headers(
     return result
 
 
+@app.get("/nachrichten/search")
+async def search_recipients(
+    q: str,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    endpoint = "/nachrichten/search"
+    params = {"q": q}
+    cache_params = _make_param_key(params)
+    cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
+    task = Task(
+        name=f"update_message_cache:{endpoint}",
+        func=_update_message_cache_task,
+        args=(
+            auth.user_id,
+            endpoint,
+            auth.client.nachrichten_search_recipients,
+            params,
+            cache_params,
+        ),
+        priority=TaskPriority.LOW,
+        max_retries=2,
+    )
+    await task_queue.add_task(task)
+    if cached is not None:
+        return cached
+    result = await run_in_threadpool(auth.client.nachrichten_search_recipients, q)
+    await sessions.set_cache(auth.user_id, endpoint, result, cache_params)
+    return result
+
+
 @app.get("/nachrichten/{conversation_id}")
 async def get_conversation(
     conversation_id: str,
@@ -980,36 +1010,6 @@ async def get_conversation(
     result = await run_in_threadpool(
         auth.client.nachrichten_get_conversation, conversation_id, last
     )
-    await sessions.set_cache(auth.user_id, endpoint, result, cache_params)
-    return result
-
-
-@app.get("/nachrichten/search")
-async def search_recipients(
-    q: str,
-    auth: AuthSession = Depends(client_dependency),
-) -> Dict[str, object]:
-    endpoint = "/nachrichten/search"
-    params = {"q": q}
-    cache_params = _make_param_key(params)
-    cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
-    task = Task(
-        name=f"update_message_cache:{endpoint}",
-        func=_update_message_cache_task,
-        args=(
-            auth.user_id,
-            endpoint,
-            auth.client.nachrichten_search_recipients,
-            params,
-            cache_params,
-        ),
-        priority=TaskPriority.LOW,
-        max_retries=2,
-    )
-    await task_queue.add_task(task)
-    if cached is not None:
-        return cached
-    result = await run_in_threadpool(auth.client.nachrichten_search_recipients, q)
     await sessions.set_cache(auth.user_id, endpoint, result, cache_params)
     return result
 

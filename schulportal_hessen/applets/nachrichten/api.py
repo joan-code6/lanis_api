@@ -9,7 +9,7 @@ def _extract_users(payload: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     if isinstance(payload, dict):
-        for key in ("users", "results", "rows", "data"):
+        for key in ("users", "results", "rows", "data", "items"):
             value = payload.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
@@ -22,6 +22,23 @@ def _recipient_key(user: Dict[str, Any]) -> str:
         if value:
             return str(value)
     return json.dumps(user, sort_keys=True, ensure_ascii=False)
+
+
+def _normalize_recipient(user: Dict[str, Any]) -> Dict[str, str]:
+    recipient_id = _recipient_key(user)
+    name = (
+        user.get("name")
+        or user.get("text")
+        or user.get("label")
+        or user.get("username")
+        or recipient_id
+    )
+    return {
+        "id": recipient_id,
+        "name": str(name),
+        "username": str(user.get("username") or user.get("krz") or ""),
+        "type": str(user.get("type") or ""),
+    }
 
 
 def nachrichten_get_headers(
@@ -309,7 +326,13 @@ def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
         query_variants = list(dict.fromkeys(variant for variant in query_variants if variant))
 
         if not query_variants:
-            return {"success": True, "query": base_query, "users": [], "count": 0}
+            return {
+                "success": True,
+                "query": base_query,
+                "users": [],
+                "results": [],
+                "count": 0,
+            }
 
         aggregated_users: List[Dict[str, Any]] = []
         seen = set()
@@ -330,6 +353,7 @@ def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
             "success": True,
             "query": base_query,
             "users": users_out,
+            "results": [_normalize_recipient(user) for user in users_out],
             "count": len(users_out),
         }
 
