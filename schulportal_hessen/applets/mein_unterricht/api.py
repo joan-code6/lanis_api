@@ -199,7 +199,10 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
         course_name = ""
         semester = ""
         if course_title:
-            course_name = course_title.get_text(separator="\n").split("\n")[0].strip()
+            # The portal currently pads the heading with whitespace before the
+            # visible course name. Splitting the raw text therefore produces an
+            # empty first item for real school pages.
+            course_name = next(course_title.stripped_strings, "")
             semester_tag = course_title.find("span", {"class": "label-info"})
             if semester_tag:
                 semester = semester_tag.get_text(separator="\n")
