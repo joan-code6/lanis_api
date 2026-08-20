@@ -973,6 +973,7 @@ async def search_recipients(
 ) -> Dict[str, object]:
     endpoint = "/nachrichten/search"
     params = {"q": q}
+    fetch_params = {"query": q}
     cache_params = _make_param_key(params)
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
     task = Task(
@@ -982,7 +983,7 @@ async def search_recipients(
             auth.user_id,
             endpoint,
             auth.client.nachrichten_search_recipients,
-            params,
+            fetch_params,
             cache_params,
         ),
         priority=TaskPriority.LOW,
