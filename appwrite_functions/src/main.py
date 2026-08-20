@@ -15,7 +15,7 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
-from urllib.parse import parse_qs, unquote_plus
+from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 try:  # Appwrite loads ``src/main.py`` either as a package or as a module.
     from .backend import get_backend
@@ -64,7 +64,7 @@ def _cors_headers(context: Any) -> dict[str, str]:
     if not allowed or "*" in allowed:
         allow_origin = "*"
         vary = None
-    elif origin and origin in allowed:
+    elif origin and _cors_origin_allowed(origin, allowed):
         allow_origin = origin
         vary = "Origin"
     else:
@@ -83,6 +83,42 @@ def _cors_headers(context: Any) -> dict[str, str]:
     if vary:
         headers["Vary"] = vary
     return headers
+
+
+def _cors_origin_allowed(origin: str, allowed: set[str]) -> bool:
+    """Match exact origins and hostname suffix patterns from the allowlist."""
+
+    try:
+        parsed_origin = urlsplit(origin)
+    except ValueError:
+        return False
+    if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.hostname:
+        return False
+
+    hostname = parsed_origin.hostname.lower().rstrip(".")
+    for pattern in allowed:
+        candidate = pattern.strip().lower()
+        if not candidate:
+            continue
+        if "://" in candidate:
+            try:
+                parsed_pattern = urlsplit(candidate)
+            except ValueError:
+                continue
+            if parsed_pattern.scheme and parsed_pattern.scheme != parsed_origin.scheme:
+                continue
+            candidate = parsed_pattern.hostname or ""
+        candidate = candidate.rstrip(".")
+        if candidate.startswith("*."):
+            suffix = candidate[1:]
+            if hostname.endswith(suffix) and hostname != suffix[1:]:
+                return True
+        elif candidate.startswith("."):
+            if hostname.endswith(candidate) and hostname != candidate[1:]:
+                return True
+        elif hostname == candidate and parsed_origin.port is None:
+            return True
+    return False
 
 
 def _binary_response(context: Any, content: bytes, headers: dict[str, str]) -> Any:
