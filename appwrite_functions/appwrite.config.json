@@ -1,6 +1,6 @@
 {
-  "projectId": "<APPWRITE_PROJECT_ID>",
-  "endpoint": "https://<REGION>.cloud.appwrite.io/v1",
+  "projectId": "698337a60017b46df380",
+  "endpoint": "https://fra.cloud.appwrite.io/v1",
   "functions": [
     {
       "$id": "lanis-api",
