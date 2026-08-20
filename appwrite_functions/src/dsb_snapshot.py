@@ -113,7 +113,7 @@ async def main(context: Any) -> Any:
         except Exception:
             logger.exception("LANiS DSB snapshot failed")
         return context.res.json(
-            {"success": False, "error": "DSB snapshot failed"}, status_code=500
+            {"success": False, "error": "DSB snapshot failed"}, 500
         )
 
 

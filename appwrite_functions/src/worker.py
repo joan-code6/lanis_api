@@ -175,7 +175,7 @@ async def main(context: Any) -> Any:
         except Exception:
             logger.exception("LANiS worker failed")
         return context.res.json(
-            {"success": False, "error": "Worker execution failed"}, status_code=500
+            {"success": False, "error": "Worker execution failed"}, 500
         )
 
 
