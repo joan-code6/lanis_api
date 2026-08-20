@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover
 
 from schulportal_hessen import SchulportalHessenAPI
 
+try:
+    from .file_download import download_course_file
+except ImportError:  # pragma: no cover - Appwrite may load this as a module
+    from file_download import download_course_file
+
 logger = logging.getLogger("lanis.appwrite.worker")
 
 
@@ -93,7 +98,7 @@ async def _download_course_file(backend: Any, payload: dict[str, Any]) -> dict[s
     client = await _with_client(credentials)
     try:
         result = await asyncio.to_thread(
-            client.meinunterricht_download_file, metadata.source_url
+            download_course_file, client, metadata.source_url
         )
     finally:
         client.close()

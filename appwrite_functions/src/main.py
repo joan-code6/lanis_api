@@ -28,6 +28,11 @@ except ImportError:  # pragma: no cover - exercised by the Appwrite runtime
 from schulportal_hessen import SchulportalHessenAPI
 
 try:
+    from .file_download import download_course_file
+except ImportError:  # pragma: no cover - Appwrite may load this as a module
+    from file_download import download_course_file
+
+try:
     import jwt
 except ImportError as exc:  # pragma: no cover - deployment dependency guard
     raise RuntimeError("PyJWT is required by the Appwrite HTTP Function") from exc
@@ -499,7 +504,7 @@ async def _file(context: Any, file_hash: str) -> Any:
         # not yet been scheduled, while the metadata remains server-only.
         if metadata and metadata.source_url:
             result = await asyncio.to_thread(
-                client.meinunterricht_download_file, metadata.source_url
+                download_course_file, client, metadata.source_url
             )
             if result.get("success"):
                 await backend.files.save(
