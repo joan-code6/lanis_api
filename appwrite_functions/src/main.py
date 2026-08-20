@@ -46,7 +46,48 @@ class HttpError(Exception):
 
 
 def _json_response(context: Any, payload: Any, status: int = 200) -> Any:
-    return context.res.json(payload, status)
+    return context.res.json(payload, status, _cors_headers(context))
+
+
+def _cors_headers(context: Any) -> dict[str, str]:
+    """Return browser-safe headers for the standalone HTTP Function.
+
+    The API intentionally has no cookie-based authentication, so the default
+    wildcard origin is safe for the token-in-header contract. Deployments can
+    restrict it with ``LANIS_CORS_ORIGINS`` (comma-separated exact origins).
+    """
+
+    request = getattr(context, "req", context)
+    origin = _header(request, "origin")
+    configured = os.getenv("LANIS_CORS_ORIGINS", "").strip()
+    allowed = {item.strip() for item in configured.split(",") if item.strip()}
+    if not allowed or "*" in allowed:
+        allow_origin = "*"
+        vary = None
+    elif origin and origin in allowed:
+        allow_origin = origin
+        vary = "Origin"
+    else:
+        allow_origin = ""
+        vary = None
+
+    headers = {
+        "Access-Control-Allow-Headers": (
+            "Content-Type, X-Session-Token, Authorization, X-Appwrite-Key"
+        ),
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Max-Age": "86400",
+    }
+    if allow_origin:
+        headers["Access-Control-Allow-Origin"] = allow_origin
+    if vary:
+        headers["Vary"] = vary
+    return headers
+
+
+def _binary_response(context: Any, content: bytes, headers: dict[str, str]) -> Any:
+    response_headers = {**_cors_headers(context), **headers}
+    return context.res.binary(content, 200, response_headers)
 
 
 def _header(request: Any, name: str) -> str | None:
@@ -79,6 +120,10 @@ def _body(request: Any) -> dict[str, Any]:
         raw = raw_bytes.decode("utf-8", errors="replace")
     if not str(raw).strip():
         return {}
+    content_type = (_header(request, "content-type") or "").lower()
+    if "application/x-www-form-urlencoded" in content_type:
+        parsed_form = parse_qs(str(raw), keep_blank_values=True)
+        return {key: unquote_plus(values[-1]) for key, values in parsed_form.items()}
     try:
         parsed = json.loads(str(raw))
     except (TypeError, ValueError) as exc:
@@ -413,7 +458,7 @@ async def _file(context: Any, file_hash: str) -> Any:
                 "Content-Type": metadata.content_type or "application/octet-stream",
                 "Content-Disposition": f'attachment; filename="{metadata.filename or "download"}"',
             }
-            return context.res.binary(content, 200, headers)
+            return _binary_response(context, content, headers)
         # A synchronous fallback makes the endpoint useful when a worker has
         # not yet been scheduled, while the metadata remains server-only.
         if metadata and metadata.source_url:
@@ -428,12 +473,16 @@ async def _file(context: Any, file_hash: str) -> Any:
                     result.get("filename", "download"),
                 )
                 content = await backend.files.get_content(file_hash)
-                return context.res.binary(
+                return _binary_response(
+                    context,
                     content,
-                    200,
                     {
-                        "Content-Type": result.get("content_type", "application/octet-stream"),
-                        "Content-Disposition": f'attachment; filename="{result.get("filename", "download")}"',
+                        "Content-Type": result.get(
+                            "content_type", "application/octet-stream"
+                        ),
+                        "Content-Disposition": (
+                            f'attachment; filename="{result.get("filename", "download")}"'
+                        ),
                     },
                 )
         raise HttpError(404, "File not yet available, please try again shortly")
@@ -448,6 +497,8 @@ async def _dispatch_route(context: Any) -> Any:
     query = _query(request)
     payload = _body(request) if method in {"POST", "PUT", "PATCH"} else {}
 
+    if method == "OPTIONS":
+        return {"status": "ok"}
     if method == "GET" and path == "/health":
         return {"status": "ok"}
     if method == "POST" and path == "/login":
@@ -570,7 +621,7 @@ async def main(context: Any) -> Any:
         if isinstance(result, (dict, list)):
             return _json_response(context, result)
         if isinstance(result, str):
-            return context.res.text(result)
+            return context.res.text(result, 200, _cors_headers(context))
         return result
     except HttpError as exc:
         return _json_response(context, {"success": False, "error": exc.detail}, exc.status)
