@@ -1,0 +1,212 @@
+{
+  "projectId": "<APPWRITE_PROJECT_ID>",
+  "endpoint": "https://<REGION>.cloud.appwrite.io/v1",
+  "functions": [
+    {
+      "$id": "lanis-api",
+      "name": "LANiS HTTP API",
+      "runtime": "python-3.12",
+      "path": ".",
+      "entrypoint": "src/main.py",
+      "commands": "pip install -r requirements-api.txt",
+      "execute": ["any"],
+      "events": [],
+      "schedule": "",
+      "timeout": 120,
+      "enabled": true,
+      "logging": true,
+      "scopes": [
+        "users.read",
+        "users.write",
+        "rows.read",
+        "rows.write",
+        "files.read",
+        "files.write",
+        "execution.write"
+      ],
+      "ignore": [
+        ".appwrite",
+        ".env",
+        ".env.*",
+        "**/__pycache__",
+        "**/*.pyc",
+        "README.md"
+      ]
+    },
+    {
+      "$id": "lanis-worker",
+      "name": "LANiS Async Worker",
+      "runtime": "python-3.12",
+      "path": ".",
+      "entrypoint": "src/worker.py",
+      "commands": "pip install -r requirements-worker.txt",
+      "execute": [],
+      "events": [],
+      "schedule": "",
+      "timeout": 900,
+      "enabled": true,
+      "logging": true,
+      "scopes": [
+        "rows.read",
+        "rows.write",
+        "files.read",
+        "files.write"
+      ],
+      "ignore": [
+        ".appwrite",
+        ".env",
+        ".env.*",
+        "**/__pycache__",
+        "**/*.pyc",
+        "README.md"
+      ]
+    },
+    {
+      "$id": "lanis-dsb-snapshot",
+      "name": "LANiS DSB Snapshot",
+      "runtime": "python-3.12",
+      "path": ".",
+      "entrypoint": "src/dsb_snapshot.py",
+      "commands": "pip install -r requirements-dsb-snapshot.txt",
+      "execute": [],
+      "events": [],
+      "schedule": "0 15 * * *",
+      "timeout": 900,
+      "enabled": true,
+      "logging": true,
+      "scopes": [
+        "rows.read",
+        "rows.write"
+      ],
+      "ignore": [
+        ".appwrite",
+        ".env",
+        ".env.*",
+        "**/__pycache__",
+        "**/*.pyc",
+        "README.md"
+      ]
+    }
+  ],
+  "tablesDB": [
+    {
+      "$id": "lanis",
+      "name": "LANiS",
+      "enabled": true
+    }
+  ],
+  "tables": [
+    {
+      "$id": "refresh_tokens",
+      "$permissions": [],
+      "databaseId": "lanis",
+      "name": "Refresh tokens",
+      "enabled": true,
+      "rowSecurity": false,
+      "columns": [
+        {"key": "token_hash", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "user_key", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "user_id", "type": "varchar", "required": true, "array": false, "size": 255},
+        {"key": "school_id", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "username", "type": "varchar", "required": true, "array": false, "size": 255},
+        {"key": "password_encrypted", "type": "longtext", "required": true, "array": false, "encrypt": true},
+        {"key": "created_at", "type": "datetime", "required": true, "array": false},
+        {"key": "expires_at", "type": "datetime", "required": true, "array": false}
+      ],
+      "indexes": [
+        {"key": "by_user_expiry", "type": "key", "columns": ["user_key", "expires_at", "created_at"]}
+      ]
+    },
+    {
+      "$id": "response_cache",
+      "$permissions": [],
+      "databaseId": "lanis",
+      "name": "Response cache",
+      "enabled": true,
+      "rowSecurity": false,
+      "columns": [
+        {"key": "user_key", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "endpoint", "type": "varchar", "required": true, "array": false, "size": 255},
+        {"key": "params_hash", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "data_json", "type": "longtext", "required": true, "array": false},
+        {"key": "created_at", "type": "datetime", "required": true, "array": false},
+        {"key": "stale_at", "type": "datetime", "required": true, "array": false},
+        {"key": "expires_at", "type": "datetime", "required": true, "array": false},
+        {"key": "is_long_term", "type": "boolean", "required": false, "array": false, "default": false}
+      ],
+      "indexes": [
+        {"key": "by_user", "type": "key", "columns": ["user_key"]}
+      ]
+    },
+    {
+      "$id": "user_metrics",
+      "$permissions": [],
+      "databaseId": "lanis",
+      "name": "User metrics",
+      "enabled": true,
+      "rowSecurity": false,
+      "columns": [
+        {"key": "school_id", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "login", "type": "varchar", "required": true, "array": false, "size": 255},
+        {"key": "data_hash", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "user_data_json", "type": "longtext", "required": true, "array": false},
+        {"key": "first_seen", "type": "datetime", "required": true, "array": false},
+        {"key": "last_updated", "type": "datetime", "required": true, "array": false},
+        {"key": "update_count", "type": "integer", "required": false, "array": false, "default": 0}
+      ],
+      "indexes": [
+        {"key": "by_school_updated", "type": "key", "columns": ["school_id", "last_updated"]}
+      ]
+    },
+    {
+      "$id": "file_metadata",
+      "$permissions": [],
+      "databaseId": "lanis",
+      "name": "File metadata",
+      "enabled": true,
+      "rowSecurity": false,
+      "columns": [
+        {"key": "file_hash", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "storage_file_id", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "source_url_encrypted", "type": "longtext", "required": false, "array": false, "encrypt": true},
+        {"key": "content_type", "type": "varchar", "required": false, "array": false, "size": 255},
+        {"key": "filename", "type": "varchar", "required": false, "array": false, "size": 512},
+        {"key": "status", "type": "varchar", "required": true, "array": false, "size": 32},
+        {"key": "updated_at", "type": "datetime", "required": true, "array": false}
+      ],
+      "indexes": []
+    },
+    {
+      "$id": "dsb_snapshots",
+      "$permissions": [],
+      "databaseId": "lanis",
+      "name": "DSB snapshots",
+      "enabled": true,
+      "rowSecurity": false,
+      "columns": [
+        {"key": "school_id", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "fetch_date", "type": "varchar", "required": true, "array": false, "size": 10},
+        {"key": "fetch_time", "type": "datetime", "required": true, "array": false},
+        {"key": "data_json", "type": "longtext", "required": true, "array": false},
+        {"key": "entry_count", "type": "integer", "required": false, "array": false, "default": 0}
+      ],
+      "indexes": [
+        {"key": "by_fetch_time", "type": "key", "columns": ["fetch_date", "fetch_time"]}
+      ]
+    }
+  ],
+  "buckets": [
+    {
+      "$id": "lanis-files",
+      "$permissions": [],
+      "fileSecurity": true,
+      "name": "LANiS files",
+      "enabled": true,
+      "maximumFileSize": 104857600,
+      "allowedFileExtensions": [],
+      "compression": "gzip",
+      "encryption": true,
+      "antivirus": true
+    }
+  ]
+}

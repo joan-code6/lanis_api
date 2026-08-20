@@ -1,0 +1,5 @@
+.env
+.appwrite/
+__pycache__/
+**/__pycache__/
+*.pyc
