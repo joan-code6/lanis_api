@@ -13,8 +13,8 @@ class _Response:
     def __init__(self) -> None:
         self.calls = []
 
-    def json(self, payload, status_code=200, **kwargs):
-        self.calls.append((payload, status_code, kwargs))
+    def json(self, payload, status_code=200, headers=None, **kwargs):
+        self.calls.append((payload, status_code, headers, kwargs))
         return {"payload": payload, "status_code": status_code}
 
 
