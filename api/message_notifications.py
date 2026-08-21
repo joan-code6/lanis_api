@@ -297,19 +297,32 @@ async def _send_push_payloads(
     """Send one queued payload per device and report each device's outcome."""
     if not deliveries:
         return {}
+
+    statuses: Dict[str, str] = {}
+    trusted_deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
+    for endpoint, delivery in deliveries.items():
+        if not is_trusted_push_endpoint(endpoint):
+            logger.warning("Dropping untrusted stored push endpoint for %s: %s", user_id, endpoint)
+            await _remove_push_subscription(user_id, endpoint)
+            statuses[endpoint] = "gone"
+            continue
+        trusted_deliveries[endpoint] = delivery
+
+    if not trusted_deliveries:
+        return statuses
     if not push_configured():
         logger.warning("Push notification skipped: VAPID configuration is incomplete")
-        return {endpoint: "retry" for endpoint in deliveries}
+        statuses.update({endpoint: "retry" for endpoint in trusted_deliveries})
+        return statuses
 
     results = await asyncio.gather(
         *(
             run_in_threadpool(_send_push_sync, subscription, payload)
-            for subscription, payload in deliveries.values()
+            for subscription, payload in trusted_deliveries.values()
         ),
         return_exceptions=True,
     )
-    statuses: Dict[str, str] = {}
-    for (endpoint, (_subscription, _payload)), result in zip(deliveries.items(), results):
+    for (endpoint, (_subscription, _payload)), result in zip(trusted_deliveries.items(), results):
         if isinstance(result, asyncio.CancelledError):
             raise result
         if not isinstance(result, Exception):
@@ -317,21 +330,25 @@ async def _send_push_payloads(
             continue
 
         if _is_permanent_push_failure(result):
-            try:
-                await delete_push_subscription(user_id, endpoint)
-            except Exception as error:
-                logger.warning(
-                    "Failed to remove stale push subscription %s for %s: %s",
-                    endpoint,
-                    user_id,
-                    error,
-                )
+            await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
             continue
 
         statuses[endpoint] = "retry"
         logger.warning("Push notification failed for %s: %s", user_id, result)
     return statuses
+
+
+async def _remove_push_subscription(user_id: str, endpoint: str) -> None:
+    try:
+        await delete_push_subscription(user_id, endpoint)
+    except Exception as error:
+        logger.warning(
+            "Failed to remove stale push subscription %s for %s: %s",
+            endpoint,
+            user_id,
+            error,
+        )
 
 
 async def _send_push_to_subscriptions(

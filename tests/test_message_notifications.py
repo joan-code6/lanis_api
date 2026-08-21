@@ -453,6 +453,7 @@ def test_push_delivery_retries_when_any_device_has_a_transient_failure(monkeypat
         return None
 
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
 
     async def scenario():
@@ -484,6 +485,7 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
         deleted.append((user_id, endpoint))
 
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
 
@@ -497,6 +499,31 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
         "https://push.example/two": "gone",
     }
     assert deleted == [("user-a", "https://push.example/one"), ("user-a", "https://push.example/two")]
+
+
+def test_push_delivery_drops_untrusted_stored_endpoints(monkeypatch):
+    deleted = []
+
+    async def run_in_threadpool(*_args):
+        raise AssertionError("untrusted endpoints must not reach the provider")
+
+    async def delete_subscription(user_id, endpoint):
+        deleted.append((user_id, endpoint))
+
+    monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
+    monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
+
+    statuses = asyncio.run(
+        notifications._send_push_to_subscriptions(
+            "user-a",
+            [{"endpoint": "https://legacy.example/push", "keys": {}}],
+            {"title": "Test"},
+        )
+    )
+
+    assert statuses == {"https://legacy.example/push": "gone"}
+    assert deleted == [("user-a", "https://legacy.example/push")]
 
 
 def test_message_poll_persists_delivery_state_when_stale_cleanup_fails(monkeypatch):
@@ -535,6 +562,7 @@ def test_message_poll_persists_delivery_state_when_stale_cleanup_fails(monkeypat
     monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
     monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
 

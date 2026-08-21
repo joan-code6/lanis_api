@@ -203,6 +203,16 @@ async def delete_user_tokens(user_id: str) -> None:
             await db.commit()
 
 
+async def delete_user_push_subscriptions(user_id: str) -> None:
+    """Remove all browser push subscriptions for a user on full logout."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,)
+            )
+            await db.commit()
+
+
 def _notification_preferences_from_row(row: Any) -> Dict[str, Any]:
     return {
         "enabled": bool(row["enabled"]),

@@ -9,6 +9,7 @@ from api.api import (
     PushSubscriptionRequest,
     app,
     get_notification_config,
+    logout_endpoint,
     register_notification_subscription,
     reply_message,
     search_recipients,
@@ -241,3 +242,29 @@ def test_notification_subscription_rejects_malformed_push_keys(monkeypatch):
 
     asyncio.run(scenario())
     assert saved == []
+
+
+def test_logout_removes_user_push_subscriptions(monkeypatch):
+    calls = []
+
+    async def delete_tokens(user_id):
+        calls.append(("tokens", user_id))
+
+    async def delete_subscriptions(user_id):
+        calls.append(("subscriptions", user_id))
+
+    async def drop_session(user_id):
+        calls.append(("session", user_id))
+
+    monkeypatch.setattr(api_module, "delete_user_tokens", delete_tokens)
+    monkeypatch.setattr(api_module, "delete_user_push_subscriptions", delete_subscriptions)
+    monkeypatch.setattr(api_module.sessions, "drop_schulportal_session", drop_session)
+
+    assert asyncio.run(logout_endpoint(SimpleNamespace(user_id="user-a"))) == {
+        "status": "logged_out"
+    }
+    assert calls == [
+        ("tokens", "user-a"),
+        ("subscriptions", "user-a"),
+        ("session", "user-a"),
+    ]

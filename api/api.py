@@ -47,6 +47,7 @@ from .auth_db import (
     delete_refresh_token,
     delete_user_tokens,
     delete_push_subscription,
+    delete_user_push_subscriptions,
     get_notification_preferences,
     save_notification_preferences,
     save_push_subscription,
@@ -725,6 +726,7 @@ async def logout_endpoint(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, str]:
     await delete_user_tokens(auth.user_id)
+    await delete_user_push_subscriptions(auth.user_id)
     await sessions.drop_schulportal_session(auth.user_id)
     return {"status": "logged_out"}
 
