@@ -454,6 +454,7 @@ async def check_user_messages(
             return False
         if not current_user.get("enabled") or not is_notification_window_open(current_user, now):
             return False
+        previous_state = await get_message_notification_state(user_id)
 
     conversations = result.get("conversations") or []
     current_snapshot, details = build_message_snapshot(conversations)
