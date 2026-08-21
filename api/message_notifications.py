@@ -272,7 +272,15 @@ async def _send_push_payloads(
         response = getattr(result, "response", None)
         status_code = getattr(response, "status_code", None)
         if status_code in (404, 410):
-            await delete_push_subscription(user_id, endpoint)
+            try:
+                await delete_push_subscription(user_id, endpoint)
+            except Exception as error:
+                logger.warning(
+                    "Failed to remove stale push subscription %s for %s: %s",
+                    endpoint,
+                    user_id,
+                    error,
+                )
             statuses[endpoint] = "gone"
             continue
 

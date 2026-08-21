@@ -491,3 +491,82 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
         "https://push.example/two": "gone",
     }
     assert deleted == [("user-a", "https://push.example/one"), ("user-a", "https://push.example/two")]
+
+
+def test_message_poll_persists_delivery_state_when_stale_cleanup_fails(monkeypatch):
+    state = None
+    sent_endpoints = []
+    subscriptions = [
+        {"endpoint": "https://push.example/one", "keys": {}},
+        {"endpoint": "https://push.example/two", "keys": {}},
+    ]
+
+    class GoneError(Exception):
+        def __init__(self):
+            self.response = SimpleNamespace(status_code=410)
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return subscriptions
+
+    async def run_in_threadpool(func, *args):
+        if args and args[0] == "All":
+            return func(*args)
+        subscription, _payload = args
+        sent_endpoints.append(subscription["endpoint"])
+        return GoneError() if subscription["endpoint"].endswith("/two") else None
+
+    async def delete_subscription(_user_id, _endpoint):
+        raise RuntimeError("database temporarily unavailable")
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+    monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
+    monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
+
+    class FakeClient:
+        responses = [
+            {"success": True, "conversations": [{"id": "c-1", "date": "10:00", "unread": True}]},
+            {"success": True, "conversations": [{"id": "c-1", "date": "10:16", "unread": True}]},
+            {"success": True, "conversations": [{"id": "c-1", "date": "10:16", "unread": True}]},
+        ]
+
+        def nachrichten_get_headers(self, _get_type, _last):
+            return self.responses.pop(0)
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": True,
+    }
+    timezone = ZoneInfo("Europe/Berlin")
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=FakeClient())
+
+    async def scenario():
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 0, tzinfo=timezone)
+        )
+        assert await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 16, tzinfo=timezone)
+        )
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 32, tzinfo=timezone)
+        )
+
+    asyncio.run(scenario())
+    assert sent_endpoints == ["https://push.example/one", "https://push.example/two"]
+    assert "pending_deliveries" not in state
