@@ -400,6 +400,7 @@ async def check_user_messages(
     get_client: Callable[[str], Awaitable[Any]],
     now: datetime | None = None,
     invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,
+    get_preferences: Callable[[str], Awaitable[Dict[str, Any]]] | None = None,
 ) -> bool:
     """Poll one configured user and notify on new or changed conversations."""
     user_id = str(user["user_id"])
@@ -443,6 +444,17 @@ async def check_user_messages(
         await _record_failed_poll(user_id, previous_state, local_now)
         return False
 
+    current_user = user
+    if get_preferences:
+        try:
+            current_user = {**user, **(await get_preferences(user_id))}
+        except Exception as error:
+            logger.warning("Message notification preferences read failed for %s: %s", user_id, error)
+            await _record_failed_poll(user_id, previous_state, local_now)
+            return False
+        if not current_user.get("enabled") or not is_notification_window_open(current_user, now):
+            return False
+
     conversations = result.get("conversations") or []
     current_snapshot, details = build_message_snapshot(conversations)
     has_baseline = isinstance(previous_state, dict) and "conversations" in previous_state
@@ -474,7 +486,9 @@ async def check_user_messages(
     pending_deliveries = _get_pending_deliveries(
         previous_state, set(subscriptions_by_endpoint)
     )
-    _apply_preview_preference(pending_deliveries, bool(user.get("show_preview", True)))
+    _apply_preview_preference(
+        pending_deliveries, bool(current_user.get("show_preview", True))
+    )
 
     if changed_ids:
         if invalidate_cache:
@@ -489,7 +503,7 @@ async def check_user_messages(
                         error,
                     )
         first = details[changed_ids[0]]
-        if user.get("show_preview", True):
+        if current_user.get("show_preview", True):
             body = f"{first['sender']}: {first['subject']}"
         else:
             body = "Du hast neue Nachrichten."
@@ -530,6 +544,7 @@ async def check_user_messages(
 async def run_message_notification_cycle(
     get_client: Callable[[str], Awaitable[Any]],
     invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,
+    get_preferences: Callable[[str], Awaitable[Dict[str, Any]]] | None = None,
 ) -> None:
     """Run one bounded polling cycle for all enabled users."""
     users = await get_enabled_notification_users()
@@ -538,11 +553,14 @@ async def run_message_notification_cycle(
     async def check_with_limit(user: Dict[str, Any]) -> None:
         async with semaphore:
             try:
-                if invalidate_cache is None:
+                if invalidate_cache is None and get_preferences is None:
                     await check_user_messages(user, get_client)
                 else:
                     await check_user_messages(
-                        user, get_client, invalidate_cache=invalidate_cache
+                        user,
+                        get_client,
+                        invalidate_cache=invalidate_cache,
+                        get_preferences=get_preferences,
                     )
             except asyncio.CancelledError:
                 raise
@@ -557,13 +575,16 @@ async def run_message_notification_cycle(
 async def run_message_notification_scheduler(
     get_client: Callable[[str], Awaitable[Any]],
     invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,
+    get_preferences: Callable[[str], Awaitable[Dict[str, Any]]] | None = None,
 ) -> asyncio.Task:
     """Start the long-running daytime message polling task."""
     async def _loop() -> None:
         logger.info("Message notification scheduler started")
         while True:
             try:
-                await run_message_notification_cycle(get_client, invalidate_cache)
+                await run_message_notification_cycle(
+                    get_client, invalidate_cache, get_preferences
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as error:

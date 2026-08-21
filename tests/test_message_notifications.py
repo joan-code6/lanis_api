@@ -260,6 +260,91 @@ def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypa
     asyncio.run(scenario())
 
 
+def test_message_poll_rechecks_preferences_before_delivery(monkeypatch):
+    state = None
+    sent_bodies = []
+    preference_versions = [
+        {"enabled": True, "show_preview": True},
+        {"enabled": True, "show_preview": False},
+        {"enabled": False, "show_preview": False},
+    ]
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return [{"endpoint": "https://push.example/subscription", "keys": {}}]
+
+    async def send_push(_user_id, deliveries):
+        sent_bodies.extend(payload["body"] for _subscription, payload in deliveries.values())
+        return {endpoint: "delivered" for endpoint in deliveries}
+
+    async def get_preferences(_user_id):
+        return {
+            **preference_versions.pop(0),
+            "start_time": "07:00",
+            "end_time": "21:00",
+            "poll_interval_minutes": 15,
+            "timezone": "Europe/Berlin",
+        }
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+    monkeypatch.setattr(notifications, "_send_push_payloads", send_push)
+
+    class FakeClient:
+        responses = [
+            {"success": True, "conversations": [{"id": "c-1", "sender": "Lehrkraft", "subject": "Erste", "unread": True}]},
+            {"success": True, "conversations": [{"id": "c-1", "sender": "Lehrkraft", "subject": "Aktuell", "unread": True}]},
+            {"success": True, "conversations": [{"id": "c-1", "sender": "Lehrkraft", "subject": "Neu", "unread": True}]},
+        ]
+
+        def nachrichten_get_headers(self, _get_type, _last):
+            return self.responses.pop(0)
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": True,
+    }
+    timezone = ZoneInfo("Europe/Berlin")
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=FakeClient())
+
+    async def scenario():
+        assert not await notifications.check_user_messages(
+            user,
+            get_client,
+            datetime(2026, 8, 21, 10, 0, tzinfo=timezone),
+            get_preferences=get_preferences,
+        )
+        assert await notifications.check_user_messages(
+            user,
+            get_client,
+            datetime(2026, 8, 21, 10, 16, tzinfo=timezone),
+            get_preferences=get_preferences,
+        )
+        assert not await notifications.check_user_messages(
+            user,
+            get_client,
+            datetime(2026, 8, 21, 10, 32, tzinfo=timezone),
+            get_preferences=get_preferences,
+        )
+
+    asyncio.run(scenario())
+    assert sent_bodies == ["Du hast neue Nachrichten."]
+
+
 def test_message_poll_skips_portal_fetch_without_a_push_subscription(monkeypatch):
     user = {
         "user_id": "user-a",
