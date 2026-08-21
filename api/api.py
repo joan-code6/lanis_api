@@ -46,6 +46,10 @@ from .auth_db import (
     get_refresh_token_by_user_id,
     delete_refresh_token,
     delete_user_tokens,
+    delete_push_subscription,
+    get_notification_preferences,
+    save_notification_preferences,
+    save_push_subscription,
 )
 from .file_cache import (
     get_file_hash,
@@ -59,6 +63,11 @@ from .file_cache import (
     get_content_path,
 )
 from .timetable_enrichment import enrich_timetable
+from .message_notifications import (
+    run_message_notification_scheduler,
+    send_test_push_notification,
+    validate_notification_preferences,
+)
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -138,6 +147,29 @@ class TokenRefreshResponse(BaseModel):
     expires_in: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60
 
 
+class NotificationPreferencesRequest(BaseModel):
+    enabled: bool = Field(False, description="Poll for new messages and send push notifications")
+    start_time: str = Field("07:00", description="Local time at which polling may start")
+    end_time: str = Field("21:00", description="Local time at which polling may stop")
+    poll_interval_minutes: int = Field(15, ge=5, le=60)
+    timezone: str = Field("Europe/Berlin", description="IANA timezone used for the polling window")
+    show_preview: bool = Field(True, description="Include sender and subject in push notifications")
+
+
+class PushSubscriptionKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(..., min_length=1)
+    keys: PushSubscriptionKeys
+
+
+class PushUnsubscribeRequest(BaseModel):
+    endpoint: str
+
+
 # --- Internal Data Structures ---
 
 @dataclass
@@ -169,6 +201,8 @@ class CacheEntry:
     data: Any
     created_at: datetime
     is_long_term: bool = False
+    endpoint: str = ""
+    params: str = ""
 
     def is_expired(self, ttl_seconds: int) -> bool:
         return datetime.utcnow() - self.created_at > timedelta(seconds=ttl_seconds)
@@ -193,6 +227,7 @@ class AuthManager:
     def __init__(self, ttl_seconds: int = SESSION_TTL_SECONDS) -> None:
         self._schulportal_clients: Dict[str, SchulportalSessionData] = {}
         self._cache: Dict[str, CacheEntry] = {}
+        self._cache_versions: Dict[tuple[str, str], int] = {}
         self._lock = asyncio.Lock()
         self._ttl = ttl_seconds
 
@@ -399,10 +434,63 @@ class AuthManager:
                 data=data,
                 created_at=datetime.utcnow(),
                 is_long_term=is_long_term,
+                endpoint=endpoint,
+                params=params,
             )
+
+    async def get_cache_version(self, user_id: str, endpoint: str) -> int:
+        """Return the current version for an endpoint's cache entries."""
+        async with self._lock:
+            return self._cache_versions.get((user_id, endpoint), 0)
+
+    async def set_cache_if_current_version(
+        self,
+        user_id: str,
+        endpoint: str,
+        data: Any,
+        params: str,
+        version: int,
+        is_long_term: bool = False,
+    ) -> bool:
+        """Store a response unless the endpoint was invalidated while fetching it."""
+        async with self._lock:
+            version_key = (user_id, endpoint)
+            if self._cache_versions.get(version_key, 0) != version:
+                return False
+
+            cache_key = self._make_cache_key(user_id, endpoint, params)
+            self._cache[cache_key] = CacheEntry(
+                user_id=user_id,
+                data=data,
+                created_at=datetime.utcnow(),
+                is_long_term=is_long_term,
+                endpoint=endpoint,
+                params=params,
+            )
+            return True
+
+    async def invalidate_endpoint_cache(self, user_id: str, endpoint: str) -> None:
+        """Invalidate all cached parameter variants for one endpoint."""
+        async with self._lock:
+            version_key = (user_id, endpoint)
+            self._cache_versions[version_key] = (
+                self._cache_versions.get(version_key, 0) + 1
+            )
+            expired = [
+                key
+                for key, entry in self._cache.items()
+                if entry.user_id == user_id and entry.endpoint == endpoint
+            ]
+            for key in expired:
+                self._cache.pop(key)
 
     async def invalidate_user_cache(self, user_id: str) -> None:
         async with self._lock:
+            version_keys = [
+                key for key in self._cache_versions if key[0] == user_id
+            ]
+            for version_key in version_keys:
+                self._cache_versions[version_key] += 1
             expired = [
                 key for key, entry in self._cache.items() if entry.user_id == user_id
             ]
@@ -412,6 +500,7 @@ class AuthManager:
 
 sessions = AuthManager()
 _dsb_scheduler_task = None
+_message_notification_task = None
 
 
 # --- Background Tasks ---
@@ -509,20 +598,28 @@ app.include_router(documentation_router)
 
 @app.on_event("startup")
 async def _startup() -> None:
-    global _dsb_scheduler_task
+    global _dsb_scheduler_task, _message_notification_task
     await auth_db_initialize()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
     await task_queue.start()
     _dsb_scheduler_task = await run_dsb_scheduler()
-    logger.info("API started with task queue, databases, and DSB snapshot scheduler")
+    _message_notification_task = await run_message_notification_scheduler(
+        sessions._get_or_create_schulportal_client
+    )
+    logger.info(
+        "API started with task queue, databases, DSB snapshot scheduler, "
+        "and message notification scheduler"
+    )
 
 
 @app.on_event("shutdown")
 async def _cleanup_sessions() -> None:
-    global _dsb_scheduler_task
+    global _dsb_scheduler_task, _message_notification_task
     if _dsb_scheduler_task:
         _dsb_scheduler_task.cancel()
+    if _message_notification_task:
+        _message_notification_task.cancel()
     await task_queue.stop(wait=True, timeout=10.0)
     await sessions.shutdown()
 
@@ -921,14 +1018,132 @@ async def get_lerngruppen(
 # --- Messages ---
 
 
+@app.get("/notifications/config")
+async def get_notification_config(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return the public Web Push configuration for the signed-in user."""
+    del auth
+    configured = all(
+        os.getenv(name, "").strip()
+        for name in ("VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT")
+    )
+    return {
+        "success": True,
+        "configured": configured,
+        "public_key": os.getenv("VAPID_PUBLIC_KEY", "") if configured else "",
+    }
+
+
+@app.get("/notifications/preferences")
+async def get_user_notification_preferences(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    preferences = await get_notification_preferences(auth.user_id)
+    preferences.pop("user_id", None)
+    return {"success": True, "preferences": preferences}
+
+
+@app.put("/notifications/preferences")
+async def update_user_notification_preferences(
+    payload: NotificationPreferencesRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    preferences = (
+        payload.model_dump()
+        if hasattr(payload, "model_dump")
+        else payload.dict()
+    )
+    try:
+        validate_notification_preferences(preferences)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    saved = await save_notification_preferences(auth.user_id, preferences)
+    saved.pop("user_id", None)
+    return {"success": True, "preferences": saved}
+
+
+@app.post("/notifications/subscription")
+async def register_notification_subscription(
+    payload: PushSubscriptionRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not all(
+        os.getenv(name, "").strip()
+        for name in ("VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT")
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Push notifications are not configured on this server",
+        )
+    if not payload.endpoint.startswith("https://"):
+        raise HTTPException(status_code=422, detail="Push endpoint must use HTTPS")
+
+    subscription = (
+        payload.model_dump()
+        if hasattr(payload, "model_dump")
+        else payload.dict()
+    )
+    await save_push_subscription(auth.user_id, subscription)
+    return {"success": True}
+
+
+@app.post("/notifications/unsubscribe")
+async def unregister_notification_subscription(
+    payload: PushUnsubscribeRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    await delete_push_subscription(auth.user_id, payload.endpoint)
+    return {"success": True}
+
+
+@app.post("/notifications/test")
+async def send_notification_test(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not await send_test_push_notification(auth.user_id):
+        raise HTTPException(
+            status_code=503,
+            detail="No active push subscription or push delivery failed",
+        )
+    return {"success": True}
+
+
+MESSAGE_CACHE_ENDPOINTS = (
+    "/nachrichten/headers",
+    "/nachrichten/conversation",
+)
+
+
+async def _invalidate_message_caches(user_id: str) -> None:
+    await asyncio.gather(
+        *(
+            sessions.invalidate_endpoint_cache(user_id, endpoint)
+            for endpoint in MESSAGE_CACHE_ENDPOINTS
+        )
+    )
+
+
 async def _update_message_cache_task(
-    user_id: str, endpoint: str, fetch_func, params: dict, cache_params: str
+    user_id: str,
+    endpoint: str,
+    fetch_func,
+    params: dict,
+    cache_params: str,
+    cache_version: int,
 ):
     try:
         fresh_data = await run_in_threadpool(fetch_func, **params)
         cached_data = await sessions.get_cached(user_id, endpoint, cache_params)
-        if cached_data is None or not _responses_equal(cached_data, fresh_data):
-            await sessions.set_cache(user_id, endpoint, fresh_data, cache_params)
+        if cached_data is not None and not _responses_equal(cached_data, fresh_data):
+            await sessions.set_cache_if_current_version(
+                user_id,
+                endpoint,
+                fresh_data,
+                cache_params,
+                cache_version,
+            )
     except Exception as e:
         logger.error(f"Error updating message cache for {endpoint}: {e}")
 
@@ -942,6 +1157,7 @@ async def get_message_headers(
     endpoint = "/nachrichten/headers"
     params = {"get_type": get_type, "last": last}
     cache_params = _make_param_key(params)
+    cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
     task = Task(
         name=f"update_message_cache:{endpoint}",
@@ -952,6 +1168,7 @@ async def get_message_headers(
             auth.client.nachrichten_get_headers,
             params,
             cache_params,
+            cache_version,
         ),
         priority=TaskPriority.LOW,
         max_retries=2,
@@ -962,7 +1179,9 @@ async def get_message_headers(
     result = await run_in_threadpool(
         auth.client.nachrichten_get_headers, get_type, last
     )
-    await sessions.set_cache(auth.user_id, endpoint, result, cache_params)
+    await sessions.set_cache_if_current_version(
+        auth.user_id, endpoint, result, cache_params, cache_version
+    )
     return result
 
 
@@ -975,6 +1194,7 @@ async def search_recipients(
     params = {"q": q}
     fetch_params = {"query": q}
     cache_params = _make_param_key(params)
+    cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
     task = Task(
         name=f"update_message_cache:{endpoint}",
@@ -985,6 +1205,7 @@ async def search_recipients(
             auth.client.nachrichten_search_recipients,
             fetch_params,
             cache_params,
+            cache_version,
         ),
         priority=TaskPriority.LOW,
         max_retries=2,
@@ -1006,6 +1227,7 @@ async def get_conversation(
     endpoint = "/nachrichten/conversation"
     params = {"conversation_id": conversation_id, "last": last}
     cache_params = _make_param_key(params)
+    cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
     task = Task(
         name=f"update_message_cache:{endpoint}",
@@ -1016,6 +1238,7 @@ async def get_conversation(
             auth.client.nachrichten_get_conversation,
             params,
             cache_params,
+            cache_version,
         ),
         priority=TaskPriority.LOW,
         max_retries=2,
@@ -1026,7 +1249,9 @@ async def get_conversation(
     result = await run_in_threadpool(
         auth.client.nachrichten_get_conversation, conversation_id, last
     )
-    await sessions.set_cache(auth.user_id, endpoint, result, cache_params)
+    await sessions.set_cache_if_current_version(
+        auth.user_id, endpoint, result, cache_params, cache_version
+    )
     return result
 
 
@@ -1042,7 +1267,10 @@ async def send_message(
         "subject": subject,
         "body": body,
     }
-    return await run_in_threadpool(auth.client.nachrichten_send_message, message_data)
+    result = await run_in_threadpool(auth.client.nachrichten_send_message, message_data)
+    if result.get("success"):
+        await _invalidate_message_caches(auth.user_id)
+    return result
 
 
 @app.post("/nachrichten/reply")
@@ -1052,9 +1280,12 @@ async def reply_message(
     to: str = Body("all", description="Recipient selector: 'all' or a user id"),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    return await run_in_threadpool(
+    result = await run_in_threadpool(
         auth.client.nachrichten_reply_message, conversation_id, body, to
     )
+    if result.get("success"):
+        await _invalidate_message_caches(auth.user_id)
+    return result
 
 
 @app.post("/nachrichten/mark-read")

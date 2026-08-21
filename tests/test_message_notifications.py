@@ -1,0 +1,191 @@
+import asyncio
+from datetime import datetime
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
+
+from api import auth_db
+from api import message_notifications as notifications
+
+
+def test_notification_storage_round_trip(tmp_path, monkeypatch):
+    database_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_db, "DB_PATH", str(database_path))
+
+    async def scenario():
+        await auth_db.initialize()
+
+        defaults = await auth_db.get_notification_preferences("user-a")
+        assert defaults["enabled"] is False
+        assert defaults["poll_interval_minutes"] == 15
+
+        await auth_db.save_notification_preferences(
+            "user-a",
+            {
+                "enabled": True,
+                "start_time": "08:00",
+                "end_time": "18:30",
+                "poll_interval_minutes": 30,
+                "timezone": "Europe/Berlin",
+                "show_preview": False,
+            },
+        )
+        await auth_db.save_push_subscription(
+            "user-a",
+            {
+                "endpoint": "https://push.example/subscription",
+                "keys": {"p256dh": "public-key", "auth": "auth-key"},
+            },
+        )
+        await auth_db.save_message_notification_state(
+            "user-a",
+            {"checked_at": "2026-08-21T10:00:00+02:00", "conversations": {"c-1": "sig"}},
+        )
+        await auth_db.store_refresh_token("user-a", "5201", "user", "password")
+
+        assert await auth_db.get_notification_preferences("user-a") == {
+            "user_id": "user-a",
+            "enabled": True,
+            "start_time": "08:00",
+            "end_time": "18:30",
+            "poll_interval_minutes": 30,
+            "timezone": "Europe/Berlin",
+            "show_preview": False,
+        }
+        assert await auth_db.get_push_subscriptions("user-a") == [
+            {
+                "endpoint": "https://push.example/subscription",
+                "keys": {"p256dh": "public-key", "auth": "auth-key"},
+            }
+        ]
+        assert await auth_db.get_message_notification_state("user-a") == {
+            "checked_at": "2026-08-21T10:00:00+02:00",
+            "conversations": {"c-1": "sig"},
+        }
+        assert [user["user_id"] for user in await auth_db.get_enabled_notification_users()] == [
+            "user-a"
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_notification_window_supports_daytime_and_overnight_ranges():
+    daytime = {
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "timezone": "Europe/Berlin",
+    }
+    overnight = {
+        "start_time": "22:00",
+        "end_time": "06:00",
+        "timezone": "Europe/Berlin",
+    }
+    timezone = ZoneInfo("Europe/Berlin")
+
+    assert notifications.is_notification_window_open(
+        daytime, datetime(2026, 8, 21, 12, 0, tzinfo=timezone)
+    )
+    assert not notifications.is_notification_window_open(
+        daytime, datetime(2026, 8, 21, 22, 0, tzinfo=timezone)
+    )
+    assert notifications.is_notification_window_open(
+        overnight, datetime(2026, 8, 21, 23, 0, tzinfo=timezone)
+    )
+    assert notifications.is_notification_window_open(
+        overnight, datetime(2026, 8, 21, 5, 0, tzinfo=timezone)
+    )
+    assert not notifications.is_notification_window_open(
+        overnight, datetime(2026, 8, 21, 12, 0, tzinfo=timezone)
+    )
+
+
+def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypatch):
+    state = None
+    sent_payloads = []
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return [
+            {
+                "endpoint": "https://push.example/subscription",
+                "keys": {"p256dh": "public-key", "auth": "auth-key"},
+            }
+        ]
+
+    async def send_push(_user_id, _subscriptions, payload):
+        sent_payloads.append(payload)
+        return True
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+    monkeypatch.setattr(notifications, "_send_push_to_subscriptions", send_push)
+
+    class FakeClient:
+        responses = [
+            {
+                "success": True,
+                "conversations": [
+                    {
+                        "id": "conversation-1",
+                        "sender": "Herr Müller",
+                        "subject": "Klausur",
+                        "date": "2026-08-21T10:00:00+02:00",
+                    }
+                ],
+            },
+            {
+                "success": True,
+                "conversations": [
+                    {
+                        "id": "conversation-1",
+                        "sender": "Herr Müller",
+                        "subject": "Klausur",
+                        "date": "2026-08-21T10:16:00+02:00",
+                    }
+                ],
+            },
+        ]
+
+        def nachrichten_get_headers(self, _get_type, _last):
+            return self.responses.pop(0)
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": True,
+    }
+    now = datetime(2026, 8, 21, 10, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=FakeClient())
+
+    async def scenario():
+        assert not await notifications.check_user_messages(user, get_client, now)
+        assert sent_payloads == []
+
+        changed = await notifications.check_user_messages(
+            user,
+            get_client,
+            datetime(2026, 8, 21, 10, 16, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        assert changed
+        assert sent_payloads == [
+            {
+                "title": "Neue Nachricht in Lanis",
+                "body": "Herr Müller: Klausur",
+                "url": "/messages?conversation=conversation-1",
+                "tag": "lanis-messages-conversation-1",
+            }
+        ]
+
+    asyncio.run(scenario())

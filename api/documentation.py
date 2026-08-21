@@ -29,6 +29,7 @@ _URL_TAG_MAP = [
     ("/kalender", "Calendar"),
     ("/meinunterricht", "Courses"),
     ("/nachrichten", "Messages"),
+    ("/notifications", "Notifications"),
     ("/vertretungsplan", "Plans"),
     ("/stundenplan", "Plans"),
     ("/dateispeicher", "File Storage"),
@@ -92,7 +93,7 @@ def _build_endpoint_list(schema: dict) -> list:
 
         for method, details in methods.items():
             method_upper = method.upper()
-            if method_upper not in ("GET", "POST"):
+            if method_upper not in ("GET", "POST", "PUT"):
                 continue
 
             encoded_path = quote(path.lstrip("/"), safe="/")
@@ -145,7 +146,9 @@ def _extract_params(details: dict, full_schema: dict):
     return path_params, query_params, header_params
 
 
-def _build_endpoint_detail(schema: dict, target_path: str) -> dict | None:
+def _build_endpoint_detail(
+    schema: dict, target_path: str, target_method: str | None = None
+) -> dict | None:
     """Build detailed info for a single endpoint path."""
     paths = schema.get("paths", {})
 
@@ -153,11 +156,18 @@ def _build_endpoint_detail(schema: dict, target_path: str) -> dict | None:
         return None
 
     methods = paths[target_path]
-    method_names = [m for m in methods if m.upper() in ("GET", "POST")]
+    method_names = [m for m in methods if m.upper() in ("GET", "POST", "PUT")]
     if not method_names:
         return None
 
     primary = method_names[0]
+    if target_method:
+        primary = next(
+            (method for method in method_names if method.upper() == target_method.upper()),
+            "",
+        )
+        if not primary:
+            return None
     details = methods[primary]
     method_upper = primary.upper()
     auth_required = _is_auth_required(details, schema)
@@ -311,7 +321,7 @@ async def documentation_index(request: Request):
 async def documentation_endpoint(request: Request, path: str):
     target = "/" + unquote(path.rstrip("/"))
     schema = request.app.openapi()
-    ep = _build_endpoint_detail(schema, target)
+    ep = _build_endpoint_detail(schema, target, request.query_params.get("method"))
 
     if not ep:
         raise HTTPException(status_code=404, detail=f"Endpoint '{target}' not found")

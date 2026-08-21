@@ -3,7 +3,18 @@ from types import SimpleNamespace
 
 from starlette.routing import Match
 
-from api.api import app, search_recipients, sessions, task_queue
+from api.api import (
+    PushSubscriptionRequest,
+    app,
+    get_notification_config,
+    register_notification_subscription,
+    reply_message,
+    search_recipients,
+    send_message,
+    sessions,
+    task_queue,
+)
+from fastapi import HTTPException
 
 
 def test_recipient_search_route_precedes_conversation_route() -> None:
@@ -30,11 +41,15 @@ def test_recipient_search_refresh_uses_client_query_parameter(monkeypatch) -> No
     async def set_cache(*_args, **_kwargs):
         return None
 
+    async def get_cache_version(*_args, **_kwargs):
+        return 0
+
     async def add_task(task):
         captured["task"] = task
 
     monkeypatch.setattr(sessions, "get_cached", get_cached)
     monkeypatch.setattr(sessions, "set_cache", set_cache)
+    monkeypatch.setattr(sessions, "get_cache_version", get_cache_version)
     monkeypatch.setattr(task_queue, "add_task", add_task)
 
     client = SimpleNamespace(
@@ -50,3 +65,91 @@ def test_recipient_search_refresh_uses_client_query_parameter(monkeypatch) -> No
 
     assert result["success"] is True
     assert captured["task"].args[3] == {"query": "Bennet"}
+
+
+def test_send_message_invalidates_message_caches(monkeypatch) -> None:
+    invalidated = []
+
+    async def invalidate_endpoint_cache(user_id, endpoint):
+        invalidated.append((user_id, endpoint))
+
+    monkeypatch.setattr(sessions, "invalidate_endpoint_cache", invalidate_endpoint_cache)
+    client = SimpleNamespace(
+        nachrichten_send_message=lambda data: {
+            "success": True,
+            "message_id": "message-id",
+            "data": data,
+        }
+    )
+    auth = SimpleNamespace(user_id="user", client=client)
+
+    result = asyncio.run(send_message(["recipient"], "Subject", "Body", auth))
+
+    assert result["success"] is True
+    assert invalidated == [
+        ("user", "/nachrichten/headers"),
+        ("user", "/nachrichten/conversation"),
+    ]
+
+
+def test_reply_message_invalidates_message_caches(monkeypatch) -> None:
+    invalidated = []
+
+    async def invalidate_endpoint_cache(user_id, endpoint):
+        invalidated.append((user_id, endpoint))
+
+    monkeypatch.setattr(sessions, "invalidate_endpoint_cache", invalidate_endpoint_cache)
+    client = SimpleNamespace(
+        nachrichten_reply_message=lambda conversation_id, body, to: {
+            "success": True,
+            "details": {"id": "reply-id", "conversation_id": conversation_id},
+            "body": body,
+            "to": to,
+        }
+    )
+    auth = SimpleNamespace(user_id="user", client=client)
+
+    result = asyncio.run(reply_message("conversation-id", "Body", "all", auth))
+
+    assert result["success"] is True
+    assert invalidated == [
+        ("user", "/nachrichten/headers"),
+        ("user", "/nachrichten/conversation"),
+    ]
+
+
+def test_notification_config_only_exposes_public_key_when_push_is_configured(monkeypatch):
+    monkeypatch.setenv("VAPID_PUBLIC_KEY", "public")
+    monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("VAPID_SUBJECT", raising=False)
+
+    incomplete = asyncio.run(get_notification_config(SimpleNamespace()))
+
+    assert incomplete == {"success": True, "configured": False, "public_key": ""}
+
+    monkeypatch.setenv("VAPID_PRIVATE_KEY", "private")
+    monkeypatch.setenv("VAPID_SUBJECT", "mailto:test@example.org")
+    configured = asyncio.run(get_notification_config(SimpleNamespace()))
+
+    assert configured == {"success": True, "configured": True, "public_key": "public"}
+
+
+def test_notification_subscription_requires_complete_vapid_configuration(monkeypatch):
+    monkeypatch.setenv("VAPID_PUBLIC_KEY", "public")
+    monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("VAPID_SUBJECT", raising=False)
+    payload = PushSubscriptionRequest(
+        endpoint="https://push.example/subscription",
+        keys={"p256dh": "public-key", "auth": "auth-key"},
+    )
+    auth = SimpleNamespace(user_id="user")
+
+    async def scenario():
+        try:
+            await register_notification_subscription(payload, auth)
+        except HTTPException as error:
+            assert error.status_code == 503
+        else:
+            raise AssertionError("incomplete VAPID configuration must be rejected")
+
+    asyncio.run(scenario())
