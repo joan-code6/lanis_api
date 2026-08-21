@@ -30,7 +30,7 @@ logger = logging.getLogger("message_notifications")
 SCHEDULER_TICK_SECONDS = 60
 MAX_CONCURRENT_USER_POLLS = 4
 CLOCK_PATTERN = re.compile(r"^\d{2}:\d{2}$")
-PERMANENT_PUSH_STATUS_CODES = frozenset({400, 401, 403, 404, 410})
+PERMANENT_PUSH_STATUS_CODES = frozenset({404, 410})
 TRUSTED_PUSH_ENDPOINT_HOSTS = frozenset(
     {
         "fcm.googleapis.com",
@@ -388,6 +388,7 @@ async def check_user_messages(
     user: Dict[str, Any],
     get_client: Callable[[str], Awaitable[Any]],
     now: datetime | None = None,
+    invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> bool:
     """Poll one configured user and notify on new or changed conversations."""
     user_id = str(user["user_id"])
@@ -463,6 +464,17 @@ async def check_user_messages(
     _apply_preview_preference(pending_deliveries, bool(user.get("show_preview", True)))
 
     if changed_ids:
+        if invalidate_cache:
+            for endpoint in ("/nachrichten/headers", "/nachrichten/conversation"):
+                try:
+                    await invalidate_cache(user_id, endpoint)
+                except Exception as error:
+                    logger.warning(
+                        "Message cache invalidation failed for %s (%s): %s",
+                        user_id,
+                        endpoint,
+                        error,
+                    )
         first = details[changed_ids[0]]
         if user.get("show_preview", True):
             body = f"{first['sender']}: {first['subject']}"
@@ -504,6 +516,7 @@ async def check_user_messages(
 
 async def run_message_notification_cycle(
     get_client: Callable[[str], Awaitable[Any]],
+    invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> None:
     """Run one bounded polling cycle for all enabled users."""
     users = await get_enabled_notification_users()
@@ -512,7 +525,12 @@ async def run_message_notification_cycle(
     async def check_with_limit(user: Dict[str, Any]) -> None:
         async with semaphore:
             try:
-                await check_user_messages(user, get_client)
+                if invalidate_cache is None:
+                    await check_user_messages(user, get_client)
+                else:
+                    await check_user_messages(
+                        user, get_client, invalidate_cache=invalidate_cache
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -525,13 +543,14 @@ async def run_message_notification_cycle(
 
 async def run_message_notification_scheduler(
     get_client: Callable[[str], Awaitable[Any]],
+    invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,
 ) -> asyncio.Task:
     """Start the long-running daytime message polling task."""
     async def _loop() -> None:
         logger.info("Message notification scheduler started")
         while True:
             try:
-                await run_message_notification_cycle(get_client)
+                await run_message_notification_cycle(get_client, invalidate_cache)
             except asyncio.CancelledError:
                 raise
             except Exception as error:

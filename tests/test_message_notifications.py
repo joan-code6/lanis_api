@@ -162,6 +162,7 @@ def test_notification_preferences_reject_timezone_offsets_in_clocks():
 def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypatch):
     state = None
     sent_payloads = []
+    invalidated = []
 
     async def get_state(_user_id):
         return state
@@ -181,6 +182,9 @@ def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypa
     async def send_push(_user_id, deliveries):
         sent_payloads.extend(payload for _subscription, payload in deliveries.values())
         return {endpoint: "delivered" for endpoint in deliveries}
+
+    async def invalidate_cache(_user_id, endpoint):
+        invalidated.append(endpoint)
 
     monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
     monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
@@ -240,8 +244,10 @@ def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypa
             user,
             get_client,
             datetime(2026, 8, 21, 10, 16, tzinfo=ZoneInfo("Europe/Berlin")),
+            invalidate_cache=invalidate_cache,
         )
         assert changed
+        assert invalidated == ["/nachrichten/headers", "/nachrichten/conversation"]
         assert sent_payloads == [
             {
                 "title": "Neue Nachricht in Lanis",
@@ -540,7 +546,7 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
 
     class GoneError(Exception):
         def __init__(self):
-            self.response = SimpleNamespace(status_code=403)
+            self.response = SimpleNamespace(status_code=410)
 
     async def run_in_threadpool(_func, _subscription, _payload):
         return GoneError()

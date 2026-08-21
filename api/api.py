@@ -609,7 +609,8 @@ async def _startup() -> None:
     await task_queue.start()
     _dsb_scheduler_task = await run_dsb_scheduler()
     _message_notification_task = await run_message_notification_scheduler(
-        sessions._get_or_create_schulportal_client
+        sessions._get_or_create_schulportal_client,
+        sessions.invalidate_endpoint_cache,
     )
     logger.info(
         "API started with task queue, databases, DSB snapshot scheduler, "
