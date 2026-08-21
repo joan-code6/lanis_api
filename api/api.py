@@ -64,6 +64,7 @@ from .file_cache import (
 )
 from .timetable_enrichment import enrich_timetable
 from .message_notifications import (
+    push_configured,
     run_message_notification_scheduler,
     send_test_push_notification,
     validate_notification_preferences,
@@ -441,7 +442,7 @@ class AuthManager:
     async def get_cache_version(self, user_id: str, endpoint: str) -> int:
         """Return the current version for an endpoint's cache entries."""
         async with self._lock:
-            return self._cache_versions.get((user_id, endpoint), 0)
+            return self._cache_versions.setdefault((user_id, endpoint), 0)
 
     async def set_cache_if_current_version(
         self,
@@ -1024,10 +1025,7 @@ async def get_notification_config(
 ) -> Dict[str, object]:
     """Return the public Web Push configuration for the signed-in user."""
     del auth
-    configured = all(
-        os.getenv(name, "").strip()
-        for name in ("VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT")
-    )
+    configured = push_configured()
     return {
         "success": True,
         "configured": configured,
@@ -1069,10 +1067,7 @@ async def register_notification_subscription(
     payload: PushSubscriptionRequest,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    if not all(
-        os.getenv(name, "").strip()
-        for name in ("VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT")
-    ):
+    if not push_configured():
         raise HTTPException(
             status_code=503,
             detail="Push notifications are not configured on this server",
@@ -1214,7 +1209,9 @@ async def search_recipients(
     if cached is not None:
         return cached
     result = await run_in_threadpool(auth.client.nachrichten_search_recipients, q)
-    await sessions.set_cache(auth.user_id, endpoint, result, cache_params)
+    await sessions.set_cache_if_current_version(
+        auth.user_id, endpoint, result, cache_params, cache_version
+    )
     return result
 
 

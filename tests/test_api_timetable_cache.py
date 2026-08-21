@@ -45,6 +45,28 @@ def test_endpoint_cache_invalidation_rejects_stale_writes():
         assert await manager.set_cache_if_current_version(
             "user-a", "/nachrichten/headers", {"value": "fresh"}, "", new_version
         )
+        assert await manager.get_cached("user-a", "/nachrichten/headers") == {
+            "value": "fresh"
+        }
+
+    asyncio.run(scenario())
+
+
+def test_user_cache_invalidation_rejects_fetches_started_before_version_registration():
+    async def scenario():
+        manager = AuthManager()
+        old_version = await manager.get_cache_version(
+            "user-a", "/nachrichten/headers"
+        )
+
+        await manager.invalidate_user_cache("user-a")
+
+        assert await manager.get_cache_version(
+            "user-a", "/nachrichten/headers"
+        ) == old_version + 1
+        assert not await manager.set_cache_if_current_version(
+            "user-a", "/nachrichten/headers", {"value": "stale"}, "", old_version
+        )
 
     asyncio.run(scenario())
 

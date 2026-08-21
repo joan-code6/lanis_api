@@ -38,6 +38,10 @@ def test_recipient_search_refresh_uses_client_query_parameter(monkeypatch) -> No
     async def get_cached(*_args, **_kwargs):
         return None
 
+    async def set_cache_if_current_version(*args, **_kwargs):
+        captured["cache_write"] = args
+        return True
+
     async def set_cache(*_args, **_kwargs):
         return None
 
@@ -49,6 +53,9 @@ def test_recipient_search_refresh_uses_client_query_parameter(monkeypatch) -> No
 
     monkeypatch.setattr(sessions, "get_cached", get_cached)
     monkeypatch.setattr(sessions, "set_cache", set_cache)
+    monkeypatch.setattr(
+        sessions, "set_cache_if_current_version", set_cache_if_current_version
+    )
     monkeypatch.setattr(sessions, "get_cache_version", get_cache_version)
     monkeypatch.setattr(task_queue, "add_task", add_task)
 
@@ -65,6 +72,12 @@ def test_recipient_search_refresh_uses_client_query_parameter(monkeypatch) -> No
 
     assert result["success"] is True
     assert captured["task"].args[3] == {"query": "Bennet"}
+    assert captured["cache_write"][:3] == (
+        "user",
+        "/nachrichten/search",
+        result,
+    )
+    assert captured["cache_write"][4] == 0
 
 
 def test_send_message_invalidates_message_caches(monkeypatch) -> None:

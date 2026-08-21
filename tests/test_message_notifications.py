@@ -1,10 +1,31 @@
 import asyncio
+import sys
 from datetime import datetime
 from types import SimpleNamespace
+from types import ModuleType
 from zoneinfo import ZoneInfo
 
 from api import auth_db
 from api import message_notifications as notifications
+
+
+def test_push_delivery_uses_a_finite_timeout(monkeypatch):
+    calls = {}
+    pywebpush = ModuleType("pywebpush")
+
+    def webpush(**kwargs):
+        calls.update(kwargs)
+
+    pywebpush.webpush = webpush
+    monkeypatch.setitem(sys.modules, "pywebpush", pywebpush)
+    monkeypatch.setenv("VAPID_PRIVATE_KEY", "private")
+    monkeypatch.setenv("VAPID_SUBJECT", "mailto:test@example.org")
+
+    notifications._send_push_sync(
+        {"endpoint": "https://push.example/subscription"}, {"title": "Test"}
+    )
+
+    assert calls["timeout"] == 10
 
 
 def test_notification_storage_round_trip(tmp_path, monkeypatch):
@@ -189,3 +210,50 @@ def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypa
         ]
 
     asyncio.run(scenario())
+
+
+def test_message_poll_skips_portal_fetch_without_a_push_subscription(monkeypatch):
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": True,
+    }
+    now = datetime(2026, 8, 21, 10, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+
+    async def get_state(_user_id):
+        return None
+
+    async def get_subscriptions(_user_id):
+        return []
+
+    async def get_client(_user_id):
+        raise AssertionError("portal client should not be created without a subscription")
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+
+    assert not asyncio.run(notifications.check_user_messages(user, get_client, now))
+
+
+def test_notification_cycle_isolates_a_single_user_failure(monkeypatch):
+    users = [{"user_id": "bad"}, {"user_id": "good"}]
+    checked = []
+
+    async def get_users():
+        return users
+
+    async def check_user(user, _get_client):
+        if user["user_id"] == "bad":
+            raise ValueError("corrupt notification state")
+        checked.append(user["user_id"])
+
+    monkeypatch.setattr(notifications, "get_enabled_notification_users", get_users)
+    monkeypatch.setattr(notifications, "check_user_messages", check_user)
+
+    asyncio.run(notifications.run_message_notification_cycle(lambda _user_id: None))
+
+    assert checked == ["good"]

@@ -131,7 +131,7 @@ def _is_due(state: Dict[str, Any] | None, interval_minutes: int, now: datetime) 
     return now - checked_at.astimezone(now.tzinfo) >= timedelta(minutes=interval_minutes)
 
 
-def _push_configured() -> bool:
+def push_configured() -> bool:
     return all(
         os.getenv(name, "").strip()
         for name in ("VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT")
@@ -151,6 +151,7 @@ def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> No
         data=json.dumps(payload, ensure_ascii=False),
         vapid_private_key=os.environ["VAPID_PRIVATE_KEY"],
         vapid_claims={"sub": os.environ["VAPID_SUBJECT"]},
+        timeout=10,
     )
 
 
@@ -162,7 +163,7 @@ async def _send_push_to_subscriptions(
     """Send a payload and return whether the batch can be considered delivered."""
     if not subscriptions:
         return True
-    if not _push_configured():
+    if not push_configured():
         logger.warning("Push notification skipped: VAPID configuration is incomplete")
         return False
 
@@ -236,6 +237,10 @@ async def check_user_messages(
     if not _is_due(previous_state, interval, local_now):
         return False
 
+    subscriptions = await get_push_subscriptions(user_id)
+    if not subscriptions:
+        return False
+
     try:
         session_data = await get_client(user_id)
         client = getattr(session_data, "client", session_data)
@@ -263,8 +268,7 @@ async def check_user_messages(
         if has_baseline and previous_snapshot.get(conversation_id) != signature
     ]
 
-    subscriptions = await get_push_subscriptions(user_id)
-    if changed_ids and subscriptions:
+    if changed_ids:
         first = details[changed_ids[0]]
         if user.get("show_preview", True):
             body = f"{first['sender']}: {first['subject']}"
@@ -297,9 +301,16 @@ async def run_message_notification_cycle(
 
     async def check_with_limit(user: Dict[str, Any]) -> None:
         async with semaphore:
-            await check_user_messages(user, get_client)
+            try:
+                await check_user_messages(user, get_client)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning("Message notification poll crashed: %s", error)
 
-    await asyncio.gather(*(check_with_limit(user) for user in users))
+    await asyncio.gather(
+        *(check_with_limit(user) for user in users), return_exceptions=True
+    )
 
 
 async def run_message_notification_scheduler(
