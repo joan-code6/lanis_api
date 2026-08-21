@@ -9,9 +9,9 @@ This project allows you dynamicly accses the School Portal Hessen via python / R
 If you like this project maybe consider contacting me and either help contribute to add more modules or to donate your sph account temporarily for me to add more Modules
 
 ## Live Server
-I provide a hosted server of this for anyone to use at 
+I provide a hosted server of this for anyone to use at
 [https://lanis-backend.joancode.dev/](https://lanis-backend.joancode.dev/)
-If you wanna jump straigth in and not read too much code you can just have a look at the [api documentation](https://lanis-backend.joancode.dev/documentation) where you can see all endpoints and how to use them. 
+If you wanna jump straigth in and not read too much code you can just have a look at the [api documentation](https://lanis-backend.joancode.dev/documentation) where you can see all endpoints and how to use them.
 <img width="1249" height="937" alt="image" src="https://github.com/user-attachments/assets/8fef241f-3cd5-432b-bc01-5f85b8d6efab" />
 
 
@@ -36,7 +36,7 @@ Site note: modules are often refered as applets since the SPH is build ontop of 
 - nachrichten (pretty self explanitory right?)
 - stundenplan (important! as of the 11.06.26 this code has been only ported from another framework called lanis_mobile (which is written in go) and hasnt been tested since i dont have accses to such a module at my school)
 - lerngruppen (same here. This is a module often used by higher education institutions and has been ported without any testing!)
-- school_list (provides you with a map of school names to theire ids, important for login and school selection) 
+- school_list (provides you with a map of school names to theire ids, important for login and school selection)
 
 
 ## Installation
@@ -51,7 +51,7 @@ pip install -r requirements.txt
 
 ### Python package
 ```bash
-pip install sph_client 
+pip install sph_client
 ```
 
 ## Quick Start
@@ -89,6 +89,48 @@ if result.get("success"):
 
     api.logout()
 ```
+
+## Lanis MCP Server
+
+Lanis lets an AI assistant interact with the user's Schulportal Hessen account through typed MCP
+tools. Users do not need to know the LANIS REST API or pass an access token to every tool. The
+server covers every user-facing REST operation and defaults to
+`https://lanis-backend.joancode.dev`.
+
+```bash
+pip install -e '.[mcp]'
+
+# Local AI clients normally use stdio
+lanis-mcp
+
+# Or serve MCP over HTTP at http://localhost:8000/mcp
+lanis-mcp --transport streamable-http
+```
+
+`lanis_login` retains the access and refresh tokens inside the current MCP session. It also
+refreshes an expired access token once before retrying an authenticated operation. Existing tokens
+can instead be supplied through `LANIS_ACCESS_TOKEN` and `LANIS_REFRESH_TOKEN` for a single-user
+stdio server, or through an `X-Session-Token` or `Authorization: Bearer ...` header for an HTTP
+connection. Set `LANIS_API_BASE_URL` to target another deployment.
+
+Example stdio client configuration:
+
+```json
+{
+  "mcpServers": {
+    "lanis": {
+      "command": "lanis-mcp",
+      "env": {
+        "LANIS_API_BASE_URL": "https://lanis-backend.joancode.dev"
+      }
+    }
+  }
+}
+```
+
+The companion API-use skill is in [`skills/use-lanis-api`](skills/use-lanis-api). It documents the
+hosted REST endpoints, request sequences, and confirmation rules for write operations.
+
 ## Cashing and Sessions
 
 Fun Fact: Thanks to the cashing a api connected with a simple frontend such as lanis.arg-server.de gives you a UI which navigates waaaayyy faster then the schoolportal its self! And your phone recieves and sends waaayyy less data thanks to the api filtering out all the unimportant things and only sending the data you need!

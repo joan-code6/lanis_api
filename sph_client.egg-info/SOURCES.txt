@@ -2,13 +2,19 @@ README.md
 pyproject.toml
 api/__init__.py
 api/api.py
+api/auth_db.py
 api/documentation.py
 api/dsb_snapshot.py
 api/file_cache.py
+api/semantic_search.py
 api/metrics/__init__.py
 api/metrics/user_metrics_db.py
 api/queue/__init__.py
 api/queue/task_queue.py
+lanis_mcp/__init__.py
+lanis_mcp/__main__.py
+lanis_mcp/client.py
+lanis_mcp/server.py
 schulportal_hessen/__init__.py
 schulportal_hessen/base.py
 schulportal_hessen/applets/benutzer/__init__.py
@@ -45,5 +51,7 @@ sph_client/__init__.py
 sph_client.egg-info/PKG-INFO
 sph_client.egg-info/SOURCES.txt
 sph_client.egg-info/dependency_links.txt
+sph_client.egg-info/entry_points.txt
 sph_client.egg-info/requires.txt
 sph_client.egg-info/top_level.txt
+tests/test_lanis_mcp_client.py
