@@ -19,6 +19,7 @@
   .method { display: inline-block; font-size: 11px; font-weight: 700; min-width: 52px; padding: 2px 8px; border-radius: 4px; text-align: center; text-transform: uppercase; margin-right: 14px; }
   .method.get { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
   .method.post { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
+  .method.put { background: #a371f722; color: #bc8cff; border: 1px solid #a371f744; }
   .path { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 14px; color: #f0f6fc; flex: 1; }
   .summary { font-size: 13px; color: #8b949e; margin-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
   .auth-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-left: 10px; background: #30363d; color: #8b949e; white-space: nowrap; }
@@ -35,7 +36,7 @@
     <div class="tag-header">{{ tag }}</div>
     <div class="endpoint-list">
       {% for ep in endpoints %}
-      <a class="endpoint" href="/documentation/{{ ep.encoded_path }}">
+      <a class="endpoint" href="/documentation/{{ ep.encoded_path }}?method={{ ep.method }}">
         <span class="method {{ ep.method|lower }}">{{ ep.method }}</span>
         <span class="path">{{ ep.display_path }}</span>
         {% if ep.summary %}<span class="summary">{{ ep.summary }}</span>{% endif %}

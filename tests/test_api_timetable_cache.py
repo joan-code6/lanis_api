@@ -20,6 +20,57 @@ def test_user_cache_invalidation_removes_only_that_users_entries():
     asyncio.run(scenario())
 
 
+def test_endpoint_cache_invalidation_rejects_stale_writes():
+    async def scenario():
+        manager = AuthManager()
+        await manager.set_cache("user-a", "/nachrichten/headers", {"value": "old"})
+        await manager.set_cache(
+            "user-a", "/nachrichten/conversation", {"value": "conversation"}
+        )
+        await manager.set_cache("user-a", "/stundenplan", {"value": "plan"})
+
+        old_version = await manager.get_cache_version("user-a", "/nachrichten/headers")
+        await manager.invalidate_endpoint_cache("user-a", "/nachrichten/headers")
+        new_version = await manager.get_cache_version("user-a", "/nachrichten/headers")
+
+        assert new_version == old_version + 1
+        assert await manager.get_cached("user-a", "/nachrichten/headers") is None
+        assert await manager.get_cached("user-a", "/nachrichten/conversation") == {
+            "value": "conversation"
+        }
+        assert await manager.get_cached("user-a", "/stundenplan") == {"value": "plan"}
+        assert not await manager.set_cache_if_current_version(
+            "user-a", "/nachrichten/headers", {"value": "stale"}, "", old_version
+        )
+        assert await manager.set_cache_if_current_version(
+            "user-a", "/nachrichten/headers", {"value": "fresh"}, "", new_version
+        )
+        assert await manager.get_cached("user-a", "/nachrichten/headers") == {
+            "value": "fresh"
+        }
+
+    asyncio.run(scenario())
+
+
+def test_user_cache_invalidation_rejects_fetches_started_before_version_registration():
+    async def scenario():
+        manager = AuthManager()
+        old_version = await manager.get_cache_version(
+            "user-a", "/nachrichten/headers"
+        )
+
+        await manager.invalidate_user_cache("user-a")
+
+        assert await manager.get_cache_version(
+            "user-a", "/nachrichten/headers"
+        ) == old_version + 1
+        assert not await manager.set_cache_if_current_version(
+            "user-a", "/nachrichten/headers", {"value": "stale"}, "", old_version
+        )
+
+    asyncio.run(scenario())
+
+
 def test_timetable_does_not_cache_a_failed_course_overview(monkeypatch):
     class FakeClient:
         def stundenplan_get_plan(self):

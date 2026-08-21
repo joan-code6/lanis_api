@@ -100,6 +100,18 @@ Fun Fact: Thanks to the cashing a api connected with a simple frontend such as l
 - **File cache:** SHA-256 hashed, stored in `data/files/`
 - **Background revalidation:** stale entries are refreshed asynchronously
 
+## Message push notifications
+
+Authenticated users can opt in to daytime message polling from the Lanis UI settings. The default polling window is 07:00–21:00 in the user's configured timezone, with a 15-minute interval. The first poll creates a baseline so enabling the feature does not send old messages as notifications.
+
+Web Push requires these environment variables on the API server:
+
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT` (for example, `mailto:admin@example.org`)
+
+The `pywebpush` dependency is included in `requirements.txt`. Users can configure the active window, interval, timezone, and whether notification previews contain the sender and subject in **Settings → Nachrichten-Benachrichtigungen**.
+
 
 ## Deployment
 
