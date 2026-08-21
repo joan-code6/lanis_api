@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from types import SimpleNamespace
 
 from api import api as api_module
@@ -16,6 +17,13 @@ from api.api import (
     task_queue,
 )
 from fastapi import HTTPException
+
+
+def valid_push_keys():
+    return {
+        "p256dh": base64.urlsafe_b64encode(b"\x04" + b"\x01" * 64).rstrip(b"=").decode(),
+        "auth": base64.urlsafe_b64encode(b"\x02" * 16).rstrip(b"=").decode(),
+    }
 
 
 def test_recipient_search_route_precedes_conversation_route() -> None:
@@ -198,10 +206,38 @@ def test_notification_subscription_rejects_untrusted_push_endpoints(monkeypatch)
 
     valid_payload = PushSubscriptionRequest(
         endpoint="https://fcm.googleapis.com/fcm/send/subscription",
-        keys={"p256dh": "public-key", "auth": "auth-key"},
+        keys=valid_push_keys(),
     )
     assert asyncio.run(register_notification_subscription(valid_payload, auth)) == {
         "success": True
     }
     assert saved[0][0] == "user"
     assert saved[0][1]["endpoint"] == valid_payload.endpoint
+
+
+def test_notification_subscription_rejects_malformed_push_keys(monkeypatch):
+    monkeypatch.setenv("VAPID_PUBLIC_KEY", "public")
+    monkeypatch.setenv("VAPID_PRIVATE_KEY", "private")
+    monkeypatch.setenv("VAPID_SUBJECT", "mailto:test@example.org")
+    payload = PushSubscriptionRequest(
+        endpoint="https://fcm.googleapis.com/fcm/send/subscription",
+        keys={"p256dh": "not-a-public-key", "auth": "not-auth"},
+    )
+    auth = SimpleNamespace(user_id="user")
+    saved = []
+
+    async def save_subscription(*args):
+        saved.append(args)
+
+    monkeypatch.setattr(api_module, "save_push_subscription", save_subscription)
+
+    async def scenario():
+        try:
+            await register_notification_subscription(payload, auth)
+        except HTTPException as error:
+            assert error.status_code == 422
+        else:
+            raise AssertionError("malformed push keys must be rejected")
+
+    asyncio.run(scenario())
+    assert saved == []

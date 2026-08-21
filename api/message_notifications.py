@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -28,6 +30,7 @@ logger = logging.getLogger("message_notifications")
 SCHEDULER_TICK_SECONDS = 60
 MAX_CONCURRENT_USER_POLLS = 4
 CLOCK_PATTERN = re.compile(r"^\d{2}:\d{2}$")
+PERMANENT_PUSH_STATUS_CODES = frozenset({400, 401, 403, 404, 410})
 TRUSTED_PUSH_ENDPOINT_HOSTS = frozenset(
     {
         "fcm.googleapis.com",
@@ -99,6 +102,32 @@ def _parse_notification_clock(value: Any) -> time:
     if parsed.tzinfo is not None:
         raise ValueError("notification clocks must not include a timezone offset")
     return parsed
+
+
+def _decode_push_key(value: Any, expected_length: int) -> bytes | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        padding = "=" * (-len(value) % 4)
+        decoded = base64.b64decode(
+            value + padding,
+            altchars=b"-_",
+            validate=True,
+        )
+    except (binascii.Error, TypeError, ValueError):
+        return None
+    return decoded if len(decoded) == expected_length else None
+
+
+def is_valid_push_subscription(subscription: Dict[str, Any]) -> bool:
+    """Validate the key sizes emitted by the browser Push API."""
+    keys = subscription.get("keys") if isinstance(subscription, dict) else None
+    if not isinstance(keys, dict):
+        return False
+    return bool(
+        _decode_push_key(keys.get("p256dh"), 65)
+        and _decode_push_key(keys.get("auth"), 16)
+    )
 
 
 def validate_notification_preferences(preferences: Dict[str, Any]) -> None:
@@ -194,6 +223,24 @@ def _get_pending_deliveries(
     return pending
 
 
+def _is_permanent_push_failure(error: Exception) -> bool:
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code in PERMANENT_PUSH_STATUS_CODES:
+        return True
+    return status_code is None and isinstance(error, (KeyError, TypeError, ValueError))
+
+
+def _apply_preview_preference(
+    pending_deliveries: Dict[str, List[Dict[str, Any]]], show_preview: bool
+) -> None:
+    if show_preview:
+        return
+    for queued in pending_deliveries.values():
+        for payload in queued:
+            payload["body"] = "Du hast neue Nachrichten."
+
+
 def push_configured() -> bool:
     return all(
         os.getenv(name, "").strip()
@@ -269,9 +316,7 @@ async def _send_push_payloads(
             statuses[endpoint] = "delivered"
             continue
 
-        response = getattr(result, "response", None)
-        status_code = getattr(response, "status_code", None)
-        if status_code in (404, 410):
+        if _is_permanent_push_failure(result):
             try:
                 await delete_push_subscription(user_id, endpoint)
             except Exception as error:
@@ -396,6 +441,7 @@ async def check_user_messages(
     pending_deliveries = _get_pending_deliveries(
         previous_state, set(subscriptions_by_endpoint)
     )
+    _apply_preview_preference(pending_deliveries, bool(user.get("show_preview", True)))
 
     if changed_ids:
         first = details[changed_ids[0]]

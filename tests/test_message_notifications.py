@@ -343,6 +343,7 @@ def test_message_poll_advances_baseline_without_notifying_for_read_activity(monk
 def test_message_poll_retries_only_the_device_that_failed(monkeypatch):
     state = None
     delivery_attempts = []
+    delivery_payloads = []
     subscriptions = [
         {"endpoint": "https://push.example/one", "keys": {}},
         {"endpoint": "https://push.example/two", "keys": {}},
@@ -360,6 +361,9 @@ def test_message_poll_retries_only_the_device_that_failed(monkeypatch):
 
     async def send_push(_user_id, deliveries):
         delivery_attempts.append(set(deliveries))
+        delivery_payloads.append(
+            {endpoint: payload["body"] for endpoint, (_subscription, payload) in deliveries.items()}
+        )
         if len(delivery_attempts) == 1:
             return {
                 "https://push.example/one": "delivered",
@@ -403,6 +407,7 @@ def test_message_poll_retries_only_the_device_that_failed(monkeypatch):
         assert await notifications.check_user_messages(
             user, get_client, datetime(2026, 8, 21, 10, 16, tzinfo=timezone)
         )
+        user["show_preview"] = False
         assert not await notifications.check_user_messages(
             user, get_client, datetime(2026, 8, 21, 10, 32, tzinfo=timezone)
         )
@@ -412,6 +417,7 @@ def test_message_poll_retries_only_the_device_that_failed(monkeypatch):
         {"https://push.example/one", "https://push.example/two"},
         {"https://push.example/two"},
     ]
+    assert delivery_payloads[1]["https://push.example/two"] == "Du hast neue Nachrichten."
     assert "pending_deliveries" not in state
 
 
@@ -469,7 +475,7 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
 
     class GoneError(Exception):
         def __init__(self):
-            self.response = SimpleNamespace(status_code=410)
+            self.response = SimpleNamespace(status_code=403)
 
     async def run_in_threadpool(_func, _subscription, _payload):
         return GoneError()

@@ -67,6 +67,7 @@ from .message_notifications import (
     push_configured,
     run_message_notification_scheduler,
     send_test_push_notification,
+    is_valid_push_subscription,
     is_trusted_push_endpoint,
     validate_notification_preferences,
 )
@@ -1084,6 +1085,11 @@ async def register_notification_subscription(
         if hasattr(payload, "model_dump")
         else payload.dict()
     )
+    if not is_valid_push_subscription(subscription):
+        raise HTTPException(
+            status_code=422,
+            detail="Push subscription keys are invalid",
+        )
     await save_push_subscription(auth.user_id, subscription)
     return {"success": True}
 
