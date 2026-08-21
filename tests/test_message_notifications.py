@@ -287,6 +287,53 @@ def test_message_poll_skips_portal_fetch_without_a_push_subscription(monkeypatch
     assert not asyncio.run(notifications.check_user_messages(user, get_client, now))
 
 
+def test_message_poll_records_failed_attempt_before_the_next_interval(monkeypatch):
+    state = None
+    fetches = 0
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return [{"endpoint": "https://push.example/subscription", "keys": {}}]
+
+    async def get_client(_user_id):
+        nonlocal fetches
+        fetches += 1
+        raise RuntimeError("portal unavailable")
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": True,
+    }
+    timezone = ZoneInfo("Europe/Berlin")
+
+    async def scenario():
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 0, tzinfo=timezone)
+        )
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 1, tzinfo=timezone)
+        )
+
+    asyncio.run(scenario())
+    assert fetches == 1
+    assert state["checked_at"] == "2026-08-21T10:00:00+02:00"
+
+
 def test_message_poll_advances_baseline_without_notifying_for_read_activity(monkeypatch):
     state = None
     delivery_attempts = []

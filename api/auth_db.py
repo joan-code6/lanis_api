@@ -126,6 +126,28 @@ async def store_refresh_token(
     return token
 
 
+async def _revoke_expired_sessions() -> None:
+    """Remove expired sessions and their browser subscriptions together."""
+    now = datetime.utcnow()
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT DISTINCT user_id FROM refresh_tokens WHERE expires_at <= ?",
+                (now,),
+            ) as cursor:
+                user_ids = [row[0] for row in await cursor.fetchall()]
+            if not user_ids:
+                return
+
+            await db.execute("DELETE FROM refresh_tokens WHERE expires_at <= ?", (now,))
+            placeholders = ", ".join("?" for _ in user_ids)
+            await db.execute(
+                f"DELETE FROM push_subscriptions WHERE user_id IN ({placeholders})",
+                user_ids,
+            )
+            await db.commit()
+
+
 async def get_refresh_token(token: str) -> Optional[dict]:
     """
     Look up a refresh token and return its data if valid.
@@ -144,6 +166,7 @@ async def get_refresh_token(token: str) -> Optional[dict]:
     expires_at = datetime.fromisoformat(row["expires_at"])
     if datetime.utcnow() > expires_at:
         await delete_refresh_token(token)
+        await delete_user_push_subscriptions(row["user_id"])
         return None
 
     return {
@@ -162,6 +185,7 @@ async def get_refresh_token_by_user_id(user_id: str) -> Optional[dict]:
     Look up the most recent valid refresh token for a user.
     Used to re-establish Schulportal session after backend restart.
     """
+    await _revoke_expired_sessions()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -199,6 +223,9 @@ async def delete_user_tokens(user_id: str) -> None:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 "DELETE FROM refresh_tokens WHERE user_id = ?", (user_id,)
+            )
+            await db.execute(
+                "DELETE FROM push_subscriptions WHERE user_id = ?", (user_id,)
             )
             await db.commit()
 
@@ -291,6 +318,7 @@ async def save_notification_preferences(
 
 async def get_enabled_notification_users() -> List[Dict[str, Any]]:
     """Return notification-enabled users with a valid refresh token."""
+    await _revoke_expired_sessions()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(

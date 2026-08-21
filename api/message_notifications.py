@@ -225,6 +225,17 @@ def _get_pending_deliveries(
     return pending
 
 
+async def _record_failed_poll(
+    user_id: str, previous_state: Dict[str, Any] | None, checked_at: datetime
+) -> None:
+    state = dict(previous_state) if isinstance(previous_state, dict) else {}
+    state["checked_at"] = checked_at.isoformat()
+    try:
+        await save_message_notification_state(user_id, state)
+    except Exception as error:
+        logger.warning("Failed to record notification poll attempt for %s: %s", user_id, error)
+
+
 def _is_permanent_push_failure(error: Exception) -> bool:
     response = getattr(error, "response", None)
     status_code = getattr(response, "status_code", None)
@@ -420,6 +431,7 @@ async def check_user_messages(
         result = await run_in_threadpool(client.nachrichten_get_headers, "All", 0)
     except Exception as error:
         logger.warning("Message notification poll failed for %s: %s", user_id, error)
+        await _record_failed_poll(user_id, previous_state, local_now)
         return False
 
     if not result.get("success"):
@@ -428,6 +440,7 @@ async def check_user_messages(
             user_id,
             result.get("error"),
         )
+        await _record_failed_poll(user_id, previous_state, local_now)
         return False
 
     conversations = result.get("conversations") or []
