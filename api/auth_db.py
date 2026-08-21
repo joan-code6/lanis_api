@@ -240,6 +240,12 @@ async def save_notification_preferences(
     }
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT enabled FROM notification_preferences WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            was_enabled = bool(row[0]) if row else False
             await db.execute(
                 """
                 INSERT INTO notification_preferences
@@ -264,6 +270,11 @@ async def save_notification_preferences(
                     int(bool(values["show_preview"])),
                 ),
             )
+            if values["enabled"] and not was_enabled:
+                await db.execute(
+                    "DELETE FROM message_notification_state WHERE user_id = ?",
+                    (user_id,),
+                )
             await db.commit()
     return await get_notification_preferences(user_id)
 

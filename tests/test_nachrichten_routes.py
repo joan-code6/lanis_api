@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+from api import api as api_module
 from starlette.routing import Match
 
 from api.api import (
@@ -166,3 +167,41 @@ def test_notification_subscription_requires_complete_vapid_configuration(monkeyp
             raise AssertionError("incomplete VAPID configuration must be rejected")
 
     asyncio.run(scenario())
+
+
+def test_notification_subscription_rejects_untrusted_push_endpoints(monkeypatch):
+    monkeypatch.setenv("VAPID_PUBLIC_KEY", "public")
+    monkeypatch.setenv("VAPID_PRIVATE_KEY", "private")
+    monkeypatch.setenv("VAPID_SUBJECT", "mailto:test@example.org")
+    payload = PushSubscriptionRequest(
+        endpoint="https://127.0.0.1/metadata",
+        keys={"p256dh": "public-key", "auth": "auth-key"},
+    )
+    auth = SimpleNamespace(user_id="user")
+    saved = []
+
+    async def save_subscription(*args):
+        saved.append(args)
+
+    monkeypatch.setattr(api_module, "save_push_subscription", save_subscription)
+
+    async def scenario():
+        try:
+            await register_notification_subscription(payload, auth)
+        except HTTPException as error:
+            assert error.status_code == 422
+        else:
+            raise AssertionError("untrusted push endpoint must be rejected")
+
+    asyncio.run(scenario())
+    assert saved == []
+
+    valid_payload = PushSubscriptionRequest(
+        endpoint="https://fcm.googleapis.com/fcm/send/subscription",
+        keys={"p256dh": "public-key", "auth": "auth-key"},
+    )
+    assert asyncio.run(register_notification_subscription(valid_payload, auth)) == {
+        "success": True
+    }
+    assert saved[0][0] == "user"
+    assert saved[0][1]["endpoint"] == valid_payload.endpoint

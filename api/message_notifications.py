@@ -10,7 +10,7 @@ import re
 from datetime import datetime, time, timedelta
 from html import unescape
 from typing import Any, Awaitable, Callable, Dict, List, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi.concurrency import run_in_threadpool
@@ -27,6 +27,17 @@ logger = logging.getLogger("message_notifications")
 
 SCHEDULER_TICK_SECONDS = 60
 MAX_CONCURRENT_USER_POLLS = 4
+TRUSTED_PUSH_ENDPOINT_HOSTS = frozenset(
+    {
+        "fcm.googleapis.com",
+        "android.googleapis.com",
+        "notify.windows.com",
+        "push.services.mozilla.com",
+        "updates.push.services.mozilla.com",
+        "web.push.apple.com",
+    }
+)
+TRUSTED_PUSH_ENDPOINT_SUFFIXES = (".notify.windows.com",)
 
 
 def _plain_text(value: Any) -> str:
@@ -138,6 +149,31 @@ def push_configured() -> bool:
     )
 
 
+def is_trusted_push_endpoint(endpoint: str) -> bool:
+    """Allow only HTTPS endpoints exposed by known browser push services."""
+    try:
+        parsed = urlsplit(endpoint)
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+
+    if (
+        parsed.scheme.lower() != "https"
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or port not in (None, 443)
+    ):
+        return False
+
+    normalized_hostname = hostname.rstrip(".").lower()
+    return normalized_hostname in TRUSTED_PUSH_ENDPOINT_HOSTS or any(
+        normalized_hostname.endswith(suffix)
+        for suffix in TRUSTED_PUSH_ENDPOINT_SUFFIXES
+    )
+
+
 def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> None:
     try:
         from pywebpush import webpush
@@ -177,6 +213,8 @@ async def _send_push_to_subscriptions(
     delivered = False
     retryable_failure = False
     for subscription, result in zip(subscriptions, results):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
         if not isinstance(result, Exception):
             delivered = True
             continue
@@ -192,7 +230,9 @@ async def _send_push_to_subscriptions(
             "Push notification failed for %s: %s", user_id, result
         )
 
-    return delivered or not retryable_failure
+    if retryable_failure:
+        return False
+    return delivered
 
 
 async def send_test_push_notification(user_id: str) -> bool:

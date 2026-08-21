@@ -61,6 +61,33 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
             "user-a",
             {"checked_at": "2026-08-21T10:00:00+02:00", "conversations": {"c-1": "sig"}},
         )
+        assert await auth_db.get_message_notification_state("user-a") == {
+            "checked_at": "2026-08-21T10:00:00+02:00",
+            "conversations": {"c-1": "sig"},
+        }
+        await auth_db.save_notification_preferences(
+            "user-a",
+            {
+                "enabled": False,
+                "start_time": "08:00",
+                "end_time": "18:30",
+                "poll_interval_minutes": 30,
+                "timezone": "Europe/Berlin",
+                "show_preview": False,
+            },
+        )
+        assert await auth_db.get_message_notification_state("user-a") is not None
+        await auth_db.save_notification_preferences(
+            "user-a",
+            {
+                "enabled": True,
+                "start_time": "08:00",
+                "end_time": "18:30",
+                "poll_interval_minutes": 30,
+                "timezone": "Europe/Berlin",
+                "show_preview": False,
+            },
+        )
         await auth_db.store_refresh_token("user-a", "5201", "user", "password")
 
         assert await auth_db.get_notification_preferences("user-a") == {
@@ -78,10 +105,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
                 "keys": {"p256dh": "public-key", "auth": "auth-key"},
             }
         ]
-        assert await auth_db.get_message_notification_state("user-a") == {
-            "checked_at": "2026-08-21T10:00:00+02:00",
-            "conversations": {"c-1": "sig"},
-        }
+        assert await auth_db.get_message_notification_state("user-a") is None
         assert [user["user_id"] for user in await auth_db.get_enabled_notification_users()] == [
             "user-a"
         ]
@@ -257,3 +281,55 @@ def test_notification_cycle_isolates_a_single_user_failure(monkeypatch):
     asyncio.run(notifications.run_message_notification_cycle(lambda _user_id: None))
 
     assert checked == ["good"]
+
+
+def test_push_delivery_retries_when_any_device_has_a_transient_failure(monkeypatch):
+    subscriptions = [
+        {"endpoint": "https://push.example/one", "keys": {}},
+        {"endpoint": "https://push.example/two", "keys": {}},
+    ]
+
+    async def run_in_threadpool(_func, subscription, _payload):
+        if subscription["endpoint"].endswith("/two"):
+            return RuntimeError("temporary provider failure")
+        return None
+
+    monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
+
+    async def scenario():
+        return await notifications._send_push_to_subscriptions(
+            "user-a", subscriptions, {"title": "Test"}
+        )
+
+    assert not asyncio.run(scenario())
+
+
+def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
+    subscriptions = [
+        {"endpoint": "https://push.example/one", "keys": {}},
+        {"endpoint": "https://push.example/two", "keys": {}},
+    ]
+    deleted = []
+
+    class GoneError(Exception):
+        def __init__(self):
+            self.response = SimpleNamespace(status_code=410)
+
+    async def run_in_threadpool(_func, _subscription, _payload):
+        return GoneError()
+
+    async def delete_subscription(user_id, endpoint):
+        deleted.append((user_id, endpoint))
+
+    monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
+    monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
+
+    async def scenario():
+        return await notifications._send_push_to_subscriptions(
+            "user-a", subscriptions, {"title": "Test"}
+        )
+
+    assert not asyncio.run(scenario())
+    assert deleted == [("user-a", "https://push.example/one"), ("user-a", "https://push.example/two")]

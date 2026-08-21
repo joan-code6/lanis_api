@@ -67,6 +67,7 @@ from .message_notifications import (
     push_configured,
     run_message_notification_scheduler,
     send_test_push_notification,
+    is_trusted_push_endpoint,
     validate_notification_preferences,
 )
 
@@ -1072,8 +1073,11 @@ async def register_notification_subscription(
             status_code=503,
             detail="Push notifications are not configured on this server",
         )
-    if not payload.endpoint.startswith("https://"):
-        raise HTTPException(status_code=422, detail="Push endpoint must use HTTPS")
+    if not is_trusted_push_endpoint(payload.endpoint):
+        raise HTTPException(
+            status_code=422,
+            detail="Push endpoint must belong to a trusted Web Push service",
+        )
 
     subscription = (
         payload.model_dump()
