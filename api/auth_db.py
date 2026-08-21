@@ -139,12 +139,24 @@ async def _revoke_expired_sessions() -> None:
             if not user_ids:
                 return
 
-            await db.execute("DELETE FROM refresh_tokens WHERE expires_at <= ?", (now,))
             placeholders = ", ".join("?" for _ in user_ids)
-            await db.execute(
-                f"DELETE FROM push_subscriptions WHERE user_id IN ({placeholders})",
-                user_ids,
-            )
+            async with db.execute(
+                f"SELECT DISTINCT user_id FROM refresh_tokens "
+                f"WHERE user_id IN ({placeholders}) AND expires_at > ?",
+                [*user_ids, now],
+            ) as cursor:
+                users_with_valid_sessions = {row[0] for row in await cursor.fetchall()}
+            users_to_revoke = [
+                user_id for user_id in user_ids if user_id not in users_with_valid_sessions
+            ]
+
+            await db.execute("DELETE FROM refresh_tokens WHERE expires_at <= ?", (now,))
+            if users_to_revoke:
+                revoke_placeholders = ", ".join("?" for _ in users_to_revoke)
+                await db.execute(
+                    f"DELETE FROM push_subscriptions WHERE user_id IN ({revoke_placeholders})",
+                    users_to_revoke,
+                )
             await db.commit()
 
 
@@ -165,8 +177,7 @@ async def get_refresh_token(token: str) -> Optional[dict]:
 
     expires_at = datetime.fromisoformat(row["expires_at"])
     if datetime.utcnow() > expires_at:
-        await delete_refresh_token(token)
-        await delete_user_push_subscriptions(row["user_id"])
+        await _revoke_expired_sessions()
         return None
 
     return {
