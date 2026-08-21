@@ -27,6 +27,7 @@ logger = logging.getLogger("message_notifications")
 
 SCHEDULER_TICK_SECONDS = 60
 MAX_CONCURRENT_USER_POLLS = 4
+CLOCK_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 TRUSTED_PUSH_ENDPOINT_HOSTS = frozenset(
     {
         "fcm.googleapis.com",
@@ -60,6 +61,7 @@ def _message_signature(message: Dict[str, Any]) -> str:
         "message_id": message.get("Id") or message.get("message_id"),
         "sender": message.get("sender") or message.get("Sender"),
         "subject": message.get("subject") or message.get("Betreff"),
+        "unread": _is_unread_conversation(message),
     }
     return json.dumps(activity, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -89,11 +91,21 @@ def build_message_snapshot(
     return snapshot, details
 
 
+def _parse_notification_clock(value: Any) -> time:
+    text = str(value)
+    if not CLOCK_PATTERN.fullmatch(text):
+        raise ValueError("expected HH:MM")
+    parsed = time.fromisoformat(text)
+    if parsed.tzinfo is not None:
+        raise ValueError("notification clocks must not include a timezone offset")
+    return parsed
+
+
 def validate_notification_preferences(preferences: Dict[str, Any]) -> None:
     """Validate clock and timezone values before they reach the scheduler."""
     for key in ("start_time", "end_time"):
         try:
-            time.fromisoformat(str(preferences[key]))
+            _parse_notification_clock(preferences[key])
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"Invalid {key}; expected HH:MM") from error
 
@@ -116,8 +128,8 @@ def is_notification_window_open(
     """Return whether a user's configured local daytime window is open."""
     try:
         timezone = ZoneInfo(str(preferences["timezone"]))
-        start = time.fromisoformat(str(preferences["start_time"]))
-        end = time.fromisoformat(str(preferences["end_time"]))
+        start = _parse_notification_clock(preferences["start_time"])
+        end = _parse_notification_clock(preferences["end_time"])
     except (KeyError, TypeError, ValueError, ZoneInfoNotFoundError):
         return False
 
@@ -140,6 +152,46 @@ def _is_due(state: Dict[str, Any] | None, interval_minutes: int, now: datetime) 
     if checked_at.tzinfo is None:
         checked_at = checked_at.astimezone()
     return now - checked_at.astimezone(now.tzinfo) >= timedelta(minutes=interval_minutes)
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "ja"}
+    return bool(value)
+
+
+def _is_unread_conversation(conversation: Dict[str, Any]) -> bool:
+    for key in ("unread", "is_unread", "isUnread"):
+        if key in conversation:
+            return _as_bool(conversation[key])
+    for key in ("read", "is_read", "isRead"):
+        if key in conversation:
+            return not _as_bool(conversation[key])
+    return False
+
+
+def _get_pending_deliveries(
+    state: Dict[str, Any] | None, endpoints: set[str]
+) -> Dict[str, List[Dict[str, Any]]]:
+    raw_pending = state.get("pending_deliveries") if isinstance(state, dict) else None
+    if not isinstance(raw_pending, dict):
+        return {}
+
+    pending: Dict[str, List[Dict[str, Any]]] = {}
+    for endpoint in endpoints:
+        queued = raw_pending.get(endpoint)
+        if isinstance(queued, dict):
+            queued = [queued]
+        if not isinstance(queued, list):
+            continue
+        valid_payloads = [payload.copy() for payload in queued if isinstance(payload, dict)]
+        if valid_payloads:
+            pending[endpoint] = valid_payloads
+    return pending
 
 
 def push_configured() -> bool:
@@ -191,48 +243,55 @@ def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> No
     )
 
 
-async def _send_push_to_subscriptions(
+async def _send_push_payloads(
     user_id: str,
-    subscriptions: List[Dict[str, Any]],
-    payload: Dict[str, Any],
-) -> bool:
-    """Send a payload and return whether the batch can be considered delivered."""
-    if not subscriptions:
-        return True
+    deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]],
+) -> Dict[str, str]:
+    """Send one queued payload per device and report each device's outcome."""
+    if not deliveries:
+        return {}
     if not push_configured():
         logger.warning("Push notification skipped: VAPID configuration is incomplete")
-        return False
+        return {endpoint: "retry" for endpoint in deliveries}
 
     results = await asyncio.gather(
         *(
             run_in_threadpool(_send_push_sync, subscription, payload)
-            for subscription in subscriptions
+            for subscription, payload in deliveries.values()
         ),
         return_exceptions=True,
     )
-    delivered = False
-    retryable_failure = False
-    for subscription, result in zip(subscriptions, results):
+    statuses: Dict[str, str] = {}
+    for (endpoint, (_subscription, _payload)), result in zip(deliveries.items(), results):
         if isinstance(result, asyncio.CancelledError):
             raise result
         if not isinstance(result, Exception):
-            delivered = True
+            statuses[endpoint] = "delivered"
             continue
 
         response = getattr(result, "response", None)
         status_code = getattr(response, "status_code", None)
         if status_code in (404, 410):
-            await delete_push_subscription(user_id, subscription["endpoint"])
+            await delete_push_subscription(user_id, endpoint)
+            statuses[endpoint] = "gone"
             continue
 
-        retryable_failure = True
-        logger.warning(
-            "Push notification failed for %s: %s", user_id, result
-        )
+        statuses[endpoint] = "retry"
+        logger.warning("Push notification failed for %s: %s", user_id, result)
+    return statuses
 
-    if retryable_failure:
-        return False
-    return delivered
+
+async def _send_push_to_subscriptions(
+    user_id: str,
+    subscriptions: List[Dict[str, Any]],
+    payload: Dict[str, Any],
+) -> Dict[str, str]:
+    """Send the same payload to each device and report per-device outcomes."""
+    deliveries = {
+        subscription["endpoint"]: (subscription, payload)
+        for subscription in subscriptions
+    }
+    return await _send_push_payloads(user_id, deliveries)
 
 
 async def send_test_push_notification(user_id: str) -> bool:
@@ -240,7 +299,7 @@ async def send_test_push_notification(user_id: str) -> bool:
     subscriptions = await get_push_subscriptions(user_id)
     if not subscriptions:
         return False
-    return await _send_push_to_subscriptions(
+    statuses = await _send_push_to_subscriptions(
         user_id,
         subscriptions,
         {
@@ -250,6 +309,7 @@ async def send_test_push_notification(user_id: str) -> bool:
             "tag": "lanis-notification-test",
         },
     )
+    return any(status == "delivered" for status in statuses.values())
 
 
 async def check_user_messages(
@@ -297,16 +357,37 @@ async def check_user_messages(
         )
         return False
 
-    current_snapshot, details = build_message_snapshot(
-        result.get("conversations") or []
-    )
+    conversations = result.get("conversations") or []
+    current_snapshot, details = build_message_snapshot(conversations)
     has_baseline = isinstance(previous_state, dict) and "conversations" in previous_state
     previous_snapshot = (previous_state or {}).get("conversations") or {}
+    if not isinstance(previous_snapshot, dict):
+        previous_snapshot = {}
+    unread_ids = {
+        conversation_id
+        for conversation in conversations
+        if isinstance(conversation, dict)
+        and _is_unread_conversation(conversation)
+        and (conversation_id := _message_id(conversation))
+    }
     changed_ids = [
         conversation_id
         for conversation_id, signature in current_snapshot.items()
-        if has_baseline and previous_snapshot.get(conversation_id) != signature
+        if (
+            has_baseline
+            and conversation_id in unread_ids
+            and previous_snapshot.get(conversation_id) != signature
+        )
     ]
+
+    subscriptions_by_endpoint = {
+        subscription["endpoint"]: subscription
+        for subscription in subscriptions
+        if subscription.get("endpoint")
+    }
+    pending_deliveries = _get_pending_deliveries(
+        previous_state, set(subscriptions_by_endpoint)
+    )
 
     if changed_ids:
         first = details[changed_ids[0]]
@@ -322,12 +403,30 @@ async def check_user_messages(
             "url": f"/messages?conversation={quote(changed_ids[0])}",
             "tag": f"lanis-messages-{changed_ids[0]}",
         }
-        if not await _send_push_to_subscriptions(user_id, subscriptions, payload):
-            return False
+        for endpoint in subscriptions_by_endpoint:
+            pending_deliveries.setdefault(endpoint, []).append(payload)
 
+    deliveries = {
+        endpoint: (subscriptions_by_endpoint[endpoint], queued[0])
+        for endpoint, queued in pending_deliveries.items()
+        if queued
+    }
+    statuses = await _send_push_payloads(user_id, deliveries) if deliveries else {}
+    for endpoint, status in statuses.items():
+        if status in {"delivered", "gone"} and endpoint in pending_deliveries:
+            pending_deliveries[endpoint].pop(0)
+            if not pending_deliveries[endpoint]:
+                pending_deliveries.pop(endpoint)
+
+    next_state: Dict[str, Any] = {
+        "checked_at": local_now.isoformat(),
+        "conversations": current_snapshot,
+    }
+    if pending_deliveries:
+        next_state["pending_deliveries"] = pending_deliveries
     await save_message_notification_state(
         user_id,
-        {"checked_at": local_now.isoformat(), "conversations": current_snapshot},
+        next_state,
     )
     return bool(changed_ids)
 

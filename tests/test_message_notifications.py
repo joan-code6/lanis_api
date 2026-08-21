@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from types import ModuleType
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from api import auth_db
 from api import message_notifications as notifications
 
@@ -143,6 +145,20 @@ def test_notification_window_supports_daytime_and_overnight_ranges():
     )
 
 
+def test_notification_preferences_reject_timezone_offsets_in_clocks():
+    preferences = {
+        "start_time": "07:00+02:00",
+        "end_time": "21:00",
+        "timezone": "Europe/Berlin",
+    }
+
+    with pytest.raises(ValueError):
+        notifications.validate_notification_preferences(preferences)
+    assert not notifications.is_notification_window_open(
+        preferences, datetime(2026, 8, 21, 12, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+    )
+
+
 def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypatch):
     state = None
     sent_payloads = []
@@ -162,14 +178,14 @@ def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypa
             }
         ]
 
-    async def send_push(_user_id, _subscriptions, payload):
-        sent_payloads.append(payload)
-        return True
+    async def send_push(_user_id, deliveries):
+        sent_payloads.extend(payload for _subscription, payload in deliveries.values())
+        return {endpoint: "delivered" for endpoint in deliveries}
 
     monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
     monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
     monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
-    monkeypatch.setattr(notifications, "_send_push_to_subscriptions", send_push)
+    monkeypatch.setattr(notifications, "_send_push_payloads", send_push)
 
     class FakeClient:
         responses = [
@@ -181,6 +197,7 @@ def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypa
                         "sender": "Herr Müller",
                         "subject": "Klausur",
                         "date": "2026-08-21T10:00:00+02:00",
+                        "unread": True,
                     }
                 ],
             },
@@ -192,6 +209,7 @@ def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypa
                         "sender": "Herr Müller",
                         "subject": "Klausur",
                         "date": "2026-08-21T10:16:00+02:00",
+                        "unread": True,
                     }
                 ],
             },
@@ -263,6 +281,140 @@ def test_message_poll_skips_portal_fetch_without_a_push_subscription(monkeypatch
     assert not asyncio.run(notifications.check_user_messages(user, get_client, now))
 
 
+def test_message_poll_advances_baseline_without_notifying_for_read_activity(monkeypatch):
+    state = None
+    delivery_attempts = []
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return [{"endpoint": "https://push.example/subscription", "keys": {}}]
+
+    async def send_push(_user_id, deliveries):
+        delivery_attempts.append(deliveries)
+        return {endpoint: "delivered" for endpoint in deliveries}
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+    monkeypatch.setattr(notifications, "_send_push_payloads", send_push)
+
+    class FakeClient:
+        responses = [
+            {"success": True, "conversations": [{"id": "c-1", "date": "10:00", "unread": False}]},
+            {"success": True, "conversations": [{"id": "c-1", "date": "10:16", "unread": False}]},
+        ]
+
+        def nachrichten_get_headers(self, _get_type, _last):
+            return self.responses.pop(0)
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": True,
+    }
+    timezone = ZoneInfo("Europe/Berlin")
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=FakeClient())
+
+    async def scenario():
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 0, tzinfo=timezone)
+        )
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 16, tzinfo=timezone)
+        )
+
+    asyncio.run(scenario())
+    assert delivery_attempts == []
+    assert state["conversations"]["c-1"]
+
+
+def test_message_poll_retries_only_the_device_that_failed(monkeypatch):
+    state = None
+    delivery_attempts = []
+    subscriptions = [
+        {"endpoint": "https://push.example/one", "keys": {}},
+        {"endpoint": "https://push.example/two", "keys": {}},
+    ]
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return subscriptions
+
+    async def send_push(_user_id, deliveries):
+        delivery_attempts.append(set(deliveries))
+        if len(delivery_attempts) == 1:
+            return {
+                "https://push.example/one": "delivered",
+                "https://push.example/two": "retry",
+            }
+        return {"https://push.example/two": "delivered"}
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+    monkeypatch.setattr(notifications, "_send_push_payloads", send_push)
+
+    class FakeClient:
+        responses = [
+            {"success": True, "conversations": [{"id": "c-1", "date": "10:00", "unread": True}]},
+            {"success": True, "conversations": [{"id": "c-1", "date": "10:16", "unread": True}]},
+            {"success": True, "conversations": [{"id": "c-1", "date": "10:16", "unread": True}]},
+        ]
+
+        def nachrichten_get_headers(self, _get_type, _last):
+            return self.responses.pop(0)
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": True,
+    }
+    timezone = ZoneInfo("Europe/Berlin")
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=FakeClient())
+
+    async def scenario():
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 0, tzinfo=timezone)
+        )
+        assert await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 16, tzinfo=timezone)
+        )
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 32, tzinfo=timezone)
+        )
+
+    asyncio.run(scenario())
+    assert delivery_attempts == [
+        {"https://push.example/one", "https://push.example/two"},
+        {"https://push.example/two"},
+    ]
+    assert "pending_deliveries" not in state
+
+
 def test_notification_cycle_isolates_a_single_user_failure(monkeypatch):
     users = [{"user_id": "bad"}, {"user_id": "good"}]
     checked = []
@@ -302,7 +454,10 @@ def test_push_delivery_retries_when_any_device_has_a_transient_failure(monkeypat
             "user-a", subscriptions, {"title": "Test"}
         )
 
-    assert not asyncio.run(scenario())
+    assert asyncio.run(scenario()) == {
+        "https://push.example/one": "delivered",
+        "https://push.example/two": "retry",
+    }
 
 
 def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
@@ -331,5 +486,8 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
             "user-a", subscriptions, {"title": "Test"}
         )
 
-    assert not asyncio.run(scenario())
+    assert asyncio.run(scenario()) == {
+        "https://push.example/one": "gone",
+        "https://push.example/two": "gone",
+    }
     assert deleted == [("user-a", "https://push.example/one"), ("user-a", "https://push.example/two")]
