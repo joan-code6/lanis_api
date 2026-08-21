@@ -219,7 +219,9 @@ def _get_pending_deliveries(
             continue
         valid_payloads = [payload.copy() for payload in queued if isinstance(payload, dict)]
         if valid_payloads:
-            pending[endpoint] = valid_payloads
+            # A notification is a hint; retain only the newest retry so an old
+            # failing push cannot block newer activity for that device.
+            pending[endpoint] = valid_payloads[-1:]
     return pending
 
 
@@ -475,19 +477,17 @@ async def check_user_messages(
             "tag": f"lanis-messages-{changed_ids[0]}",
         }
         for endpoint in subscriptions_by_endpoint:
-            pending_deliveries.setdefault(endpoint, []).append(payload)
+            pending_deliveries[endpoint] = [payload]
 
     deliveries = {
-        endpoint: (subscriptions_by_endpoint[endpoint], queued[0])
+        endpoint: (subscriptions_by_endpoint[endpoint], queued[-1])
         for endpoint, queued in pending_deliveries.items()
         if queued
     }
     statuses = await _send_push_payloads(user_id, deliveries) if deliveries else {}
     for endpoint, status in statuses.items():
         if status in {"delivered", "gone"} and endpoint in pending_deliveries:
-            pending_deliveries[endpoint].pop(0)
-            if not pending_deliveries[endpoint]:
-                pending_deliveries.pop(endpoint)
+            pending_deliveries.pop(endpoint)
 
     next_state: Dict[str, Any] = {
         "checked_at": local_now.isoformat(),

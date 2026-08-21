@@ -421,6 +421,70 @@ def test_message_poll_retries_only_the_device_that_failed(monkeypatch):
     assert "pending_deliveries" not in state
 
 
+def test_message_poll_retries_the_latest_payload_after_new_activity(monkeypatch):
+    state = None
+    sent_bodies = []
+    endpoint = "https://push.example/subscription"
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return [{"endpoint": endpoint, "keys": {}}]
+
+    async def send_push(_user_id, deliveries):
+        sent_bodies.extend(payload["body"] for _subscription, payload in deliveries.values())
+        return {endpoint: "retry" if len(sent_bodies) == 1 else "delivered"}
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+    monkeypatch.setattr(notifications, "_send_push_payloads", send_push)
+
+    class FakeClient:
+        responses = [
+            {"success": True, "conversations": [{"id": "c-1", "sender": "Lehrkraft", "subject": "Erste", "unread": True}]},
+            {"success": True, "conversations": [{"id": "c-1", "sender": "Lehrkraft", "subject": "Zwischenstand", "unread": True}]},
+            {"success": True, "conversations": [{"id": "c-1", "sender": "Lehrkraft", "subject": "Aktuell", "unread": True}]},
+        ]
+
+        def nachrichten_get_headers(self, _get_type, _last):
+            return self.responses.pop(0)
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": True,
+    }
+    timezone = ZoneInfo("Europe/Berlin")
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=FakeClient())
+
+    async def scenario():
+        assert not await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 0, tzinfo=timezone)
+        )
+        assert await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 16, tzinfo=timezone)
+        )
+        assert await notifications.check_user_messages(
+            user, get_client, datetime(2026, 8, 21, 10, 32, tzinfo=timezone)
+        )
+
+    asyncio.run(scenario())
+    assert sent_bodies == ["Lehrkraft: Zwischenstand", "Lehrkraft: Aktuell"]
+    assert "pending_deliveries" not in state
+
+
 def test_notification_cycle_isolates_a_single_user_failure(monkeypatch):
     users = [{"user_id": "bad"}, {"user_id": "good"}]
     checked = []
