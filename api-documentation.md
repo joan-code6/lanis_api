@@ -188,6 +188,7 @@ Fetch and parse the substitution plan table from a plan URL.
   "success": true,
   "plan_url": "{plan_url}",
   "title": "{plan_title}",
+  "last_updated": "{timestamp}",
   "raw_html": null,
   "tables": [
     {

@@ -14,6 +14,12 @@ from bs4 import BeautifulSoup
 
 BASE_DSB_URL = "https://www.dsbmobile.de/"
 
+_LAST_UPDATED_RE = re.compile(
+    r"\bStand\s*:?\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s+"
+    r"(\d{1,2}):(\d{2})(?::(\d{2}))?\b",
+    re.IGNORECASE,
+)
+
 
 def _build_getdata_payload(username: str, password: str) -> str:
     request_data = {
@@ -133,6 +139,28 @@ def _extract_date_from_text(text: str) -> Optional[str]:
             pass
 
     return None
+
+
+def _parse_last_updated(html: str) -> Optional[datetime.datetime]:
+    """Extract the latest ``Stand`` timestamp from a DSB plan page."""
+    if not html:
+        return None
+
+    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+    timestamps: List[datetime.datetime] = []
+    for match in _LAST_UPDATED_RE.finditer(text):
+        day, month, year, hour, minute, second = (
+            int(value) if value is not None else 0
+            for value in match.groups()
+        )
+        try:
+            timestamps.append(
+                datetime.datetime(year, month, day, hour, minute, second)
+            )
+        except ValueError:
+            continue
+
+    return max(timestamps, default=None)
 
 
 def _parse_table(table: Any) -> Dict[str, Any]:
@@ -506,7 +534,8 @@ def dsb_get_substitution_plan(
         klasse: Filter results by class name (e.g. "05A", "10C").
 
     Returns:
-        Dict with the plan URL, title, parsed tables, and optional raw HTML.
+        Dict with the plan URL, title, last-updated timestamp, parsed tables,
+        and optional raw HTML.
 
     Example:
         >>> api.dsb_get_substitution_plan("{username}", "{password}")
@@ -540,6 +569,7 @@ def dsb_get_substitution_plan(
 
             raw_html = response.text
             parsed = _parse_plan_tables(raw_html)
+            last_updated = _parse_last_updated(raw_html)
 
             tables = parsed.get("tables", [])
             if klasse:
@@ -550,6 +580,7 @@ def dsb_get_substitution_plan(
                 "plan_url": plan_url,
                 "raw_html": raw_html if include_raw else None,
                 "title": parsed.get("title", ""),
+                "last_updated": last_updated.isoformat() if last_updated else None,
                 "tables": tables,
             }
         except requests.RequestException as e:

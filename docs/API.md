@@ -380,7 +380,8 @@ Args:
     plan_url: Explicit plan URL to fetch (overrides plan_index).
 
 Returns:
-    Dict with the plan URL, title, parsed tables, and optional raw HTML.
+    Dict with the plan URL, title, last-updated timestamp, parsed tables,
+    and optional raw HTML.
 
 #### logout
 
