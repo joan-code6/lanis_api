@@ -70,6 +70,51 @@ async def initialize() -> None:
         )
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS custom_lessons (
+                user_id TEXT NOT NULL,
+                lesson_date TEXT NOT NULL,
+                period TEXT NOT NULL,
+                subject TEXT NOT NULL DEFAULT '',
+                teacher TEXT,
+                room TEXT,
+                class_name TEXT,
+                info TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                duration INTEGER NOT NULL DEFAULT 1,
+                week_type TEXT,
+                course_id TEXT,
+                removed INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, lesson_date, period)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_custom_lessons_user_date
+            ON custom_lessons(user_id, lesson_date)
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS class_link_overrides (
+                user_id TEXT NOT NULL,
+                course_id TEXT NOT NULL,
+                url TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, course_id)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_class_link_overrides_user_id
+            ON class_link_overrides(user_id)
+            """
+        )
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS push_subscriptions (
                 endpoint TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -325,6 +370,196 @@ async def save_notification_preferences(
                 )
             await db.commit()
     return await get_notification_preferences(user_id)
+
+
+def _custom_lesson_from_row(row: Any) -> Dict[str, Any]:
+    """Convert a persisted lesson override into the public API shape."""
+    return {
+        "date": row["lesson_date"],
+        "period": row["period"],
+        "subject": row["subject"] or "",
+        "teacher": row["teacher"] or "",
+        "room": row["room"] or "",
+        "class_name": row["class_name"] or "",
+        "info": row["info"] or "",
+        "start_time": row["start_time"] or "",
+        "end_time": row["end_time"] or "",
+        "duration": int(row["duration"] or 1),
+        "week_type": row["week_type"] or None,
+        "course_id": row["course_id"] or None,
+        "removed": bool(row["removed"]),
+        "is_custom": True,
+    }
+
+
+async def get_custom_lessons(user_id: str) -> List[Dict[str, Any]]:
+    """Return all lesson overrides for one account."""
+    if not os.path.exists(DB_PATH):
+        return []
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT lesson_date, period, subject, teacher, room, class_name,
+                       info, start_time, end_time, duration, week_type, course_id,
+                       removed
+                FROM custom_lessons
+                WHERE user_id = ?
+                ORDER BY lesson_date, period
+                """,
+                (user_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+    except aiosqlite.OperationalError as error:
+        if "no such table" not in str(error).lower():
+            raise
+        # Keep old test databases and rolling deployments readable until the
+        # startup migration has created the optional customization tables.
+        return []
+    return [_custom_lesson_from_row(row) for row in rows]
+
+
+async def save_custom_lesson(
+    user_id: str, lesson: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Insert or replace one date/period lesson override."""
+    values = {
+        "date": str(lesson.get("date") or ""),
+        "period": str(lesson.get("period") or ""),
+        "subject": str(lesson.get("subject") or ""),
+        "teacher": str(lesson.get("teacher") or "") or None,
+        "room": str(lesson.get("room") or "") or None,
+        "class_name": str(lesson.get("class_name") or "") or None,
+        "info": str(lesson.get("info") or "") or None,
+        "start_time": str(lesson.get("start_time") or "") or None,
+        "end_time": str(lesson.get("end_time") or "") or None,
+        "duration": int(lesson.get("duration") or 1),
+        "week_type": str(lesson.get("week_type") or "") or None,
+        "course_id": str(lesson.get("course_id") or "") or None,
+        "removed": int(bool(lesson.get("removed"))),
+    }
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO custom_lessons
+                    (user_id, lesson_date, period, subject, teacher, room,
+                     class_name, info, start_time, end_time, duration,
+                     week_type, course_id, removed, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, lesson_date, period) DO UPDATE SET
+                    subject = excluded.subject,
+                    teacher = excluded.teacher,
+                    room = excluded.room,
+                    class_name = excluded.class_name,
+                    info = excluded.info,
+                    start_time = excluded.start_time,
+                    end_time = excluded.end_time,
+                    duration = excluded.duration,
+                    week_type = excluded.week_type,
+                    course_id = excluded.course_id,
+                    removed = excluded.removed,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    user_id,
+                    values["date"],
+                    values["period"],
+                    values["subject"],
+                    values["teacher"],
+                    values["room"],
+                    values["class_name"],
+                    values["info"],
+                    values["start_time"],
+                    values["end_time"],
+                    values["duration"],
+                    values["week_type"],
+                    values["course_id"],
+                    values["removed"],
+                ),
+            )
+            await db.commit()
+    return {
+        "date": values["date"],
+        "period": values["period"],
+        "subject": values["subject"],
+        "teacher": values["teacher"] or "",
+        "room": values["room"] or "",
+        "class_name": values["class_name"] or "",
+        "info": values["info"] or "",
+        "start_time": values["start_time"] or "",
+        "end_time": values["end_time"] or "",
+        "duration": values["duration"],
+        "week_type": values["week_type"],
+        "course_id": values["course_id"],
+        "removed": bool(values["removed"]),
+        "is_custom": True,
+    }
+
+
+async def delete_custom_lesson(
+    user_id: str, lesson_date: str, period: str
+) -> None:
+    """Remove one lesson override and restore the portal lesson, if any."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM custom_lessons WHERE user_id = ? AND lesson_date = ? AND period = ?",
+                (user_id, lesson_date, period),
+            )
+            await db.commit()
+
+
+async def get_class_link_overrides(user_id: str) -> Dict[str, str]:
+    """Return saved class-link values, including intentionally blank links."""
+    if not os.path.exists(DB_PATH):
+        return {}
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT course_id, url FROM class_link_overrides WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+    except aiosqlite.OperationalError as error:
+        if "no such table" not in str(error).lower():
+            raise
+        return {}
+    return {str(row[0]): str(row[1] or "") for row in rows}
+
+
+async def save_class_link(
+    user_id: str, course_id: str, url: str
+) -> Dict[str, Any]:
+    """Persist one class-link override for an account."""
+    course_id = str(course_id).strip()
+    url = str(url or "").strip()
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO class_link_overrides (user_id, course_id, url, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, course_id) DO UPDATE SET
+                    url = excluded.url,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, course_id, url),
+            )
+            await db.commit()
+    return {"course_id": course_id, "url": url, "overridden": True}
+
+
+async def delete_class_link(user_id: str, course_id: str) -> None:
+    """Remove a class-link override and restore the portal value."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM class_link_overrides WHERE user_id = ? AND course_id = ?",
+                (user_id, str(course_id).strip()),
+            )
+            await db.commit()
 
 
 async def get_enabled_notification_users() -> List[Dict[str, Any]]:
