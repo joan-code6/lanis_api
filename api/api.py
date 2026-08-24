@@ -20,7 +20,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
@@ -51,6 +51,12 @@ from .auth_db import (
     get_notification_preferences,
     save_notification_preferences,
     save_push_subscription,
+    get_class_link_overrides,
+    save_class_link,
+    delete_class_link,
+    get_custom_lessons,
+    save_custom_lesson,
+    delete_custom_lesson,
 )
 from .file_cache import (
     get_file_hash,
@@ -64,6 +70,11 @@ from .file_cache import (
     get_content_path,
 )
 from .timetable_enrichment import enrich_timetable
+from .user_overrides import (
+    apply_custom_lessons,
+    current_timetable_monday,
+    merge_class_link_overrides,
+)
 from .message_notifications import (
     push_configured,
     run_message_notification_scheduler,
@@ -172,6 +183,27 @@ class PushSubscriptionRequest(BaseModel):
 
 class PushUnsubscribeRequest(BaseModel):
     endpoint: str
+
+
+class CustomLessonRequest(BaseModel):
+    date: str = Field(..., description="Lesson date in YYYY-MM-DD format")
+    period: str = Field(..., min_length=1, max_length=30)
+    subject: str = Field("", max_length=200)
+    teacher: str = Field("", max_length=200)
+    room: str = Field("", max_length=100)
+    class_name: str = Field("", max_length=100)
+    info: str = Field("", max_length=500)
+    start_time: str = Field("", max_length=5)
+    end_time: str = Field("", max_length=5)
+    duration: int = Field(1, ge=1, le=12)
+    week_type: Optional[str] = Field(None, description="A or B")
+    course_id: Optional[str] = Field(None, max_length=200)
+    removed: bool = False
+
+
+class ClassLinkRequest(BaseModel):
+    course_id: str = Field(..., min_length=1, max_length=200)
+    url: str = Field("", max_length=2000)
 
 
 # --- Internal Data Structures ---
@@ -583,6 +615,77 @@ def _responses_equal(old_data: Any, new_data: Any) -> bool:
         return old_data == new_data
 
 
+def _validate_custom_lesson(payload: CustomLessonRequest) -> Dict[str, Any]:
+    """Validate user-entered lesson values before persisting them."""
+    try:
+        date.fromisoformat(payload.date)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail="Lesson date must use the YYYY-MM-DD format",
+        ) from error
+
+    period = payload.period.strip()
+    period_match = re.fullmatch(r"(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?", period)
+    if not period_match:
+        raise HTTPException(
+            status_code=422,
+            detail="Lesson period must be a number or a range such as 1-2",
+        )
+    period_start = int(period_match.group(1))
+    period_end = int(period_match.group(2) or period_start)
+    if period_end < period_start:
+        raise HTTPException(status_code=422, detail="Lesson period range is reversed")
+    period = (
+        str(period_start)
+        if period_end == period_start
+        else f"{period_start}–{period_end}"
+    )
+    if not payload.removed and not payload.subject.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="A subject is required unless the lesson is hidden",
+        )
+    if payload.week_type not in (None, "", "A", "B"):
+        raise HTTPException(status_code=422, detail="Week type must be A or B")
+    for label, value in (("start", payload.start_time), ("end", payload.end_time)):
+        if value and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label.capitalize()} time must use HH:MM format",
+            )
+
+    values = (
+        payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    )
+    return {
+        **values,
+        "date": payload.date,
+        "period": period,
+        "duration": max(payload.duration, period_end - period_start + 1),
+        "week_type": payload.week_type or None,
+        "course_id": payload.course_id.strip() if payload.course_id else None,
+    }
+
+
+def _validate_class_link_url(url: str) -> str:
+    """Allow portal-relative and HTTP(S) links, but reject executable schemes."""
+    clean_url = (url or "").strip()
+    if not clean_url:
+        return ""
+    parsed = urlparse(clean_url)
+    if clean_url.startswith("//") or (
+        parsed.scheme and parsed.scheme.lower() not in {"http", "https"}
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Class links must be relative paths or HTTP(S) URLs",
+        )
+    if parsed.scheme in {"http", "https"} and not parsed.netloc:
+        raise HTTPException(status_code=422, detail="Class link URL is incomplete")
+    return clean_url
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -953,7 +1056,10 @@ async def get_vertretungsplan(
 async def get_stundenplan(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    cached = await sessions.get_cached(auth.user_id, "/stundenplan")
+    timetable_params = _make_param_key(
+        {"week_start": current_timetable_monday().isoformat()}
+    )
+    cached = await sessions.get_cached(auth.user_id, "/stundenplan", timetable_params)
     if cached is not None:
         return cached
 
@@ -969,8 +1075,61 @@ async def get_stundenplan(
                     auth.user_id, "/meinunterricht", course_overview
                 )
         result = enrich_timetable(result, course_overview)
-    await sessions.set_cache(auth.user_id, "/stundenplan", result)
+    result = apply_custom_lessons(result, await get_custom_lessons(auth.user_id))
+    await sessions.set_cache(auth.user_id, "/stundenplan", result, timetable_params)
     return result
+
+
+@app.get("/settings/timetable/lessons")
+async def get_custom_timetable_lessons(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    return {
+        "success": True,
+        "lessons": await get_custom_lessons(auth.user_id),
+    }
+
+
+@app.put("/settings/timetable/lessons")
+async def update_custom_timetable_lesson(
+    payload: CustomLessonRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    lesson = _validate_custom_lesson(payload)
+    saved = await save_custom_lesson(auth.user_id, lesson)
+    await sessions.invalidate_endpoint_cache(auth.user_id, "/stundenplan")
+    return {"success": True, "lesson": saved}
+
+
+@app.delete("/settings/timetable/lessons")
+async def reset_custom_timetable_lesson(
+    lesson_date: str = Query(
+        ..., alias="date", description="Lesson date in YYYY-MM-DD format"
+    ),
+    period: str = Query(..., min_length=1, max_length=30),
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    try:
+        date.fromisoformat(lesson_date)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Invalid lesson date") from error
+    period_match = re.fullmatch(
+        r"(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?", period.strip()
+    )
+    if not period_match:
+        raise HTTPException(status_code=422, detail="Invalid lesson period")
+    period_start = int(period_match.group(1))
+    period_end = int(period_match.group(2) or period_start)
+    if period_end < period_start:
+        raise HTTPException(status_code=422, detail="Invalid lesson period")
+    normalised_period = (
+        str(period_start)
+        if period_end == period_start
+        else f"{period_start}–{period_end}"
+    )
+    await delete_custom_lesson(auth.user_id, lesson_date, normalised_period)
+    await sessions.invalidate_endpoint_cache(auth.user_id, "/stundenplan")
+    return {"success": True}
 
 
 # --- Dateispeicher ---
@@ -1342,14 +1501,102 @@ async def _download_course_file(
 async def meinunterricht_overview(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
+    class_link_overrides = await get_class_link_overrides(auth.user_id)
     cached = await sessions.get_cached(auth.user_id, "/meinunterricht")
     if cached is not None:
-        return cached
+        return merge_class_link_overrides(cached, class_link_overrides)
 
     result = await run_in_threadpool(auth.client.meinunterricht_get_overview)
     if result.get("success"):
+        result = merge_class_link_overrides(result, class_link_overrides)
         await sessions.set_cache(auth.user_id, "/meinunterricht", result)
     return result
+
+
+@app.get("/settings/class-links")
+async def get_class_link_settings(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return portal classes together with their account-specific links."""
+    overview = await meinunterricht_overview(auth)
+    overrides = await get_class_link_overrides(auth.user_id)
+    links: List[Dict[str, object]] = []
+    seen: set[str] = set()
+
+    for entry in overview.get("entries", []):
+        if not isinstance(entry, dict):
+            continue
+        course_id = str(entry.get("book_id") or "").strip()
+        if not course_id or course_id in seen:
+            continue
+        seen.add(course_id)
+        links.append(
+            {
+                "course_id": course_id,
+                "name": str(entry.get("name") or "").strip(),
+                "teacher": str(entry.get("teacher_full_name") or "").strip(),
+                "url": str(entry.get("course_link") or ""),
+                "overridden": course_id in overrides,
+            }
+        )
+
+    for course_id, url in overrides.items():
+        if course_id in seen:
+            continue
+        links.append(
+            {
+                "course_id": course_id,
+                "name": "Unbekannter Kurs",
+                "teacher": "",
+                "url": url,
+                "overridden": True,
+            }
+        )
+
+    return {
+        "success": bool(overview.get("success")) or bool(links),
+        "links": links,
+    }
+
+
+@app.put("/settings/class-links")
+async def update_class_link(
+    payload: ClassLinkRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    course_id = payload.course_id.strip()
+    if not course_id:
+        raise HTTPException(status_code=422, detail="Course ID cannot be blank")
+    url = _validate_class_link_url(payload.url)
+    await save_class_link(auth.user_id, course_id, url)
+    await asyncio.gather(
+        sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht"),
+        sessions.invalidate_endpoint_cache(auth.user_id, "/stundenplan"),
+    )
+    return {
+        "success": True,
+        "link": {
+            "course_id": course_id,
+            "url": url,
+            "overridden": True,
+        },
+    }
+
+
+@app.delete("/settings/class-links")
+async def reset_class_link(
+    course_id: str = Query(..., min_length=1, max_length=200),
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    course_id = course_id.strip()
+    if not course_id:
+        raise HTTPException(status_code=422, detail="Course ID cannot be blank")
+    await delete_class_link(auth.user_id, course_id)
+    await asyncio.gather(
+        sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht"),
+        sessions.invalidate_endpoint_cache(auth.user_id, "/stundenplan"),
+    )
+    return {"success": True}
 
 
 @app.get("/meinunterricht/course/{course_id}")
