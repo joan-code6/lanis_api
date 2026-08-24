@@ -72,6 +72,7 @@ from .file_cache import (
 from .timetable_enrichment import enrich_timetable
 from .user_overrides import (
     apply_custom_lessons,
+    current_timetable_monday,
     merge_class_link_overrides,
 )
 from .message_notifications import (
@@ -1055,7 +1056,10 @@ async def get_vertretungsplan(
 async def get_stundenplan(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    cached = await sessions.get_cached(auth.user_id, "/stundenplan")
+    timetable_params = _make_param_key(
+        {"week_start": current_timetable_monday().isoformat()}
+    )
+    cached = await sessions.get_cached(auth.user_id, "/stundenplan", timetable_params)
     if cached is not None:
         return cached
 
@@ -1072,7 +1076,7 @@ async def get_stundenplan(
                 )
         result = enrich_timetable(result, course_overview)
     result = apply_custom_lessons(result, await get_custom_lessons(auth.user_id))
-    await sessions.set_cache(auth.user_id, "/stundenplan", result)
+    await sessions.set_cache(auth.user_id, "/stundenplan", result, timetable_params)
     return result
 
 

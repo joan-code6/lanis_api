@@ -108,6 +108,108 @@ def test_custom_lesson_can_hide_a_portal_lesson() -> None:
     assert result["custom_lessons"][0]["removed"] is True
 
 
+def test_custom_lesson_preserves_parallel_lessons_in_the_same_period() -> None:
+    timetable = _raw_timetable()
+    parallel = {
+        "id": "portal-2",
+        "stunde": 1,
+        "name": "Englisch",
+        "course_id": "course-2",
+        "duration": 1,
+    }
+    timetable["plan_for_all"][0].append(parallel)
+    timetable["plan_for_own"][0].append(dict(parallel))
+
+    result = apply_custom_lessons(
+        timetable,
+        [
+            {
+                "date": "2026-08-24",
+                "period": "1",
+                "subject": "Deutsch",
+                "duration": 1,
+                "removed": False,
+            }
+        ],
+        today=date(2026, 8, 24),
+    )
+
+    assert [lesson["name"] for lesson in result["plan_for_all"][0]] == [
+        "Deutsch",
+        "Englisch",
+    ]
+
+
+def test_course_id_targets_one_parallel_lesson() -> None:
+    timetable = _raw_timetable()
+    timetable["plan_for_all"][0].append(
+        {"id": "portal-2", "stunde": 1, "name": "Englisch", "course_id": "course-2"}
+    )
+
+    result = apply_custom_lessons(
+        timetable,
+        [
+            {
+                "date": "2026-08-24",
+                "period": "1",
+                "subject": "Deutsch",
+                "course_id": "course-2",
+                "duration": 1,
+                "removed": False,
+            }
+        ],
+        today=date(2026, 8, 24),
+    )
+
+    assert [lesson["name"] for lesson in result["plan_for_all"][0]] == [
+        "Mathematik",
+        "Deutsch",
+    ]
+
+
+def test_period_zero_is_preserved() -> None:
+    timetable = _raw_timetable()
+    timetable["plan_for_all"][0][0]["stunde"] = 0
+
+    result = apply_custom_lessons(
+        timetable,
+        [
+            {
+                "date": "2026-08-24",
+                "period": "0",
+                "subject": "Tutorium",
+                "duration": 1,
+                "removed": False,
+            }
+        ],
+        today=date(2026, 8, 24),
+    )
+
+    assert result["plan_for_all"][0][0]["name"] == "Tutorium"
+    assert result["plan_for_all"][0][0]["stunde"] == 0
+
+
+def test_custom_lesson_without_portal_hours_does_not_crash() -> None:
+    timetable = _raw_timetable()
+    timetable["hours"] = []
+
+    result = apply_custom_lessons(
+        timetable,
+        [
+            {
+                "date": "2026-08-25",
+                "period": "3",
+                "subject": "Biologie",
+                "duration": 1,
+                "removed": False,
+            }
+        ],
+        today=date(2026, 8, 24),
+    )
+
+    assert result["plan_for_all"][1][0]["name"] == "Biologie"
+
+
 def test_class_link_overrides_do_not_mutate_cached_overview() -> None:
     overview = {
         "success": True,

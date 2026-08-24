@@ -19,12 +19,17 @@ def current_timetable_monday(today: date | None = None) -> date:
 
 
 def _period_start(value: object) -> int | None:
-    match = re.search(r"\d+", str(value or ""))
+    match = re.search(r"\d+", str(value if value is not None else ""))
     return int(match.group()) if match else None
 
 
 def _period_text(value: object) -> str:
-    return str(value or "").strip().replace("–", "-").replace("—", "-")
+    return (
+        str(value if value is not None else "")
+        .strip()
+        .replace("–", "-")
+        .replace("—", "-")
+    )
 
 
 def _same_period(lesson: dict[str, Any], period: str) -> bool:
@@ -48,7 +53,7 @@ def _slot_times(
 ) -> tuple[dict[str, int] | None, dict[str, int] | None]:
     """Find portal slot times for a custom lesson when no times were entered."""
     hours = timetable.get("hours")
-    if not isinstance(hours, list):
+    if not isinstance(hours, list) or not hours:
         return None, None
 
     start_period = _period_start(period)
@@ -88,7 +93,8 @@ def _custom_raw_lesson(
     existing: dict[str, Any] | None,
 ) -> dict[str, Any]:
     period = _period_text(override.get("period"))
-    start_period = _period_start(period) or 1
+    parsed_period = _period_start(period)
+    start_period = parsed_period if parsed_period is not None else 1
     duration = max(int(override.get("duration") or 1), 1)
     fallback_start, fallback_end = _slot_times(timetable, period, duration)
 
@@ -123,6 +129,31 @@ def _custom_raw_lesson(
     return lesson
 
 
+def _matching_lesson_index(
+    lessons: list[object], period: str, override: dict[str, Any]
+) -> int | None:
+    """Pick one lesson for a period, using the course when available."""
+    period_indexes = [
+        index
+        for index, lesson in enumerate(lessons)
+        if isinstance(lesson, dict) and _same_period(lesson, period)
+    ]
+    if not period_indexes:
+        return None
+
+    course_id = str(override.get("course_id") or "").strip()
+    if course_id:
+        for index in period_indexes:
+            lesson = lessons[index]
+            if (
+                isinstance(lesson, dict)
+                and str(lesson.get("course_id") or "").strip() == course_id
+            ):
+                return index
+        return None
+    return period_indexes[0]
+
+
 def _apply_to_plan(
     timetable: dict[str, Any],
     plan: object,
@@ -136,29 +167,20 @@ def _apply_to_plan(
         return
 
     period = _period_text(override.get("period"))
-    matching_indexes = [
-        index
-        for index, lesson in enumerate(lessons)
-        if isinstance(lesson, dict) and _same_period(lesson, period)
-    ]
+    matching_index = _matching_lesson_index(lessons, period, override)
     if override.get("removed"):
-        plan[day_index] = [
-            lesson
-            for index, lesson in enumerate(lessons)
-            if index not in matching_indexes
-        ]
+        if matching_index is not None:
+            plan[day_index] = [
+                lesson
+                for index, lesson in enumerate(lessons)
+                if index != matching_index
+            ]
         return
 
-    existing = lessons[matching_indexes[0]] if matching_indexes else None
+    existing = lessons[matching_index] if matching_index is not None else None
     custom = _custom_raw_lesson(timetable, override, existing)
-    if matching_indexes:
-        first_index = matching_indexes[0]
-        plan[day_index] = [
-            lesson
-            for index, lesson in enumerate(lessons)
-            if index not in matching_indexes or index == first_index
-        ]
-        plan[day_index][first_index] = custom
+    if matching_index is not None:
+        plan[day_index][matching_index] = custom
         return
 
     lessons.append(custom)
