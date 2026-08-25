@@ -198,6 +198,17 @@ def _parse_table(table: Any) -> Dict[str, Any]:
     }
 
 
+def _decode_dsb_response(response: requests.Response) -> str:
+    """Decode DSB plan HTML as UTF-8 even when the charset is omitted."""
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes):
+        try:
+            return content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            pass
+    return response.text
+
+
 def _parse_plan_tables(html: str) -> Dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
     title_tag = soup.find(["h1", "h2", "h3"])
@@ -567,7 +578,7 @@ def dsb_get_substitution_plan(
             response = session.get(plan_url, timeout=15)
             response.raise_for_status()
 
-            raw_html = response.text
+            raw_html = _decode_dsb_response(response)
             parsed = _parse_plan_tables(raw_html)
             last_updated = _parse_last_updated(raw_html)
 

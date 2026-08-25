@@ -1,9 +1,21 @@
 from datetime import datetime
 
 from schulportal_hessen.external.dsb.api import (
+    _decode_dsb_response,
     _parse_last_updated,
     dsb_get_substitution_plan,
 )
+
+UTF8_PLAN_HTML = """
+<html><body>
+  <h1>Vertretungsplan</h1>
+  <p>Stand: 21.08.2026 11:30</p>
+  <table>
+    <tr><th>Klasse</th><th>Vertreter</th></tr>
+    <tr><td>Q2</td><td>Hr. Geweniger → Fr. Müller</td></tr>
+  </table>
+</body></html>
+"""
 
 
 def test_parse_last_updated_from_stand_marker() -> None:
@@ -26,16 +38,8 @@ def test_parse_last_updated_returns_none_when_marker_is_missing() -> None:
 
 
 class FakeResponse:
-    text = """
-    <html><body>
-      <h1>Vertretungsplan</h1>
-      <p>Stand: 21.08.2026 11:30</p>
-      <table>
-        <tr><th>Klasse</th></tr>
-        <tr><td>Q2</td></tr>
-      </table>
-    </body></html>
-    """
+    content = UTF8_PLAN_HTML.encode("utf-8")
+    text = content.decode("latin-1")
 
     def raise_for_status(self) -> None:
         return None
@@ -58,3 +62,13 @@ def test_dsb_plan_response_includes_last_updated() -> None:
 
     assert result["success"] is True
     assert result["last_updated"] == "2026-08-21T11:30:00"
+    assert result["tables"][0]["rows"][0]["Vertreter"] == "Hr. Geweniger → Fr. Müller"
+
+
+def test_decode_dsb_response_uses_utf8_bytes_when_charset_is_missing() -> None:
+    response = FakeResponse()
+
+    decoded = _decode_dsb_response(response)
+
+    assert "Müller" in decoded
+    assert "MÃ¼ller" not in decoded
