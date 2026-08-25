@@ -1,17 +1,20 @@
-# LANiS (Schulportal Hessen) functions / API
+# LANiS (Schulportal Hessen) API
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![PyPI version](https://img.shields.io/pypi/v/sph-client)](https://pypi.org/project/sph-client/)
 
-This project allows you dynamicly accses the School Portal Hessen via python / REST API.
+Unofficial Python client and REST API integrations for Schulportal Hessen (SPH).
+The PyPI package contains the reusable Python client; the repository also includes
+the optional hosted API server and a terminal UI.
 
-If you like this project maybe consider contacting me and either help contribute to add more modules or to donate your sph account temporarily for me to add more Modules
+The client is actively developed against the portal's web interfaces. Portal
+changes can occasionally require a new package release.
 
 ## Live Server
-I provide a hosted server of this for anyone to use at 
-[https://lanis-backend.joancode.dev/](https://lanis-backend.joancode.dev/)
-If you wanna jump straigth in and not read too much code you can just have a look at the [api documentation](https://lanis-backend.joancode.dev/documentation) where you can see all endpoints and how to use them. 
+The hosted API is available at
+[lanis-backend.joancode.dev](https://lanis-backend.joancode.dev/), with interactive
+documentation at [/documentation](https://lanis-backend.joancode.dev/documentation).
 <img width="1249" height="937" alt="image" src="https://github.com/user-attachments/assets/8fef241f-3cd5-432b-bc01-5f85b8d6efab" />
 
 
@@ -19,24 +22,23 @@ If you wanna jump straigth in and not read too much code you can just have a loo
 
 This monorepo contains the following components:
 
-1. **sph_client** / **schulportal_hessen** This contains the functions which allow you to accses the SPH dynamicly
-2. **api** this wraps all functions from sph_client into a REST API with additional features such as Cashing
-3. **TUI** Contains a TUI which is currently not actively maintained
+1. **sph_client** / **schulportal_hessen** contains the reusable Python client
+2. **api** wraps the client in a REST API with caching and additional services
+3. **TUI** contains a terminal interface that is currently not actively maintained
 
 ## Supported Modules:
 
-Site note: modules are often refered as applets since the SPH is build ontop of Moodle.
+The portal modules are referred to as applets because SPH is built on top of Moodle.
 
 
-- login (a simple module to login and obtain session credentials)
-- benutzer (data about the user such as their age name and class)
-- mein_unterricht (returns overview data about all classes the user attends)
-- mein_unterricht_detailed (shows you a detailed view of a given class)
-- kalender (shows you data from the build in calendar in the sph)
-- nachrichten (pretty self explanitory right?)
-- stundenplan (important! as of the 11.06.26 this code has been only ported from another framework called lanis_mobile (which is written in go) and hasnt been tested since i dont have accses to such a module at my school)
-- lerngruppen (same here. This is a module often used by higher education institutions and has been ported without any testing!)
-- school_list (provides you with a map of school names to theire ids, important for login and school selection) 
+- `login` — authenticate and manage session credentials
+- `benutzer` — user profile and class information
+- `mein_unterricht` — courses, content, assignments, and attachments
+- `kalender` — calendar events
+- `nachrichten` — conversations, recipients, sending, and replies
+- `stundenplan` — timetable data
+- `lerngruppen` — study groups
+- `school_list` — school names and IDs for login and school selection
 
 
 ## Installation
@@ -51,7 +53,7 @@ pip install -r requirements.txt
 
 ### Python package
 ```bash
-pip install sph_client 
+python -m pip install sph-client
 ```
 
 ## Quick Start
@@ -89,9 +91,10 @@ if result.get("success"):
 
     api.logout()
 ```
-## Cashing and Sessions
+## Caching and sessions
 
-Fun Fact: Thanks to the cashing a api connected with a simple frontend such as lanis.arg-server.de gives you a UI which navigates waaaayyy faster then the schoolportal its self! And your phone recieves and sends waaayyy less data thanks to the api filtering out all the unimportant things and only sending the data you need!
+The hosted API uses caching and persistent sessions to reduce portal requests and
+keep navigation responsive.
 
 - **Session TTL:** 1 hour inactivity timeout per session
 - **Response cache:** 10 minutes for most endpoints
@@ -125,6 +128,11 @@ A systemd service file is provided at `lanis-api.service`:
 
 
 
-## AI Decleration
-I use AI heavily but not irresponsibly!
-I do not VibeCode as i review all code, have a good understanding of the projects structure and decide over the main aspects of the project.
+## API reference
+
+See the generated [Python API reference](docs/API.md) for the complete client
+surface and method documentation.
+
+## License
+
+This project is released under the [MIT License](LICENSE).
