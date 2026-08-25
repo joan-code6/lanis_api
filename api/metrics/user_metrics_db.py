@@ -15,15 +15,79 @@ import aiosqlite
 import json
 import hashlib
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..identity import normalize_school_id, normalize_username
+
 logger = logging.getLogger("user_metrics")
 
 # Default database path (relative to project root)
 DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "data" / "user_metrics.db"
+
+
+def _row_recency(row: Dict[str, Any]) -> tuple[str, int]:
+    """Choose the newest profile row while keeping migrations deterministic."""
+    return (str(row["last_updated"] or ""), int(row["id"]))
+
+
+async def _migrate_case_insensitive_logins(db: aiosqlite.Connection) -> int:
+    """Merge rows created for case variants of the same SPH account."""
+    db.row_factory = aiosqlite.Row
+    async with db.execute("SELECT * FROM users") as cursor:
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+    groups: dict[tuple[str, str], list[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[
+            (normalize_school_id(row["school_id"]), normalize_username(row["login"]))
+        ].append(row)
+
+    migrated = 0
+    for group_rows in groups.values():
+        canonical_school_id = normalize_school_id(group_rows[0]["school_id"])
+        canonical_login = normalize_username(group_rows[0]["login"])
+        needs_merge = len(group_rows) > 1 or any(
+            row["school_id"] != canonical_school_id or row["login"] != canonical_login
+            for row in group_rows
+        )
+        if not needs_merge:
+            continue
+
+        winner = max(group_rows, key=_row_recency)
+        first_seen = min(str(row["first_seen"] or "") for row in group_rows)
+        last_updated = max(str(row["last_updated"] or "") for row in group_rows)
+        update_count = sum(int(row["update_count"] or 0) for row in group_rows)
+
+        for row in group_rows:
+            if row["id"] == winner["id"]:
+                continue
+            await db.execute("DELETE FROM users WHERE id = ?", (row["id"],))
+
+        await db.execute(
+            """
+            UPDATE users
+            SET school_id = ?, login = ?, data_hash = ?, user_data = ?,
+                first_seen = ?, last_updated = ?, update_count = ?
+            WHERE id = ?
+            """,
+            (
+                canonical_school_id,
+                canonical_login,
+                winner["data_hash"],
+                winner["user_data"],
+                first_seen,
+                last_updated,
+                update_count,
+                winner["id"],
+            ),
+        )
+        migrated += len(group_rows)
+
+    return migrated
 
 
 @dataclass
@@ -87,10 +151,20 @@ class UserMetricsDB:
                 CREATE INDEX IF NOT EXISTS idx_users_school_login 
                 ON users(school_id, login)
             """)
+
+            migrated = await _migrate_case_insensitive_logins(db)
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_canonical_identity
+                ON users(school_id, login COLLATE NOCASE)
+                """
+            )
             
             await db.commit()
         
         self._initialized = True
+        if migrated:
+            logger.info("Canonicalized %s legacy user-metrics rows", migrated)
         logger.info(f"User metrics database initialized at {self.db_path}")
     
     def _compute_hash(self, data: Dict[str, Any]) -> str:
@@ -121,6 +195,8 @@ class UserMetricsDB:
             - (False, True): Existing user was updated with new data
             - (False, False): Existing user, no changes detected
         """
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
         await self.initialize()
         
         data_hash = self._compute_hash(user_data)
@@ -170,6 +246,8 @@ class UserMetricsDB:
     
     async def get_user(self, school_id: str, login: str) -> Optional[UserRecord]:
         """Get a user record by school ID and login."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
         await self.initialize()
         
         async with aiosqlite.connect(self.db_path) as db:
@@ -231,6 +309,7 @@ class UserMetricsDB:
     
     async def get_users_by_school(self, school_id: str) -> List[UserRecord]:
         """Get all users from a specific school."""
+        school_id = normalize_school_id(school_id)
         await self.initialize()
         
         async with aiosqlite.connect(self.db_path) as db:

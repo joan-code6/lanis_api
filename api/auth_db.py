@@ -10,10 +10,13 @@ import json
 import logging
 import os
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import aiosqlite
+
+from .identity import canonicalize_user_id
 
 logger = logging.getLogger("auth_db")
 
@@ -29,6 +32,134 @@ DEFAULT_NOTIFICATION_PREFERENCES: Dict[str, Any] = {
 }
 
 _lock = asyncio.Lock()
+
+
+def _canonical_user_id(user_id: str) -> str:
+    """Return the stable key used by all user-owned auth data."""
+    return canonicalize_user_id(user_id)
+
+
+def _row_recency(row: Dict[str, Any]) -> tuple[str, int]:
+    """Choose the newest row while keeping migrations deterministic."""
+    timestamp = row.get("updated_at") or row.get("created_at") or ""
+    return (str(timestamp), int(row["__rowid"]))
+
+
+async def _canonicalize_refresh_token_user_ids(db: aiosqlite.Connection) -> int:
+    """Move legacy case-sensitive refresh-token keys to canonical IDs."""
+    db.row_factory = aiosqlite.Row
+    async with db.execute(
+        "SELECT rowid AS __rowid, user_id FROM refresh_tokens"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    migrated = 0
+    for row in rows:
+        canonical_id = _canonical_user_id(row["user_id"])
+        if canonical_id == row["user_id"]:
+            continue
+        await db.execute(
+            "UPDATE refresh_tokens SET user_id = ? WHERE rowid = ?",
+            (canonical_id, row["__rowid"]),
+        )
+        migrated += 1
+    return migrated
+
+
+async def _merge_user_id_table(
+    db: aiosqlite.Connection,
+    table: str,
+    conflict_columns: tuple[str, ...],
+) -> int:
+    """Canonicalize a user-keyed table and merge any colliding rows.
+
+    The table names are module constants, never user input. When legacy
+    spellings collide, the newest row wins and all non-key data from that row
+    is retained. This keeps the migration safe for notification preferences,
+    overrides, and message state alike.
+    """
+    db.row_factory = aiosqlite.Row
+    async with db.execute(f"SELECT rowid AS __rowid, * FROM {table}") as cursor:
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+    groups: dict[tuple[Any, ...], list[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        canonical_id = _canonical_user_id(row["user_id"])
+        group_key = tuple(
+            canonical_id if column == "user_id" else row[column]
+            for column in conflict_columns
+        )
+        groups[group_key].append(row)
+
+    migrated = 0
+    columns = [column for column in rows[0] if column != "__rowid"] if rows else []
+    placeholders = ", ".join("?" for _ in columns)
+    column_sql = ", ".join(columns)
+
+    for group_rows in groups.values():
+        if not any(
+            _canonical_user_id(row["user_id"]) != row["user_id"]
+            for row in group_rows
+        ):
+            continue
+
+        winner = max(group_rows, key=_row_recency)
+        canonical_id = _canonical_user_id(winner["user_id"])
+
+        for row in group_rows:
+            await db.execute(
+                f"DELETE FROM {table} WHERE rowid = ?", (row["__rowid"],)
+            )
+
+        values = [
+            canonical_id if column == "user_id" else winner[column]
+            for column in columns
+        ]
+        await db.execute(
+            f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
+            values,
+        )
+        migrated += len(group_rows)
+
+    return migrated
+
+
+async def _canonicalize_push_subscription_user_ids(
+    db: aiosqlite.Connection,
+) -> int:
+    """Canonicalize push owners without changing the endpoint primary key."""
+    db.row_factory = aiosqlite.Row
+    async with db.execute(
+        "SELECT rowid AS __rowid, user_id FROM push_subscriptions"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    migrated = 0
+    for row in rows:
+        canonical_id = _canonical_user_id(row["user_id"])
+        if canonical_id == row["user_id"]:
+            continue
+        await db.execute(
+            "UPDATE push_subscriptions SET user_id = ? WHERE rowid = ?",
+            (canonical_id, row["__rowid"]),
+        )
+        migrated += 1
+    return migrated
+
+
+async def _migrate_user_ids(db: aiosqlite.Connection) -> None:
+    """Merge case-sensitive user IDs left by older LANIS releases."""
+    migrated = await _canonicalize_refresh_token_user_ids(db)
+    for table, conflict_columns in (
+        ("notification_preferences", ("user_id",)),
+        ("custom_lessons", ("user_id", "lesson_date", "period")),
+        ("class_link_overrides", ("user_id", "course_id")),
+        ("message_notification_state", ("user_id",)),
+    ):
+        migrated += await _merge_user_id_table(db, table, conflict_columns)
+    migrated += await _canonicalize_push_subscription_user_ids(db)
+    if migrated:
+        logger.info("Canonicalized %s legacy user-identity rows in auth DB", migrated)
 
 
 async def initialize() -> None:
@@ -140,6 +271,7 @@ async def initialize() -> None:
             )
             """
         )
+        await _migrate_user_ids(db)
         await db.commit()
     logger.info("Auth DB initialized at %s", DB_PATH)
 
@@ -152,6 +284,7 @@ async def store_refresh_token(
 
     Also cleans up expired tokens for this user.
     """
+    user_id = _canonical_user_id(user_id)
     token = uuid.uuid4().hex
     expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
 
@@ -241,6 +374,7 @@ async def get_refresh_token_by_user_id(user_id: str) -> Optional[dict]:
     Look up the most recent valid refresh token for a user.
     Used to re-establish Schulportal session after backend restart.
     """
+    user_id = _canonical_user_id(user_id)
     await _revoke_expired_sessions()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -275,6 +409,7 @@ async def delete_refresh_token(token: str) -> None:
 
 async def delete_user_tokens(user_id: str) -> None:
     """Delete all refresh tokens for a user (used on full logout)."""
+    user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -288,6 +423,7 @@ async def delete_user_tokens(user_id: str) -> None:
 
 async def delete_user_push_subscriptions(user_id: str) -> None:
     """Remove all browser push subscriptions for a user on full logout."""
+    user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -309,6 +445,7 @@ def _notification_preferences_from_row(row: Any) -> Dict[str, Any]:
 
 async def get_notification_preferences(user_id: str) -> Dict[str, Any]:
     """Return saved message-notification preferences or safe defaults."""
+    user_id = _canonical_user_id(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -327,6 +464,7 @@ async def save_notification_preferences(
     user_id: str, preferences: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Persist and return one user's message-notification preferences."""
+    user_id = _canonical_user_id(user_id)
     values = {
         **DEFAULT_NOTIFICATION_PREFERENCES,
         **preferences,
@@ -394,6 +532,7 @@ def _custom_lesson_from_row(row: Any) -> Dict[str, Any]:
 
 async def get_custom_lessons(user_id: str) -> List[Dict[str, Any]]:
     """Return all lesson overrides for one account."""
+    user_id = _canonical_user_id(user_id)
     if not os.path.exists(DB_PATH):
         return []
     try:
@@ -424,6 +563,7 @@ async def save_custom_lesson(
     user_id: str, lesson: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Insert or replace one date/period lesson override."""
+    user_id = _canonical_user_id(user_id)
     values = {
         "date": str(lesson.get("date") or ""),
         "period": str(lesson.get("period") or ""),
@@ -502,6 +642,7 @@ async def delete_custom_lesson(
     user_id: str, lesson_date: str, period: str
 ) -> None:
     """Remove one lesson override and restore the portal lesson, if any."""
+    user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -513,6 +654,7 @@ async def delete_custom_lesson(
 
 async def get_class_link_overrides(user_id: str) -> Dict[str, str]:
     """Return saved class-link values, including intentionally blank links."""
+    user_id = _canonical_user_id(user_id)
     if not os.path.exists(DB_PATH):
         return {}
     try:
@@ -533,6 +675,7 @@ async def save_class_link(
     user_id: str, course_id: str, url: str
 ) -> Dict[str, Any]:
     """Persist one class-link override for an account."""
+    user_id = _canonical_user_id(user_id)
     course_id = str(course_id).strip()
     url = str(url or "").strip()
     async with _lock:
@@ -553,6 +696,7 @@ async def save_class_link(
 
 async def delete_class_link(user_id: str, course_id: str) -> None:
     """Remove a class-link override and restore the portal value."""
+    user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -589,6 +733,7 @@ async def get_enabled_notification_users() -> List[Dict[str, Any]]:
 
 async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> None:
     """Associate a browser push subscription with a user."""
+    user_id = _canonical_user_id(user_id)
     keys = subscription.get("keys") or {}
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -615,6 +760,7 @@ async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> 
 
 async def get_push_subscriptions(user_id: str) -> List[Dict[str, Any]]:
     """Return all browser push subscriptions belonging to a user."""
+    user_id = _canonical_user_id(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -633,6 +779,7 @@ async def get_push_subscriptions(user_id: str) -> List[Dict[str, Any]]:
 
 async def delete_push_subscription(user_id: str, endpoint: str) -> None:
     """Remove one browser push subscription."""
+    user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -644,6 +791,7 @@ async def delete_push_subscription(user_id: str, endpoint: str) -> None:
 
 async def get_message_notification_state(user_id: str) -> Optional[Dict[str, Any]]:
     """Return the last persisted message snapshot for a user."""
+    user_id = _canonical_user_id(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT snapshot FROM message_notification_state WHERE user_id = ?",
@@ -657,6 +805,7 @@ async def save_message_notification_state(
     user_id: str, snapshot: Dict[str, Any]
 ) -> None:
     """Persist the last message snapshot used for change detection."""
+    user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
