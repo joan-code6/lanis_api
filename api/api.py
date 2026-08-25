@@ -13,6 +13,7 @@ Run locally:
 """
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -1056,9 +1057,8 @@ async def get_vertretungsplan(
 async def get_stundenplan(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    timetable_params = _make_param_key(
-        {"week_start": current_timetable_monday().isoformat()}
-    )
+    week_start = current_timetable_monday()
+    timetable_params = _make_param_key({"week_start": week_start.isoformat()})
     cached = await sessions.get_cached(auth.user_id, "/stundenplan", timetable_params)
     if cached is not None:
         return cached
@@ -1075,6 +1075,17 @@ async def get_stundenplan(
                     auth.user_id, "/meinunterricht", course_overview
                 )
         result = enrich_timetable(result, course_overview)
+        # Keep an unmodified recurring template for clients that project the
+        # timetable onto dates outside the current Monday-Friday window.
+        # Date-specific overrides are still applied to the legacy plan fields
+        # below for backwards compatibility.
+        result["week_start"] = week_start.isoformat()
+        result["template_plan_for_all"] = copy.deepcopy(
+            result.get("plan_for_all")
+        )
+        result["template_plan_for_own"] = copy.deepcopy(
+            result.get("plan_for_own")
+        )
     result = apply_custom_lessons(result, await get_custom_lessons(auth.user_id))
     await sessions.set_cache(auth.user_id, "/stundenplan", result, timetable_params)
     return result
