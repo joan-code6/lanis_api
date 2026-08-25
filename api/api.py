@@ -37,6 +37,12 @@ import jwt
 from schulportal_hessen.base import SchulportalHessenAPI
 
 from .queue import task_queue, Task, TaskPriority
+from .identity import (
+    canonicalize_user_id,
+    make_user_id,
+    normalize_school_id,
+    normalize_username,
+)
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .documentation import router as documentation_router
@@ -115,7 +121,7 @@ JWT_ALGORITHM = "HS256"
 
 
 def _make_user_id(school_id: str, username: str) -> str:
-    return f"{school_id}:{username}"
+    return make_user_id(school_id, username)
 
 
 # --- Pydantic Models ---
@@ -271,6 +277,7 @@ class AuthManager:
     # -- JWT helpers -------------------------------------------------
 
     def create_access_token(self, user_id: str, school_id: str, username: str) -> str:
+        user_id = canonicalize_user_id(user_id)
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         payload = {
             "sub": user_id,
@@ -315,6 +322,7 @@ class AuthManager:
     async def _get_or_create_schulportal_client(
         self, user_id: str
     ) -> SchulportalSessionData:
+        user_id = canonicalize_user_id(user_id)
         await self._purge_expired_schulportal()
 
         async with self._lock:
@@ -360,6 +368,8 @@ class AuthManager:
         self, school_id: str, username: str, password: str
     ) -> str:
         """Log into Schulportal, cache the client, return user_id."""
+        school_id = normalize_school_id(school_id)
+        username = str(username).strip()
         user_id = _make_user_id(school_id, username)
         client = SchulportalHessenAPI()
 
@@ -385,6 +395,7 @@ class AuthManager:
 
     async def drop_schulportal_session(self, user_id: str) -> None:
         """Close and remove a Schulportal session."""
+        user_id = canonicalize_user_id(user_id)
         async with self._lock:
             data = self._schulportal_clients.pop(user_id, None)
         if data:
@@ -545,6 +556,9 @@ _message_notification_task = None
 
 async def fetch_and_store_user_data(user_id: str, school_id: str, username: str) -> None:
     """Background task: fetch user profile and store in metrics DB."""
+    user_id = canonicalize_user_id(user_id)
+    school_id = normalize_school_id(school_id)
+    username = normalize_username(username)
     try:
         session_data = await sessions._get_or_create_schulportal_client(user_id)
         client = session_data.client
@@ -586,7 +600,7 @@ async def client_dependency(
 ) -> AuthSession:
     """Validate access token (JWT) and return the AuthSession with a live Schulportal client."""
     payload = sessions.decode_access_token(x_session_token)
-    user_id = payload["sub"]
+    user_id = canonicalize_user_id(payload["sub"])
     session_data = await sessions._get_or_create_schulportal_client(user_id)
     return AuthSession(
         client=session_data.client,
@@ -759,24 +773,27 @@ async def get_metrics_stats() -> Dict[str, Any]:
 
 @app.post("/login", response_model=LoginResponse)
 async def login_endpoint(payload: LoginRequest) -> LoginResponse:
+    school_id = normalize_school_id(payload.school_id)
+    username = str(payload.username).strip()
+
     # 1. Log into Schulportal
     user_id = await sessions.create_schulportal_session(
-        payload.school_id, payload.username, payload.password
+        school_id, username, payload.password
     )
 
     # 2. Store long-term refresh token in DB
     refresh_token = await store_refresh_token(
         user_id=user_id,
-        school_id=payload.school_id,
-        username=payload.username,
+        school_id=school_id,
+        username=username,
         password=payload.password,
     )
 
     # 3. Issue short-term access token (JWT)
     access_token = sessions.create_access_token(
         user_id=user_id,
-        school_id=payload.school_id,
-        username=payload.username,
+        school_id=school_id,
+        username=username,
     )
 
     # 4. Read encryption state
@@ -788,9 +805,9 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
 
     # 5. Queue background metrics fetch
     user_data_task = Task(
-        name=f"fetch_user_data:{payload.username}@{payload.school_id}",
+        name=f"fetch_user_data:{username}@{school_id}",
         func=fetch_and_store_user_data,
-        args=(user_id, payload.school_id, payload.username),
+        args=(user_id, school_id, normalize_username(username)),
         priority=TaskPriority.LOW,
         max_retries=2,
     )
@@ -799,8 +816,8 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
     return LoginResponse(
         access_token=access_token,
         refresh_token=refresh_token,
-        school_id=payload.school_id,
-        username=payload.username,
+        school_id=school_id,
+        username=username,
         encryption_ready=encryption_ready,
     )
 
