@@ -1044,6 +1044,7 @@ Retrieve the timetable from stundenplan.php (all and personal views).
 ```json
 {
   "success": true,
+  "week_start": "2026-08-24",
   "days": ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag"],
   "plan_for_all": [[{
     "name": "{subject}",
@@ -1058,6 +1059,8 @@ Retrieve the timetable from stundenplan.php (all and personal views).
     }]
   }]],
   "plan_for_own": [[{"name": "{subject}", "course_id": "{course_id}"}]],
+  "template_plan_for_all": [[{"name": "{subject}"}]],
+  "template_plan_for_own": [[{"name": "{subject}"}]],
   "hours": [{"label": "1", "start_time": {"hour": 8, "minute": 0}}],
   "week_badge": "{week}"
 }
@@ -1074,6 +1077,12 @@ Unterricht entry date; completed homework remains present with `done: true`.
 Enrichment is automatic for all requests. If the course overview cannot be
 loaded, the regular timetable is returned without the optional course and
 homework fields.
+
+`week_start` anchors `week_badge` to a calendar week. The two `template_plan`
+fields contain the enriched recurring timetable before date-specific custom
+lesson overrides are merged. Clients can use them to project the correct A/B
+lessons onto rolling or future date ranges; the legacy `plan_for_all` and
+`plan_for_own` fields continue to include overrides for the anchored week.
 
 **Status Codes:**
 - `200 OK` - Timetable retrieved successfully

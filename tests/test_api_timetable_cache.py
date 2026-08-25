@@ -152,3 +152,53 @@ def test_timetable_cache_is_keyed_by_the_current_week(monkeypatch):
     asyncio.run(scenario())
 
     assert fake_client.timetable_calls == 2
+
+
+def test_timetable_exposes_week_anchor_and_unmodified_template(monkeypatch):
+    portal_lesson = {"stunde": 1, "name": "Mathematik"}
+
+    class FakeClient:
+        def stundenplan_get_plan(self):
+            return {
+                "success": True,
+                "plan_for_all": [[portal_lesson]],
+                "plan_for_own": [[dict(portal_lesson)]],
+            }
+
+        def meinunterricht_get_overview(self):
+            return {"success": True, "entries": []}
+
+    class FakeSessions:
+        async def get_cached(self, _user_id, _endpoint, _params=""):
+            return None
+
+        async def set_cache(
+            self, _user_id, _endpoint, _data, _params="", is_long_term=False
+        ):
+            return None
+
+    async def custom_lessons(_user_id):
+        return [
+            {
+                "date": "2026-08-24",
+                "period": "1",
+                "subject": "Deutsch",
+                "duration": 1,
+            }
+        ]
+
+    monkeypatch.setattr(api_module, "sessions", FakeSessions())
+    monkeypatch.setattr(api_module, "get_custom_lessons", custom_lessons)
+    monkeypatch.setattr(
+        api_module, "current_timetable_monday", lambda: date(2026, 8, 24)
+    )
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.get_stundenplan(auth=auth))
+
+    assert result["week_start"] == "2026-08-24"
+    assert result["template_plan_for_all"][0][0]["name"] == "Mathematik"
+    assert result["template_plan_for_own"][0][0]["name"] == "Mathematik"
+    assert result["plan_for_all"][0][0]["name"] == "Deutsch"
