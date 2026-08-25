@@ -1,5 +1,7 @@
-from main import SchulportalHessenAPI
-def find_available_apps(debug = False):
+from schulportal_hessen.base import SchulportalHessenAPI
+
+
+def find_available_apps(debug: bool = False):
     api = SchulportalHessenAPI()
     Overview = api.get_apps()
     available_apps = []
@@ -7,7 +9,7 @@ def find_available_apps(debug = False):
     for app in Overview['data']['entrys']:
         # print(app)
         available_apps.append((app['Name'], app))
-        if debug == True:
+        if debug:
             print("Found", app['Name'], "app!", app['link'])
 
     return available_apps

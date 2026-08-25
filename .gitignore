@@ -27,3 +27,6 @@ data/files/
 functions/tools/__pycache__/cryptor.cpython-311.pyc
 
 pg*.py
+build/
+dist/
+*.egg-info/

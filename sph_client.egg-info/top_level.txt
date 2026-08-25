@@ -1,6 +1,0 @@
-api
-docs
-schulportal_hessen
-scripts
-sph_client
-tui

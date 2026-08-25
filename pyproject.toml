@@ -1,21 +1,34 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sph-client"
-version = "0.1.10"
+version = "0.1.11"
 description = "Python API client for Schulportal Hessen (SPH)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     {name = "Schulportal Hessen API Contributors"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
 ]
 dependencies = [
     "requests>=2.31.0",
     "python-dotenv>=1.0.0",
     "pycryptodome>=3.19.0",
+    "beautifulsoup4>=4.12.0",
 ]
 
 [project.optional-dependencies]
@@ -24,8 +37,13 @@ dev = [
     "ruff>=0.1.0",
 ]
 
-[tool.setuptools.packages]
-find = {}
+[project.urls]
+Homepage = "https://github.com/joan-code6/lanis_api"
+Repository = "https://github.com/joan-code6/lanis_api"
+Issues = "https://github.com/joan-code6/lanis_api/issues"
+
+[tool.setuptools.packages.find]
+include = ["sph_client", "schulportal_hessen", "schulportal_hessen.*"]
 
 [tool.ruff]
 target-version = "py310"
