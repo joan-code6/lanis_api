@@ -1,5 +1,10 @@
 from datetime import datetime
+from types import SimpleNamespace
 
+import httpx
+import pytest
+
+from schulportal_hessen.external.dsb import api as dsb_api
 from schulportal_hessen.external.dsb.api import (
     _decode_dsb_response,
     _parse_last_updated,
@@ -72,3 +77,36 @@ def test_decode_dsb_response_uses_utf8_bytes_when_charset_is_missing() -> None:
 
     assert "Müller" in decoded
     assert "MÃ¼ller" not in decoded
+
+
+@pytest.mark.parametrize(
+    "login_html",
+    [
+        "",
+        f"<html><body>{'x' * 120}</body></html>",
+        f'<form><input name="__VIEWSTATE" value="state"></form>{"x" * 120}',
+    ],
+)
+def test_dsb_login_error_urls_are_strings(monkeypatch, login_html: str) -> None:
+    class LoginResponse:
+        text = login_html
+        content = login_html.encode()
+        status_code = 200
+        url = httpx.URL("https://www.dsbmobile.de/Login.aspx")
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class LoginSession:
+        def get(self, url: str, **_kwargs):
+            if url.endswith("Login.aspx"):
+                return LoginResponse()
+            return LoginResponse()
+
+    monkeypatch.setattr(dsb_api, "_make_dsb_session", LoginSession)
+
+    result = dsb_api.dsb_login(SimpleNamespace(), "user", "password")
+
+    assert result["success"] is False
+    assert result["url"] == "https://www.dsbmobile.de/Login.aspx"
+    assert isinstance(result["url"], str)

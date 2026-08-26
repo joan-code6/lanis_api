@@ -73,7 +73,9 @@ class SchulportalHessenAPI:
         After initialization, call login() with valid credentials
         to authenticate before making other API calls.
         """
-        self.session = httpx.Client()
+        # Match requests.Session semantics: callers that need a timeout set it
+        # per request, while portal operations without one remain unbounded.
+        self.session = httpx.Client(timeout=None)
         self.session.headers.update(
             {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",

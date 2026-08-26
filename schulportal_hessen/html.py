@@ -72,6 +72,9 @@ class HTMLNode:
     def get(self, key: str, default: Any = None) -> Any:
         return self._node.attributes.get(key, default)
 
+    def has_attr(self, key: str) -> bool:
+        return key in self._node.attributes
+
     def __getitem__(self, key: str) -> str:
         return self._node.attributes[key]
 

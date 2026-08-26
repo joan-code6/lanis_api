@@ -340,7 +340,7 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                     "error": "Login page returned empty or truncated content.",
                     "content_length": len(login_page.text),
                     "status_code": login_page.status_code,
-                    "url": login_page.url,
+                    "url": str(login_page.url),
                 }
 
             payload = _extract_login_payload(login_page.text)
@@ -350,7 +350,7 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                     "success": False,
                     "error": "Failed to parse login form. No form or input fields found in the HTML.",
                     "html_snippet": snippet,
-                    "url": login_page.url,
+                    "url": str(login_page.url),
                     "status_code": login_page.status_code,
                 }
 
@@ -361,7 +361,7 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                     "error": "Login form found but missing txtUser/txtPass input fields.",
                     "extracted_fields": list(payload.keys()),
                     "html_snippet": snippet,
-                    "url": login_page.url,
+                    "url": str(login_page.url),
                 }
 
             payload["txtUser"] = username
