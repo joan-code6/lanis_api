@@ -1,0 +1,10 @@
+**
+!requirements.txt
+!api
+!api/**
+!schulportal_hessen
+!schulportal_hessen/**
+!sph_client
+!sph_client/**
+**/__pycache__
+**/*.py[cod]

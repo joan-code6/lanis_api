@@ -1,10 +1,25 @@
 services:
   lanis-api:
-    build: .
-    container_name: lanis-api
+    build:
+      context: .
     restart: unless-stopped
+    init: true
     ports:
-      - "9898:8000"
+      - "${LANIS_DOCKER_BIND_ADDRESS:-0.0.0.0}:${LANIS_DOCKER_PORT:-9898}:8000"
+    env_file:
+      - .env
     environment:
-      - LANIS_API_HOST=0.0.0.0
-      - LANIS_API_PORT=8000
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env or the environment}"
+    volumes:
+      - lanis-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/temp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  lanis-data:
