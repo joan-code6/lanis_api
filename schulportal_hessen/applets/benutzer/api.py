@@ -1,6 +1,7 @@
-from typing import Dict, Any
 import json
-from bs4 import BeautifulSoup
+from typing import Any, Dict
+
+from schulportal_hessen.html import HTMLParser
 
 
 def benutzer_get_data(self) -> Dict[str, Any]:
@@ -49,7 +50,7 @@ def benutzer_get_data(self) -> Dict[str, Any]:
         if response.status_code != 200:
             return {'success': False, 'error': f'Failed to fetch user data: {response.status_code}'}
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = HTMLParser(response.text)
         
         # Find the table with user data
         table = soup.find('table', class_='table table-striped')

@@ -17,8 +17,8 @@ Run with: pytest api-tests.py
 import os
 from typing import Dict
 
+import httpx as requests
 import pytest
-import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -54,7 +54,7 @@ def session_token(base_url: str, require_credentials: Dict[str, str]):
 	yield token
 	try:
 		requests.post(f"{base_url}/logout", headers={"X-Session-Token": token}, timeout=10)
-	except requests.RequestException:
+	except requests.HTTPError:
 		pass
 
 
@@ -436,4 +436,3 @@ def test_dsb_plan(base_url: str, session_token: str) -> None:
 	assert body.get("success") is True
 	assert body.get("count") == 0
 	assert body.get("results") == []
-

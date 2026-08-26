@@ -1,9 +1,10 @@
-from typing import Dict, Any, Optional
 import json
 import os
 import re
+from typing import Any, Dict, Optional
 from urllib.parse import urljoin
 
+from schulportal_hessen.html import HTMLParser
 from schulportal_hessen.tools.cryptor import Cryptor
 
 
@@ -51,16 +52,7 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
 
         html = response.text
 
-        # Parse the HTML to extract course entries with BeautifulSoup
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            return {
-                "success": False,
-                "error": "BeautifulSoup4 is required for HTML parsing. Install with: pip install beautifulsoup4",
-            }
-
-        soup = BeautifulSoup(html, "html.parser")
+        soup = HTMLParser(html)
         entries = []
 
         # Find all entry rows
@@ -184,15 +176,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
 
         html = response.text
 
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            return {
-                "success": False,
-                "error": "BeautifulSoup4 is required. Install with: pip install beautifulsoup4",
-            }
-
-        soup = BeautifulSoup(html, "html.parser")
+        soup = HTMLParser(html)
 
         # Extract course name and semester
         course_title = soup.find("h1", {"data-book": course_id})
@@ -276,7 +260,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
                     try:
                         decrypted = self.cryptor.decrypt(encrypted_attendance)
                         # Parse the decrypted HTML to get clean attendance text
-                        attendance_soup = BeautifulSoup(decrypted, "html.parser")
+                        attendance_soup = HTMLParser(decrypted)
                         # Remove hidden elements
                         for hidden in attendance_soup.find_all(class_="hidden"):
                             hidden.decompose()

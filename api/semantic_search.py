@@ -13,8 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-import requests
-
+import httpx
 from fastapi.concurrency import run_in_threadpool
 
 logger = logging.getLogger("semantic_search")
@@ -36,7 +35,7 @@ class EmbeddingClient:
         if not texts:
             return []
 
-        response = requests.post(
+        response = httpx.post(
             f"{self.api_url}/embeddings",
             headers={
                 "Authorization": f"Bearer {self.api_key}",

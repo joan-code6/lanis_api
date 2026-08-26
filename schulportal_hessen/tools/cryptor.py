@@ -10,10 +10,10 @@ from json.decoder import JSONDecodeError
 from random import randint, random, seed
 from typing import Optional
 
-import requests
-from Crypto import Random
-from Crypto.Cipher import AES, PKCS1_v1_5
-from Crypto.PublicKey import RSA
+import httpx
+from Cryptodome import Random
+from Cryptodome.Cipher import AES, PKCS1_v1_5
+from Cryptodome.PublicKey import RSA
 
 
 class Cryptor:
@@ -31,12 +31,12 @@ class Cryptor:
 
     Parameters
     ----------
-    session : requests.Session
-        The authenticated requests session to use for API calls.
+    session : httpx.Client
+        The authenticated HTTP client to use for API calls.
 
     Attributes
     ----------
-    session : requests.Session
+    session : httpx.Client
         The active HTTP session.
     secret : str, optional
         The decrypted AES session key (after authentication).
@@ -58,7 +58,7 @@ class Cryptor:
 
     BASE_URL = "https://start.schulportal.hessen.de"
 
-    def __init__(self, session: requests.Session) -> None:
+    def __init__(self, session: httpx.Client) -> None:
         self.session = session
         self.secret: Optional[str] = None
         self.authenticated = False
@@ -244,7 +244,7 @@ class Cryptor:
                 f"{self.BASE_URL}/ajax.php", params={"f": "rsaPublicKey"}
             )
             response.raise_for_status()
-        except requests.RequestException as error:
+        except httpx.HTTPError as error:
             print(f"Cryptor - Public key: Error getting public key - {error}")
             raise
 

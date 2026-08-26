@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
 import json
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import requests
-from bs4 import BeautifulSoup
+import httpx
 
+from schulportal_hessen.html import HTMLNode, HTMLParser
 
 _DATE_TAG_RE = re.compile(r"data-tag=\"(\d{2}\.\d{2}\.\d{4})\"")
 _LAST_EDIT_RE = re.compile(
@@ -101,7 +101,7 @@ def _normalize_tag_id(date_str: str) -> str:
 
 
 def _parse_non_ajax_day(
-    soup: BeautifulSoup, date_tag: str
+    soup: HTMLNode, date_tag: str
 ) -> Optional[Dict[str, Any]]:
     parsed = _parse_date_tag(date_tag)
     if not parsed:
@@ -232,7 +232,7 @@ def vertretungsplan_get_plan(self, include_raw: bool = False) -> Dict[str, Any]:
         response.raise_for_status()
 
         html = response.text
-        soup = BeautifulSoup(html, "html.parser")
+        soup = HTMLParser(html)
         last_updated = _parse_last_updated(html)
         dates = _extract_ajax_dates(html)
         days: List[Dict[str, Any]] = []
@@ -266,7 +266,7 @@ def vertretungsplan_get_plan(self, include_raw: bool = False) -> Dict[str, Any]:
             "count": total,
             "raw_html": html if include_raw else None,
         }
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         return {"success": False, "error": f"Failed to fetch vertretungsplan: {exc}"}
     except Exception as exc:
         return {"success": False, "error": f"Failed to parse vertretungsplan: {exc}"}

@@ -8,9 +8,9 @@ from datetime import date
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
-import requests
-from bs4 import BeautifulSoup
+import httpx
 
+from schulportal_hessen.html import HTMLParser
 
 BASE_DSB_URL = "https://www.dsbmobile.de/"
 
@@ -51,8 +51,8 @@ DSB_HEADERS = {
 def _make_dsb_session(
     dsbmobile_cookie: Optional[str] = None,
     asp_session_id: Optional[str] = None,
-) -> requests.Session:
-    session = requests.Session()
+) -> httpx.Client:
+    session = httpx.Client()
     session.headers.update(DSB_HEADERS)
     if dsbmobile_cookie:
         session.cookies.set("DSBmobile", dsbmobile_cookie, domain=".dsbmobile.de")
@@ -61,7 +61,7 @@ def _make_dsb_session(
     return session
 
 
-def _get_dsb_session(self) -> requests.Session:
+def _get_dsb_session(self) -> httpx.Client:
     existing_session = getattr(self, "dsb_session", None)
     if existing_session is not None:
         return existing_session
@@ -79,12 +79,12 @@ DSB_GETDATA_FIXED_B64 = "H4sIAAAAAAAAA4WP20rEMBCGXyXkSsFNk7ZZNHuliCJ42Is9gOJFshn
 
 
 def _extract_login_payload(html: str) -> Dict[str, str]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = HTMLParser(html)
     form = soup.find("form")
     if not form:
         for parser in ("lxml", "html5lib"):
             try:
-                soup = BeautifulSoup(html, parser)
+                soup = HTMLParser(html)
                 form = soup.find("form")
                 if form:
                     break
@@ -146,7 +146,7 @@ def _parse_last_updated(html: str) -> Optional[datetime.datetime]:
     if not html:
         return None
 
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+    text = HTMLParser(html).get_text(" ", strip=True)
     timestamps: List[datetime.datetime] = []
     for match in _LAST_UPDATED_RE.finditer(text):
         day, month, year, hour, minute, second = (
@@ -198,7 +198,7 @@ def _parse_table(table: Any) -> Dict[str, Any]:
     }
 
 
-def _decode_dsb_response(response: requests.Response) -> str:
+def _decode_dsb_response(response: httpx.Response) -> str:
     """Decode DSB plan HTML as UTF-8 even when the charset is omitted."""
     content = getattr(response, "content", None)
     if isinstance(content, bytes):
@@ -210,7 +210,7 @@ def _decode_dsb_response(response: requests.Response) -> str:
 
 
 def _parse_plan_tables(html: str) -> Dict[str, Any]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = HTMLParser(html)
     title_tag = soup.find(["h1", "h2", "h3"])
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
 
@@ -233,7 +233,7 @@ def _parse_plan_tables(html: str) -> Dict[str, Any]:
     return {"title": title, "tables": tables}
 
 
-def _find_getdata_endpoint(session: requests.Session) -> Optional[str]:
+def _find_getdata_endpoint(session: httpx.Client) -> Optional[str]:
     try:
         config_resp = session.get(
             urljoin(BASE_DSB_URL, "scripts/configuration.js"), timeout=15
@@ -340,7 +340,7 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                     "error": "Login page returned empty or truncated content.",
                     "content_length": len(login_page.text),
                     "status_code": login_page.status_code,
-                    "url": login_page.url,
+                    "url": str(login_page.url),
                 }
 
             payload = _extract_login_payload(login_page.text)
@@ -350,7 +350,7 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                     "success": False,
                     "error": "Failed to parse login form. No form or input fields found in the HTML.",
                     "html_snippet": snippet,
-                    "url": login_page.url,
+                    "url": str(login_page.url),
                     "status_code": login_page.status_code,
                 }
 
@@ -361,7 +361,7 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                     "error": "Login form found but missing txtUser/txtPass input fields.",
                     "extracted_fields": list(payload.keys()),
                     "html_snippet": snippet,
-                    "url": login_page.url,
+                    "url": str(login_page.url),
                 }
 
             payload["txtUser"] = username
@@ -373,23 +373,23 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                 urljoin(BASE_DSB_URL, "Login.aspx"),
                 data=payload,
                 timeout=15,
-                allow_redirects=True,
+                follow_redirects=True,
             )
             response.raise_for_status()
 
             has_cookie = any(
-                cookie.name.lower() == "dsbmobile" for cookie in session.cookies
+                name.lower() == "dsbmobile" for name in session.cookies
             )
-            is_default = "default.aspx" in response.url.lower()
+            is_default = "default.aspx" in str(response.url).lower()
 
             if not is_default and not has_cookie:
                 default_resp = session.get(
                     urljoin(BASE_DSB_URL, "default.aspx"), timeout=15
                 )
                 default_resp.raise_for_status()
-                is_default = "default.aspx" in default_resp.url.lower()
+                is_default = "default.aspx" in str(default_resp.url).lower()
                 has_cookie = any(
-                    cookie.name.lower() == "dsbmobile" for cookie in session.cookies
+                    name.lower() == "dsbmobile" for name in session.cookies
                 )
 
             if has_cookie:
@@ -403,9 +403,9 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                 return {
                     "success": False,
                     "error": "Login failed. No DSBmobile cookie set after form submission. Check credentials.",
-                    "response_url": response.url,
+                    "response_url": str(response.url),
                     "has_default_redirect": is_default,
-                    "cookies_received": [c.name for c in session.cookies],
+                    "cookies_received": list(session.cookies.keys()),
                     "html_snippet": snippet,
                 }
 
@@ -413,9 +413,9 @@ def dsb_login(self, username: str, password: str) -> Dict[str, Any]:
                 "success": True,
                 "session_cookie": self._dsb_cookie,
                 "session_id": self._dsb_session_id,
-                "response_url": response.url,
+                "response_url": str(response.url),
             }
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             return {"success": False, "error": f"Failed to login: {str(e)}"}
 
 
@@ -594,7 +594,7 @@ def dsb_get_substitution_plan(
                 "last_updated": last_updated.isoformat() if last_updated else None,
                 "tables": tables,
             }
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             return {
                 "success": False,
                 "error": f"Failed to fetch substitution plan: {str(e)}",
