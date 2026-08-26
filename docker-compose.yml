@@ -1,0 +1,10 @@
+services:
+  lanis-api:
+    build: .
+    container_name: lanis-api
+    restart: unless-stopped
+    ports:
+      - "9898:8000"
+    environment:
+      - LANIS_API_HOST=0.0.0.0
+      - LANIS_API_PORT=8000
