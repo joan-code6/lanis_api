@@ -1,10 +1,11 @@
-from html import unescape
-from typing import Any, Dict, List, Optional
 import json
 import re
+from html import unescape
+from typing import Any, Dict, List, Optional
 
-import requests
-from bs4 import BeautifulSoup
+import httpx
+
+from schulportal_hessen.html import HTMLParser
 from schulportal_hessen.tools.search import text_matches_query
 
 
@@ -17,7 +18,7 @@ def _parse_bool(value: Any) -> bool:
 
 
 def _parse_calendar_page(html: str) -> Dict[str, Any]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = HTMLParser(html)
     calendar_node = soup.find(id="calender")
     calendar_meta = {
         "first_id": calendar_node.get("data-firstid", "") if calendar_node else "",
@@ -44,11 +45,13 @@ def _parse_calendar_page(html: str) -> Dict[str, Any]:
     if title_tag:
         page_title = title_tag.get_text(" ", strip=True)
 
-    inline_script = soup.find(string=re.compile(r"var startView =", re.I))
-    script_text = (
-        inline_script.parent.get_text("\n", strip=False)
-        if inline_script and inline_script.parent
-        else html
+    script_text = next(
+        (
+            script.get_text("\n", strip=False)
+            for script in soup.select("script")
+            if re.search(r"var startView =", script.get_text(), re.I)
+        ),
+        html,
     )
 
     categories: List[Dict[str, Any]] = []
@@ -145,7 +148,7 @@ def kalender_get_overview(self) -> Dict[str, Any]:
         response.raise_for_status()
         parsed = _parse_calendar_page(response.text)
         return {"success": True, **parsed}
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {
             "success": False,
             "error": f"Failed to fetch calendar overview: {str(e)}",
@@ -319,7 +322,7 @@ def kalender_get_events(
             },
             "raw": payload,
         }
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {"success": False, "error": f"Failed to fetch calendar events: {str(e)}"}
     except Exception as e:
         return {"success": False, "error": f"Failed to parse calendar events: {str(e)}"}
@@ -364,7 +367,7 @@ def kalender_get_event(
                 "view_id": selected_view,
             },
         }
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {"success": False, "error": f"Failed to fetch calendar event: {str(e)}"}
     except Exception as e:
         return {"success": False, "error": f"Failed to parse calendar event: {str(e)}"}

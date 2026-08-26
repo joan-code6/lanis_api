@@ -5,8 +5,9 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import requests
-from bs4 import BeautifulSoup
+import httpx
+
+from schulportal_hessen.html import HTMLParser
 
 _DATE_RE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -41,7 +42,7 @@ def _cell_with(cells: list[Any], selector: str) -> Any | None:
 def _text_without_small(cell: Any | None) -> tuple[str, str | None]:
     if cell is None:
         return "", None
-    clone = BeautifulSoup(str(cell), "html.parser")
+    clone = HTMLParser(str(cell))
     small = clone.find("small")
     system_id = small.get_text(" ", strip=True) if small else ""
     if small:
@@ -121,7 +122,7 @@ def _parse_teacher_group(group: Any) -> dict[str, Any]:
 
 def parse_lerngruppen_html(html: str) -> dict[str, Any]:
     """Parse study groups and exams from a ``lerngruppen.php`` response."""
-    soup = BeautifulSoup(html, "html.parser")
+    soup = HTMLParser(html)
     exams_section = soup.find(id="klausuren")
     courses_section = soup.find(id="LGs")
 
@@ -281,7 +282,7 @@ def lerngruppen_get_overview(self) -> dict[str, Any]:
         response.raise_for_status()
 
         return parse_lerngruppen_html(response.text)
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         return {"success": False, "error": f"Failed to fetch lerngruppen: {exc}"}
     except (AttributeError, TypeError, ValueError) as exc:
         return {"success": False, "error": f"Failed to parse lerngruppen: {exc}"}

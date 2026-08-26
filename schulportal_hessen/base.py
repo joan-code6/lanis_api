@@ -1,8 +1,9 @@
-import requests
-import threading
-from typing import Optional, Dict, Any, List
-from urllib.parse import urlencode
 import json
+import threading
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
+
+import httpx
 
 from schulportal_hessen.tools.cryptor import Cryptor
 
@@ -36,7 +37,7 @@ class SchulportalHessenAPI:
         Whether the user is currently authenticated.
     cryptor : Cryptor, optional
         Encryption handler for encrypted communications.
-    dsb_session : requests.Session, optional
+    dsb_session : httpx.Client, optional
         Separate session for DSBmobile substitution plans.
 
     Base URLs
@@ -60,7 +61,7 @@ class SchulportalHessenAPI:
     def __init__(self):
         """Initialize the API client with a session for HTTP cookie management.
 
-        Creates a new requests.Session with proper headers configured for
+        Creates a new httpx.Client with proper headers configured for
         the Schulportal Hessen web application. Sets up default User-Agent
         and Accept headers to mimic browser behavior.
 
@@ -72,7 +73,7 @@ class SchulportalHessenAPI:
         After initialization, call login() with valid credentials
         to authenticate before making other API calls.
         """
-        self.session = requests.Session()
+        self.session = httpx.Client()
         self.session.headers.update(
             {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
@@ -89,7 +90,7 @@ class SchulportalHessenAPI:
         self.school_id: Optional[str] = None
         self.logged_in = False
         self.cryptor: Optional[Cryptor] = None
-        self.dsb_session: Optional[requests.Session] = None
+        self.dsb_session: Optional[httpx.Client] = None
         self.dsb_logged_in: bool = False
         self.dsb_plan_urls: List[str] = []
         self._dsb_lock = threading.RLock()
@@ -138,7 +139,7 @@ class SchulportalHessenAPI:
             data = response.json()
             return {"success": True, "data": data}
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             return {"success": False, "error": f"Failed to retrieve apps: {str(e)}"}
         except json.JSONDecodeError as e:
             return {"success": False, "error": f"Failed to parse response: {str(e)}"}
@@ -176,9 +177,8 @@ class SchulportalHessenAPI:
             for _ in range(max_redirects):
                 response = self.session.get(
                     current_url,
-                    allow_redirects=False,
+                    follow_redirects=False,
                     timeout=timeout,
-                    stream=True,
                 )
                 response.close()
 
@@ -211,7 +211,7 @@ class SchulportalHessenAPI:
                     return current_url
 
             return current_url
-        except requests.RequestException:
+        except httpx.HTTPError:
             return url
 
     def get_available_modules(self) -> List[Dict[str, Any]]:
@@ -307,7 +307,7 @@ class SchulportalHessenAPI:
             )
             if not proxy_app:
                 try:
-                    r = self.session.get(full_url, allow_redirects=False, timeout=5, stream=True)
+                    r = self.session.get(full_url, follow_redirects=False, timeout=5)
                     loc = r.headers.get("Location", "")
                     r.close()
                     from urllib.parse import urlparse
@@ -343,10 +343,7 @@ class SchulportalHessenAPI:
         Dict[str, str]
             Mapping of cookie names to values for the active HTTP session.
         """
-        cookies_dict = {}
-        for cookie in self.session.cookies:
-            cookies_dict[cookie.name] = cookie.value
-        return cookies_dict
+        return {cookie.name: cookie.value for cookie in self.session.cookies.jar}
 
     # Message/Nachrichten methods
     def nachrichten_get_headers(

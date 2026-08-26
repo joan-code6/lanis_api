@@ -5,8 +5,9 @@ import re
 import unicodedata
 from typing import Any, Dict, List, Optional
 
-import requests
-from bs4 import BeautifulSoup
+import httpx
+
+from schulportal_hessen.html import HTMLNode, HTMLParser
 from schulportal_hessen.tools.search import value_matches_query
 
 
@@ -62,7 +63,7 @@ def _parse_files_table(table: Any) -> List[Dict[str, Any]]:
     return files
 
 
-def _parse_folders(soup: BeautifulSoup) -> List[Dict[str, Any]]:
+def _parse_folders(soup: HTMLNode) -> List[Dict[str, Any]]:
     folders: List[Dict[str, Any]] = []
     for folder in soup.select(".folder"):
         name_node = folder.select_one(".caption")
@@ -113,7 +114,7 @@ def dateispeicher_get_node(self, folder_id: int = 0) -> Dict[str, Any]:
         )
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = HTMLParser(response.text)
         files_table = soup.select_one("table#files")
         files = _parse_files_table(files_table) if files_table else []
         folders = _parse_folders(soup)
@@ -126,7 +127,7 @@ def dateispeicher_get_node(self, folder_id: int = 0) -> Dict[str, Any]:
             "file_count": len(files),
             "folder_count": len(folders),
         }
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         return {"success": False, "error": f"Failed to fetch dateispeicher: {exc}"}
     except Exception as exc:
         return {"success": False, "error": f"Failed to parse dateispeicher: {exc}"}
@@ -218,7 +219,7 @@ def dateispeicher_search_files(self, query: str) -> Dict[str, Any]:
                 pass
 
             if "<" in stripped:
-                soup = BeautifulSoup(stripped, "html.parser")
+                soup = HTMLParser(stripped)
                 pre = soup.find("pre")
                 if pre:
                     pre_text = pre.get_text(" ", strip=True)
@@ -327,7 +328,7 @@ def dateispeicher_search_files(self, query: str) -> Dict[str, Any]:
             "results": filtered_results,
             "source": "server",
         }
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         return {"success": False, "error": f"Failed to search dateispeicher: {exc}"}
     except Exception as exc:
         return {"success": False, "error": f"Failed to parse dateispeicher search: {exc}"}

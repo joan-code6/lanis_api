@@ -25,7 +25,6 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
-import requests as http_requests
 from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -1837,7 +1836,7 @@ _app_auth_cache: Dict[str, Dict[str, Any]] = {}
 def _follow_oauth_flow(client: SchulportalHessenAPI, portal_url: str) -> Optional[Dict[str, Any]]:
     """Follow the full OAuth redirect chain for an app and extract auth cookies.
 
-    Uses allow_redirects=True to follow the complete chain including all
+    Uses follow_redirects=True to follow the complete chain including all
     OAuth/OIDC handshakes. Returns the final cookies from the target app
     domain (non-Schulportal, non-vidis).
 
@@ -1847,16 +1846,14 @@ def _follow_oauth_flow(client: SchulportalHessenAPI, portal_url: str) -> Optiona
         base_url: the final URL (e.g. https://apps.bettermarks.com/one/)
     """
     try:
-        resp = client.session.get(
-            portal_url, allow_redirects=True, timeout=30, stream=True
-        )
-        final_url = resp.url
+        resp = client.session.get(portal_url, follow_redirects=True, timeout=30)
+        final_url = str(resp.url)
         resp.close()
 
         target_host = urlparse(final_url).hostname or ""
 
         cookies: Dict[str, str] = {}
-        for cookie in client.session.cookies:
+        for cookie in client.session.cookies.jar:
             domain = (cookie.domain or "").lstrip(".")
             if domain and "schulportal" not in domain and "vidis" not in domain:
                 cookies[cookie.name] = cookie.value
@@ -2038,7 +2035,9 @@ def _build_launch_urls(client: SchulportalHessenAPI, portal_url: str) -> Optiona
 
     for _ in range(12):
         try:
-            resp = client.session.get(current_url, allow_redirects=False, timeout=10, stream=True)
+            resp = client.session.get(
+                current_url, follow_redirects=False, timeout=10
+            )
             resp.close()
         except Exception:
             break

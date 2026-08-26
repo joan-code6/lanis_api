@@ -7,7 +7,7 @@
 
 Initialize the API client with a session for HTTP cookie management.
 
-Creates a new requests.Session with proper headers configured for
+Creates a new httpx.Client with proper headers configured for
 the Schulportal Hessen web application. Sets up default User-Agent
 and Accept headers to mimic browser behavior.
 

@@ -1,6 +1,8 @@
-from typing import Dict, Any, Optional
-import requests
 from pathlib import Path
+from typing import Any, Dict, Optional
+
+import httpx
+
 from schulportal_hessen.tools.cryptor import Cryptor
 
 
@@ -16,6 +18,7 @@ def login_using_env(self, env_path: Optional[str] = None) -> Dict[str, Any]:
     """
     try:
         import os
+
         from dotenv import load_dotenv
     except ImportError:
         return {
@@ -111,13 +114,13 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
         }
 
         response = self.session.post(
-            login_url, data=login_data, headers=headers, allow_redirects=True
+            login_url, data=login_data, headers=headers, follow_redirects=True
         )
 
         # Check if login was successful by looking for session cookies
-        cookies_dict = {}
-        for cookie in self.session.cookies:
-            cookies_dict[cookie.name] = cookie.value
+        cookies_dict = {
+            cookie.name: cookie.value for cookie in self.session.cookies.jar
+        }
 
         if "sid" in cookies_dict or "SPH-Session" in cookies_dict:
             self.logged_in = True
@@ -151,7 +154,7 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
                 "cookies": cookies_dict,
             }
 
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {"success": False, "message": f"Login request failed: {str(e)}"}
 
 
@@ -174,7 +177,7 @@ def logout(self) -> Dict[str, Any]:
 
         return {"success": True, "message": "Logged out successfully"}
 
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {"success": False, "error": f"Logout request failed: {str(e)}"}
 
 
@@ -190,7 +193,7 @@ def sid_validator(self) -> Dict[str, Any]:
 
     try:
         apps_url = f"{self.BASE_START_URL}/startseite.php?a=ajax&f=apps"
-        response = self.session.get(apps_url, allow_redirects=False)
+        response = self.session.get(apps_url, follow_redirects=False)
 
         if response.status_code == 200:
             return {"valid": True}
@@ -198,6 +201,6 @@ def sid_validator(self) -> Dict[str, Any]:
             self.logged_in = False
             return {"valid": False, "status_code": response.status_code}
 
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         self.logged_in = False
         return {"valid": False, "error": f"Validation request failed: {str(e)}"}

@@ -29,11 +29,11 @@ Example
 {'success': True, 'query': '{school_name}', 'count': 5, 'results': [...]}
 """
 
+import json
 from typing import Any, Dict
 
-import json
+import httpx
 
-import requests
 from schulportal_hessen.tools.search import text_matches_query
 
 
@@ -89,7 +89,7 @@ def school_list_get_all(self) -> Dict[str, Any]:
         # Fetch the school list from the public endpoint
         url = "https://startcache.schulportal.hessen.de/exporteur.php?a=schoollist"
         
-        response = requests.get(url, timeout=10)
+        response = httpx.get(url, timeout=10)
         response.raise_for_status()
         
         # Parse JSON response
@@ -120,7 +120,7 @@ def school_list_get_all(self) -> Dict[str, Any]:
             'districts': districts
         }
         
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {
             'success': False,
             'error': f'Failed to fetch school list: {str(e)}'
@@ -164,7 +164,7 @@ def school_list_get_by_district(self, district_id: str) -> Dict[str, Any]:
         # Fetch the school list from the public endpoint
         url = "https://startcache.schulportal.hessen.de/exporteur.php?a=schoollist"
         
-        response = requests.get(url, timeout=10)
+        response = httpx.get(url, timeout=10)
         response.raise_for_status()
         
         # Parse JSON response
@@ -198,7 +198,7 @@ def school_list_get_by_district(self, district_id: str) -> Dict[str, Any]:
             'error': f'District with ID {district_id} not found'
         }
         
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {
             'success': False,
             'error': f'Failed to fetch school list: {str(e)}'
@@ -245,7 +245,7 @@ def school_list_search_by_name(self, school_name: str) -> Dict[str, Any]:
         # Fetch the school list from the public endpoint
         url = "https://startcache.schulportal.hessen.de/exporteur.php?a=schoollist"
         
-        response = requests.get(url, timeout=10)
+        response = httpx.get(url, timeout=10)
         response.raise_for_status()
         
         # Parse JSON response
@@ -279,7 +279,7 @@ def school_list_search_by_name(self, school_name: str) -> Dict[str, Any]:
             'count': len(results)
         }
         
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         return {
             'success': False,
             'error': f'Failed to fetch school list: {str(e)}'

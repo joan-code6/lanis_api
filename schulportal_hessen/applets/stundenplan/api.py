@@ -4,9 +4,9 @@ import hashlib
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-import requests
-from bs4 import BeautifulSoup
+import httpx
 
+from schulportal_hessen.html import HTMLParser
 
 Time = Dict[str, int]
 TimeSlot = Tuple[Time, Time]
@@ -70,10 +70,10 @@ def _make_subject_id(
 
 def _extract_room_text(block: Any) -> str:
     """Get the unlabelled room text without corrupting overlapping words."""
-    copy = BeautifulSoup(str(block), "html.parser")
+    copy = HTMLParser(str(block))
     # Remove parents before looking for their children. Calling ``decompose``
     # on both a parent badge and a nested label leaves a destroyed Tag object
-    # in BeautifulSoup's selector result on some supported bs4 releases.
+    # in parser selector results when both parent and child nodes are removed.
     for node in copy.select(".badge"):
         node.decompose()
     for node in copy.select("b, small"):
@@ -219,7 +219,7 @@ def _day_labels(tbody: Any) -> List[str]:
 
 def parse_timetable_html(html: str) -> Dict[str, Any]:
     """Parse a ``stundenplan.php`` response without making a request."""
-    soup = BeautifulSoup(html, "html.parser")
+    soup = HTMLParser(html)
     tbody_all = soup.select_one("#all tbody")
     if not tbody_all:
         return {"success": False, "error": "Timetable table not found"}
@@ -245,7 +245,7 @@ def stundenplan_get_plan(self) -> Dict[str, Any]:
         response = self.session.get(f"{self.BASE_START_URL}/stundenplan.php")
         response.raise_for_status()
         return parse_timetable_html(response.text)
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         return {"success": False, "error": f"Failed to fetch stundenplan: {exc}"}
     except (TypeError, ValueError) as exc:
         return {"success": False, "error": f"Failed to parse stundenplan: {exc}"}

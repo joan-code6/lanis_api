@@ -1,11 +1,9 @@
-from bs4 import BeautifulSoup
-
 from schulportal_hessen.applets.stundenplan.api import (
     _extract_room_text,
     _parse_time_range,
     parse_timetable_html,
 )
-
+from schulportal_hessen.html import HTMLParser
 
 TIMETABLE_HTML = """
 <span id="aktuelleWoche">Woche A</span>
@@ -82,12 +80,11 @@ def test_malformed_time_does_not_shift_later_lessons() -> None:
 
 
 def test_room_extraction_handles_labels_nested_in_badge() -> None:
-    soup = BeautifulSoup(
+    soup = HTMLParser(
         '<div class="stunde"><b>Sport</b><span class="badge"><small>EF</small></span> Halle 1</div>',
-        "html.parser",
     )
 
-    assert _extract_room_text(soup.div) == "Halle 1"
+    assert _extract_room_text(soup.find("div")) == "Halle 1"
 
 
 def test_live_portal_thead_does_not_shift_lesson_times() -> None:
