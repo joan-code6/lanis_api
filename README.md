@@ -128,6 +128,28 @@ A systemd service file is provided at `lanis-api.service`:
 The script can be run as a regular user. It requests `sudo` only when installing
 or restarting the systemd service.
 
+### Docker
+
+Docker Compose runs the API on host port `9898` and stores its databases and
+file cache in the persistent `lanis-data` volume. This is independent from the
+existing systemd deployment.
+
+Create a local `.env` before starting the container. At minimum it must contain
+a stable `JWT_SECRET`; the same file can provide `VAPID_*`, `DSB_*`,
+`PUBLIC_BASE_URL`, and optional AI settings. The file is passed to the container
+at runtime and excluded from the image build context.
+
+```bash
+./deploy_docker.sh
+```
+
+Set `LANIS_DOCKER_BIND_ADDRESS` or `LANIS_DOCKER_PORT` in `.env` to override the
+default `0.0.0.0:9898` publication. Install the nightly Docker deployment with:
+
+```bash
+./deploy_docker.sh --install-cron
+```
+
 
 
 ## API reference
