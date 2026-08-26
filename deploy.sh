@@ -17,6 +17,17 @@ SERVICE_NAME="lanis-api"
 HOST="${LANIS_API_HOST:-0.0.0.0}"
 PORT="${LANIS_API_PORT:-8000}"
 
+run_as_root() {
+    if [ "${EUID}" -eq 0 ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        echo "ERROR: '$*' requires root privileges, but sudo is not available." >&2
+        return 1
+    fi
+}
+
 # ── Cron install mode ──────────────────────────────────────────────────────────
 if [ "${1:-}" = "--install-cron" ]; then
     CRON_LINE="${CRON_SCHEDULE} ${PROJECT_DIR}/deploy.sh >> ${CRON_LOG} 2>&1"
@@ -60,30 +71,35 @@ echo "  Python:  ${PYTHON_BIN}"
 # ── 4. Install systemd service (auto-generate from template) ─────────────────
 SERVICE_SRC="${PROJECT_DIR}/lanis-api.service"
 SERVICE_DST="/etc/systemd/system/${SERVICE_NAME}.service"
-SERVICE_TMP="/tmp/${SERVICE_NAME}.service"
 
 if [ -f "${SERVICE_SRC}" ]; then
     echo ""
     echo ">>> Installing systemd service from template"
+    SERVICE_TMP="$(mktemp "${TMPDIR:-/tmp}/${SERVICE_NAME}.service.XXXXXX")"
+    cleanup_service_tmp() {
+        rm -f -- "${SERVICE_TMP}"
+    }
+    trap cleanup_service_tmp EXIT
+
     sed -e "s|{{PROJECT_DIR}}|${PROJECT_DIR}|g" \
         -e "s|{{PYTHON_BIN}}|${PYTHON_BIN}|g" \
         "${SERVICE_SRC}" > "${SERVICE_TMP}"
-    cp "${SERVICE_TMP}" "${SERVICE_DST}"
-    systemctl daemon-reload
+    run_as_root install -m 0644 "${SERVICE_TMP}" "${SERVICE_DST}"
+    run_as_root systemctl daemon-reload
 fi
 
 # ── 5. Restart the server ────────────────────────────────────────────────────
 if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
     echo ""
     echo ">>> systemctl restart ${SERVICE_NAME}"
-    systemctl restart "${SERVICE_NAME}"
+    run_as_root systemctl restart "${SERVICE_NAME}"
     echo ""
     echo "=== Service restarted ==="
     systemctl status --no-pager "${SERVICE_NAME}"
 elif [ -f "${SERVICE_DST}" ]; then
     echo ""
     echo ">>> systemctl start ${SERVICE_NAME}"
-    systemctl start "${SERVICE_NAME}"
+    run_as_root systemctl start "${SERVICE_NAME}"
     echo ""
     echo "=== Service started ==="
     systemctl status --no-pager "${SERVICE_NAME}"
