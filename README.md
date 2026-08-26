@@ -123,8 +123,10 @@ A systemd service file is provided at `lanis-api.service`:
 ```bash
 # Deploy using the provided script
 ./deploy.sh
-
 ```
+
+The script can be run as a regular user. It requests `sudo` only when installing
+or restarting the systemd service.
 
 
 
