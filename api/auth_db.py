@@ -30,6 +30,24 @@ DEFAULT_NOTIFICATION_PREFERENCES: Dict[str, Any] = {
     "timezone": "Europe/Berlin",
     "show_preview": True,
 }
+DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
+    "appearance": {
+        "theme_mode": "system",
+        "theme_color": "cyan",
+    },
+    "dashboard": {
+        "pinned_modules": [],
+        "view_mode": "grid",
+    },
+    "timetable": {
+        "view_mode": "rolling",
+    },
+    "onboarding": {
+        "version": 0,
+        "status": "not_started",
+        "last_step": "welcome",
+    },
+}
 
 _lock = asyncio.Lock()
 
@@ -37,6 +55,19 @@ _lock = asyncio.Lock()
 def _canonical_user_id(user_id: str) -> str:
     """Return the stable key used by all user-owned auth data."""
     return canonicalize_user_id(user_id)
+
+
+def _merge_nested_preferences(
+    current: Dict[str, Any], updates: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Recursively merge preference groups without mutating either input."""
+    merged = json.loads(json.dumps(current))
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_nested_preferences(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _row_recency(row: Dict[str, Any]) -> tuple[str, int]:
@@ -155,6 +186,7 @@ async def _migrate_user_ids(db: aiosqlite.Connection) -> None:
         ("custom_lessons", ("user_id", "lesson_date", "period")),
         ("class_link_overrides", ("user_id", "course_id")),
         ("message_notification_state", ("user_id",)),
+        ("user_preferences", ("user_id",)),
     ):
         migrated += await _merge_user_id_table(db, table, conflict_columns)
     migrated += await _canonicalize_push_subscription_user_ids(db)
@@ -267,6 +299,15 @@ async def initialize() -> None:
             CREATE TABLE IF NOT EXISTS message_notification_state (
                 user_id TEXT PRIMARY KEY,
                 snapshot TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id TEXT PRIMARY KEY,
+                preferences TEXT NOT NULL DEFAULT '{}',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -508,6 +549,63 @@ async def save_notification_preferences(
                 )
             await db.commit()
     return await get_notification_preferences(user_id)
+
+
+def _decode_user_preferences(serialized: object, user_id: str) -> Dict[str, Any]:
+    try:
+        stored = json.loads(str(serialized))
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("Ignoring malformed preferences for user %s", user_id)
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    return _merge_nested_preferences(DEFAULT_USER_PREFERENCES, stored)
+
+
+async def get_user_preferences(user_id: str) -> tuple[Dict[str, Any], bool]:
+    """Return merged account preferences and whether a saved record exists."""
+    user_id = _canonical_user_id(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT preferences FROM user_preferences WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    if not row:
+        return _merge_nested_preferences(DEFAULT_USER_PREFERENCES, {}), False
+    return _decode_user_preferences(row[0], user_id), True
+
+
+async def save_user_preferences(
+    user_id: str, updates: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Merge and persist validated account preference groups."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT preferences FROM user_preferences WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            current = _decode_user_preferences(row[0], user_id) if row else (
+                _merge_nested_preferences(DEFAULT_USER_PREFERENCES, {})
+            )
+            merged = _merge_nested_preferences(current, updates)
+            serialized = json.dumps(merged, ensure_ascii=False, sort_keys=True)
+            await db.execute(
+                """
+                INSERT INTO user_preferences (user_id, preferences, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    preferences = excluded.preferences,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, serialized),
+            )
+            await db.commit()
+    return merged
 
 
 def _custom_lesson_from_row(row: Any) -> Dict[str, Any]:

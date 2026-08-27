@@ -22,7 +22,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urljoin, urlparse
 
 import requests as http_requests
@@ -57,6 +57,8 @@ from .auth_db import (
     delete_user_push_subscriptions,
     get_notification_preferences,
     save_notification_preferences,
+    get_user_preferences,
+    save_user_preferences,
     save_push_subscription,
     get_class_link_overrides,
     save_class_link,
@@ -211,6 +213,39 @@ class CustomLessonRequest(BaseModel):
 class ClassLinkRequest(BaseModel):
     course_id: str = Field(..., min_length=1, max_length=200)
     url: str = Field("", max_length=2000)
+
+
+class AppearancePreferencesRequest(BaseModel):
+    theme_mode: Optional[Literal["system", "light", "dark", "oled"]] = None
+    theme_color: Optional[
+        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan"]
+    ] = None
+
+
+class DashboardPreferencesRequest(BaseModel):
+    pinned_modules: Optional[List[str]] = Field(None, max_length=50)
+    view_mode: Optional[Literal["grid", "list"]] = None
+
+
+class TimetablePreferencesRequest(BaseModel):
+    view_mode: Optional[Literal["rolling", "week"]] = None
+
+
+class OnboardingPreferencesRequest(BaseModel):
+    version: Optional[int] = Field(None, ge=0, le=100)
+    status: Optional[
+        Literal["not_started", "in_progress", "completed", "skipped"]
+    ] = None
+    last_step: Optional[
+        Literal["welcome", "appearance", "dashboard", "timetable", "guide", "complete"]
+    ] = None
+
+
+class UserPreferencesRequest(BaseModel):
+    appearance: Optional[AppearancePreferencesRequest] = None
+    dashboard: Optional[DashboardPreferencesRequest] = None
+    timetable: Optional[TimetablePreferencesRequest] = None
+    onboarding: Optional[OnboardingPreferencesRequest] = None
 
 
 # --- Internal Data Structures ---
@@ -1106,6 +1141,46 @@ async def get_stundenplan(
     result = apply_custom_lessons(result, await get_custom_lessons(auth.user_id))
     await sessions.set_cache(auth.user_id, "/stundenplan", result, timetable_params)
     return result
+
+
+@app.get("/settings/preferences")
+async def get_account_preferences(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    preferences, stored = await get_user_preferences(auth.user_id)
+    return {
+        "success": True,
+        "stored": stored,
+        "preferences": preferences,
+    }
+
+
+@app.patch("/settings/preferences")
+async def update_account_preferences(
+    payload: UserPreferencesRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    updates = (
+        payload.model_dump(exclude_none=True)
+        if hasattr(payload, "model_dump")
+        else payload.dict(exclude_none=True)
+    )
+    dashboard = updates.get("dashboard")
+    if isinstance(dashboard, dict) and "pinned_modules" in dashboard:
+        cleaned_modules: List[str] = []
+        for module_name in dashboard["pinned_modules"]:
+            cleaned = str(module_name).strip()
+            if not cleaned or len(cleaned) > 120 or cleaned in cleaned_modules:
+                continue
+            cleaned_modules.append(cleaned)
+        dashboard["pinned_modules"] = cleaned_modules
+
+    preferences = await save_user_preferences(auth.user_id, updates)
+    return {
+        "success": True,
+        "stored": True,
+        "preferences": preferences,
+    }
 
 
 @app.get("/settings/timetable/lessons")
