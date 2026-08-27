@@ -201,7 +201,7 @@ def apply_custom_lessons(
     *,
     today: date | None = None,
 ) -> dict[str, Any]:
-    """Apply saved date/period overrides to a raw portal timetable response."""
+    """Apply saved recurring weekday/period overrides to a portal timetable."""
     result = copy.deepcopy(timetable)
     overrides = [
         copy.deepcopy(lesson)
@@ -212,13 +212,14 @@ def apply_custom_lessons(
     if not result.get("success"):
         return result
 
-    monday = current_timetable_monday(today)
     for override in overrides:
         try:
             lesson_date = date.fromisoformat(str(override["date"]))
         except (TypeError, ValueError):
             continue
-        day_index = (lesson_date - monday).days
+        # The persisted date is a backwards-compatible weekday anchor. Custom
+        # lessons describe the weekly timetable, so they recur on that weekday.
+        day_index = lesson_date.weekday()
         if not 0 <= day_index < 7:
             continue
         for plan_key in ("plan_for_all", "plan_for_own"):

@@ -66,6 +66,24 @@ def test_custom_lesson_replaces_portal_lesson_and_preserves_enrichment() -> None
     assert result["plan_for_own"][0][0]["name"] == "Deutsch"
 
 
+def test_custom_lesson_recurs_on_the_same_weekday() -> None:
+    result = apply_custom_lessons(
+        _raw_timetable(),
+        [
+            {
+                "date": "2026-08-24",
+                "period": "1",
+                "subject": "Deutsch",
+                "duration": 1,
+                "removed": False,
+            }
+        ],
+        today=date(2026, 8, 31),
+    )
+
+    assert result["plan_for_all"][0][0]["name"] == "Deutsch"
+
+
 def test_custom_lesson_can_be_added_to_an_empty_day_with_portal_times() -> None:
     result = apply_custom_lessons(
         _raw_timetable(),
