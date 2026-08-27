@@ -32,6 +32,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+try:
+    from pydantic import field_validator
+except ImportError:  # Pydantic v1
+    from pydantic import validator as field_validator
+
 import jwt
 
 from schulportal_hessen.base import SchulportalHessenAPI
@@ -223,8 +228,14 @@ class AppearancePreferencesRequest(BaseModel):
 
 
 class DashboardPreferencesRequest(BaseModel):
-    pinned_modules: Optional[List[str]] = Field(None, max_length=50)
+    pinned_modules: Optional[List[str]] = None
     view_mode: Optional[Literal["grid", "list"]] = None
+
+    @field_validator("pinned_modules")
+    def validate_pinned_modules(cls, value):
+        if value is not None and len(value) > 50:
+            raise ValueError("At most 50 pinned modules are allowed")
+        return value
 
 
 class TimetablePreferencesRequest(BaseModel):

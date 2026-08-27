@@ -2,14 +2,25 @@ import asyncio
 from types import SimpleNamespace
 
 import aiosqlite
+import pytest
+from pydantic import ValidationError
 
 from api import api as api_module
 from api import auth_db
 from api.api import (
+    DashboardPreferencesRequest,
     UserPreferencesRequest,
     get_account_preferences,
     update_account_preferences,
 )
+
+
+def test_dashboard_preferences_limit_pinned_modules() -> None:
+    accepted = DashboardPreferencesRequest(pinned_modules=["module"] * 50)
+    assert len(accepted.pinned_modules or []) == 50
+
+    with pytest.raises(ValidationError):
+        DashboardPreferencesRequest(pinned_modules=["module"] * 51)
 
 
 def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) -> None:
