@@ -2,7 +2,7 @@
 API Package - FastAPI wrapper for Schulportal Hessen.
 
 Run locally:
-    uvicorn api.api:app --reload
+    python -m api
 """
 
 from .api import app

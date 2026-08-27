@@ -1,5 +1,6 @@
 **
 !requirements.txt
+!config.json
 !api
 !api/**
 !schulportal_hessen
