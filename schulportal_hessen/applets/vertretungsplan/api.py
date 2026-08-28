@@ -93,6 +93,16 @@ def _extract_ajax_dates(html: str) -> List[str]:
     return dates
 
 
+def _has_native_plan_markup(soup: BeautifulSoup, dates: List[str]) -> bool:
+    """Return whether the page exposes the native SPH substitution plan.
+
+    Schools without the native module can still return a successful HTML page
+    from ``vertretungsplan.php``.  Looking for the page's date/table markers
+    lets callers distinguish that response from an actually available plan.
+    """
+    return bool(dates or soup.select("[data-tag]") or soup.select("[id^='vtable']"))
+
+
 def _normalize_tag_id(date_str: str) -> str:
     parsed = _parse_date_tag(date_str)
     if not parsed:
@@ -235,6 +245,7 @@ def vertretungsplan_get_plan(self, include_raw: bool = False) -> Dict[str, Any]:
         soup = BeautifulSoup(html, "html.parser")
         last_updated = _parse_last_updated(html)
         dates = _extract_ajax_dates(html)
+        available = _has_native_plan_markup(soup, dates)
         days: List[Dict[str, Any]] = []
 
         if dates:
@@ -260,6 +271,8 @@ def vertretungsplan_get_plan(self, include_raw: bool = False) -> Dict[str, Any]:
         total = sum(len(day.get("substitutions", [])) for day in days)
         return {
             "success": True,
+            "source": "schulportal",
+            "available": available,
             "mode": mode,
             "last_updated": last_updated.isoformat() if last_updated else None,
             "days": days,
