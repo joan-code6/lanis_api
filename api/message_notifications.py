@@ -181,6 +181,27 @@ def build_vertretungsplan_snapshot(
     return snapshot, details
 
 
+def _vertretungsplan_scope(
+    preferences: Dict[str, Any], own_class: str = ""
+) -> Dict[str, Any]:
+    """Return the normalized effective class scope used for a poll."""
+    mode = str(preferences.get("vertretungsplan_class_mode") or "own")
+    if mode == "own":
+        classes = [own_class] if own_class else []
+    elif mode == "selected":
+        raw_classes = preferences.get("vertretungsplan_classes") or []
+        classes = raw_classes if isinstance(raw_classes, list) else []
+    else:
+        mode = "all"
+        classes = []
+    return {
+        "mode": mode,
+        "classes": sorted(
+            {_normalized_class(value) for value in classes if _plain_text(value)}
+        ),
+    }
+
+
 def vertretungsplan_notification_options(
     profile_result: Dict[str, Any], plan_result: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -785,7 +806,12 @@ async def check_user_vertretungsplan(
     current_snapshot, details = build_vertretungsplan_snapshot(
         plan_result, current_user, own_class
     )
-    has_baseline = isinstance(previous_state, dict) and "entries" in previous_state
+    current_scope = _vertretungsplan_scope(current_user, own_class)
+    scope_matches = (
+        isinstance(previous_state, dict)
+        and previous_state.get("scope") == current_scope
+    )
+    has_baseline = scope_matches and "entries" in previous_state
     previous_snapshot = (previous_state or {}).get("entries") or {}
     if not isinstance(previous_snapshot, dict):
         previous_snapshot = {}
@@ -797,7 +823,8 @@ async def check_user_vertretungsplan(
         if subscription.get("endpoint")
     }
     pending_deliveries = _get_pending_deliveries(
-        previous_state, set(subscriptions_by_endpoint)
+        previous_state if scope_matches else None,
+        set(subscriptions_by_endpoint),
     )
 
     if new_ids:
@@ -841,6 +868,7 @@ async def check_user_vertretungsplan(
     next_state: Dict[str, Any] = {
         "checked_at": local_now.isoformat(),
         "entries": current_snapshot,
+        "scope": current_scope,
     }
     if pending_deliveries:
         next_state["pending_deliveries"] = pending_deliveries

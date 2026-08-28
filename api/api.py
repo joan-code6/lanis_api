@@ -429,7 +429,11 @@ class AuthManager:
             expired = [
                 key
                 for key, entry in self._cache.items()
-                if entry.is_expired(CACHE_TTL_SECONDS)
+                if entry.is_expired(
+                    LONG_CACHE_TTL_SECONDS
+                    if entry.is_long_term
+                    else CACHE_TTL_SECONDS
+                )
             ]
             for key in expired:
                 self._cache.pop(key)

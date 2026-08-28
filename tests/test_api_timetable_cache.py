@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from api import api as api_module
 from api.api import AuthManager, AuthSession
@@ -17,6 +17,29 @@ def test_user_cache_invalidation_removes_only_that_users_entries():
         assert await manager.get_cached("user-a", "/stundenplan") is None
         assert await manager.get_cached("user-a", "/meinunterricht") is None
         assert await manager.get_cached("user-b", "/stundenplan") == {"value": "b"}
+
+    asyncio.run(scenario())
+
+
+def test_cache_purge_uses_the_long_term_ttl_for_long_term_entries():
+    async def scenario():
+        manager = AuthManager()
+        await manager.set_cache("user-a", "/short", {"value": "short"})
+        await manager.set_cache(
+            "user-a", "/long", {"value": "long"}, is_long_term=True
+        )
+        old_timestamp = datetime.utcnow() - timedelta(
+            seconds=api_module.CACHE_TTL_SECONDS + 1
+        )
+        manager._cache[
+            manager._make_cache_key("user-a", "/short")
+        ].created_at = old_timestamp
+        manager._cache[
+            manager._make_cache_key("user-a", "/long")
+        ].created_at = old_timestamp
+
+        assert await manager.get_cached("user-a", "/long") == {"value": "long"}
+        assert await manager.get_cached("user-a", "/short") is None
 
     asyncio.run(scenario())
 
