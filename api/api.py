@@ -253,6 +253,14 @@ class TimetablePreferencesRequest(BaseModel):
     view_mode: Optional[Literal["rolling", "week"]] = None
 
 
+class VertretungsplanPreferencesRequest(BaseModel):
+    class_override: str = Field(
+        "",
+        max_length=100,
+        description="Optional class name override used by the native substitution plan",
+    )
+
+
 class OnboardingPreferencesRequest(BaseModel):
     version: Optional[int] = Field(None, ge=0, le=100)
     status: Optional[
@@ -267,6 +275,7 @@ class UserPreferencesRequest(BaseModel):
     appearance: Optional[AppearancePreferencesRequest] = None
     dashboard: Optional[DashboardPreferencesRequest] = None
     timetable: Optional[TimetablePreferencesRequest] = None
+    vertretungsplan: Optional[VertretungsplanPreferencesRequest] = None
     onboarding: Optional[OnboardingPreferencesRequest] = None
 
 
@@ -1151,6 +1160,46 @@ async def get_vertretungsplan(
     return result
 
 
+async def _load_vertretungsplan_options(auth: AuthSession) -> Dict[str, object]:
+    """Load the profile and native plan data used for class selection."""
+    profile_result = await sessions.get_cached(auth.user_id, "/benutzer")
+    if profile_result is None:
+        profile_result = await run_in_threadpool(auth.client.benutzer_get_data)
+        if profile_result.get("success"):
+            await sessions.set_cache(
+                auth.user_id, "/benutzer", profile_result, is_long_term=True
+            )
+
+    plan_params = _make_param_key({"include_raw": False})
+    plan_result = await sessions.get_cached(
+        auth.user_id, "/vertretungsplan", plan_params
+    )
+    if plan_result is None:
+        plan_result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, False)
+        await sessions.set_cache(
+            auth.user_id, "/vertretungsplan", plan_result, plan_params
+        )
+    if not plan_result.get("success"):
+        return {
+            "success": False,
+            "error": plan_result.get("error") or "Vertretungsplan could not be loaded",
+            "own_class": "",
+            "available_classes": [],
+        }
+    return {
+        "success": True,
+        **vertretungsplan_notification_options(profile_result, plan_result),
+    }
+
+
+@app.get("/vertretungsplan/options")
+async def get_vertretungsplan_options(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return profile and plan classes for the native plan filter."""
+    return await _load_vertretungsplan_options(auth)
+
+
 @app.get("/stundenplan")
 async def get_stundenplan(
     auth: AuthSession = Depends(client_dependency),
@@ -1220,6 +1269,12 @@ async def update_account_preferences(
                 continue
             cleaned_modules.append(cleaned)
         dashboard["pinned_modules"] = cleaned_modules
+
+    vertretungsplan = updates.get("vertretungsplan")
+    if isinstance(vertretungsplan, dict) and "class_override" in vertretungsplan:
+        vertretungsplan["class_override"] = str(
+            vertretungsplan["class_override"] or ""
+        ).strip()
 
     preferences = await save_user_preferences(auth.user_id, updates)
     return {
@@ -1388,34 +1443,7 @@ async def get_vertretungsplan_notification_options(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     """Return the signed-in user's class and classes visible in the current plan."""
-    profile_result = await sessions.get_cached(auth.user_id, "/benutzer")
-    if profile_result is None:
-        profile_result = await run_in_threadpool(auth.client.benutzer_get_data)
-        if profile_result.get("success"):
-            await sessions.set_cache(
-                auth.user_id, "/benutzer", profile_result, is_long_term=True
-            )
-
-    plan_params = _make_param_key({"include_raw": False})
-    plan_result = await sessions.get_cached(
-        auth.user_id, "/vertretungsplan", plan_params
-    )
-    if plan_result is None:
-        plan_result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, False)
-        await sessions.set_cache(
-            auth.user_id, "/vertretungsplan", plan_result, plan_params
-        )
-    if not plan_result.get("success"):
-        return {
-            "success": False,
-            "error": plan_result.get("error") or "Vertretungsplan could not be loaded",
-            "own_class": "",
-            "available_classes": [],
-        }
-    return {
-        "success": True,
-        **vertretungsplan_notification_options(profile_result, plan_result),
-    }
+    return await _load_vertretungsplan_options(auth)
 
 
 @app.post("/notifications/subscription")
