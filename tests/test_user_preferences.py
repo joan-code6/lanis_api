@@ -113,6 +113,17 @@ def test_vertretungsplan_preferences_limit_class_override() -> None:
         VertretungsplanPreferencesRequest(class_override="x" * 101)
 
 
+def test_empty_vertretungsplan_preference_group_does_not_clear_override() -> None:
+    payload = UserPreferencesRequest(vertretungsplan={})
+    dumped = (
+        payload.model_dump(exclude_none=True)
+        if hasattr(payload, "model_dump")
+        else payload.dict(exclude_none=True)
+    )
+
+    assert dumped == {"vertretungsplan": {}}
+
+
 def test_preferences_get_route_reports_new_account(monkeypatch) -> None:
     async def get_preferences(_user_id):
         return ({"appearance": {"theme_mode": "system"}}, False)

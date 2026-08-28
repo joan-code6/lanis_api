@@ -107,3 +107,13 @@ def test_successful_page_without_native_markers_is_unavailable():
         "count": 0,
         "raw_html": None,
     }
+
+
+def test_unrelated_data_and_table_markers_are_unavailable():
+    html = '<div data-tag="placeholder"></div><div id="vtable-widget"></div>'
+
+    result = vertretungsplan_get_plan(FakeClient(html))
+
+    assert result["success"] is True
+    assert result["available"] is False
+    assert result["days"] == []

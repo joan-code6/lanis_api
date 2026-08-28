@@ -254,8 +254,8 @@ class TimetablePreferencesRequest(BaseModel):
 
 
 class VertretungsplanPreferencesRequest(BaseModel):
-    class_override: str = Field(
-        "",
+    class_override: Optional[str] = Field(
+        None,
         max_length=100,
         description="Optional class name override used by the native substitution plan",
     )

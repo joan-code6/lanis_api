@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 
-_DATE_TAG_RE = re.compile(r"data-tag=\"(\d{2}\.\d{2}\.\d{4})\"")
+_DATE_TAG_RE = re.compile(r"data-tag\s*=\s*[\"'](\d{2}\.\d{2}\.\d{4})[\"']")
 _LAST_EDIT_RE = re.compile(
     r"Letzte\s+Aktualisierung:\s*(\d{2})\.(\d{2})\.(\d{4})\s+um\s*(\d{2}):(\d{2}):(\d{2})\s+Uhr",
     re.IGNORECASE,
@@ -88,7 +88,7 @@ def _extract_ajax_dates(html: str) -> List[str]:
     dates: List[str] = []
     for match in _DATE_TAG_RE.finditer(html):
         date_str = match.group(1)
-        if date_str not in dates:
+        if _parse_date_tag(date_str) and date_str not in dates:
             dates.append(date_str)
     return dates
 
@@ -100,7 +100,18 @@ def _has_native_plan_markup(soup: BeautifulSoup, dates: List[str]) -> bool:
     from ``vertretungsplan.php``.  Looking for the page's date/table markers
     lets callers distinguish that response from an actually available plan.
     """
-    return bool(dates or soup.select("[data-tag]") or soup.select("[id^='vtable']"))
+    if dates:
+        return True
+
+    for element in soup.select("[data-tag]"):
+        date_tag = element.get("data-tag", "").strip()
+        if not _parse_date_tag(date_tag):
+            continue
+        tag_id = _normalize_tag_id(date_tag)
+        if soup.find(id=f"vtable{date_tag}") or soup.find(id=f"vtable{tag_id}"):
+            return True
+
+    return False
 
 
 def _normalize_tag_id(date_str: str) -> str:
@@ -117,7 +128,8 @@ def _parse_non_ajax_day(
     if not parsed:
         return None
 
-    vtable = soup.find(id=f"vtable{date_tag}")
+    tag_id = _normalize_tag_id(date_tag)
+    vtable = soup.find(id=f"vtable{date_tag}") or soup.find(id=f"vtable{tag_id}")
     if not vtable:
         return None
 
@@ -154,7 +166,7 @@ def _parse_non_ajax_day(
             }
         )
 
-    info_container = soup.find(id=f"tag{date_tag}")
+    info_container = soup.find(id=f"tag{date_tag}") or soup.find(id=f"tag{tag_id}")
     return {
         "date": parsed.strftime("%d.%m.%Y"),
         "substitutions": substitutions,
