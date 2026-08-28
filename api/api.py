@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests as http_requests
 from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
@@ -1312,6 +1312,33 @@ async def search_dateispeicher(
     result = await run_in_threadpool(auth.client.dateispeicher_search_files, q)
     await sessions.set_cache(auth.user_id, "/dateispeicher/search", result, params)
     return result
+
+
+@app.get("/dateispeicher/file/{file_id}")
+async def download_dateispeicher_file(
+    file_id: int,
+    auth: AuthSession = Depends(client_dependency),
+):
+    if file_id <= 0:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    result = await run_in_threadpool(
+        auth.client.dateispeicher_download_file, file_id
+    )
+    if not result.get("success") or not isinstance(result.get("content"), bytes):
+        raise HTTPException(
+            status_code=404,
+            detail=result.get("error", "File not found"),
+        )
+
+    filename = str(result.get("filename") or f"dateispeicher-{file_id}")
+    filename = re.sub(r'[\r\n"]', "_", filename)
+    content_disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+    return Response(
+        content=result["content"],
+        media_type=result.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": content_disposition},
+    )
 
 
 # --- Lerngruppen ---

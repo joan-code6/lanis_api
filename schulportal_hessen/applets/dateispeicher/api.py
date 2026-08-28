@@ -4,6 +4,7 @@ import json
 import re
 import unicodedata
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -135,6 +136,46 @@ def dateispeicher_get_node(self, folder_id: int = 0) -> Dict[str, Any]:
 def dateispeicher_get_root(self) -> Dict[str, Any]:
     """Fetch files and subfolders for the root dateispeicher folder."""
     return dateispeicher_get_node(self, folder_id=0)
+
+
+def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
+    """Download a file from the native dateispeicher using the portal session."""
+    if not self.logged_in:
+        return {"success": False, "error": "Not logged in"}
+    if file_id <= 0:
+        return {"success": False, "error": "Invalid file id"}
+
+    try:
+        download_url = f"{self.BASE_START_URL}/dateispeicher.php"
+        response = self.session.get(
+            download_url,
+            params={"a": "download", "f": str(file_id)},
+        )
+        response.raise_for_status()
+
+        disposition = response.headers.get("Content-Disposition", "")
+        filename = ""
+        encoded_match = re.search(r"filename\*=UTF-8''([^;]+)", disposition)
+        if encoded_match:
+            filename = unquote(encoded_match.group(1))
+        else:
+            plain_match = re.search(r'filename="?([^";]+)"?', disposition)
+            if plain_match:
+                filename = plain_match.group(1).strip()
+
+        return {
+            "success": True,
+            "file_id": file_id,
+            "filename": filename or f"dateispeicher-{file_id}",
+            "content_type": response.headers.get("Content-Type")
+            or "application/octet-stream",
+            "content": response.content,
+            "url": download_url,
+        }
+    except requests.RequestException as exc:
+        return {"success": False, "error": f"Failed to download dateispeicher file: {exc}"}
+    except Exception as exc:
+        return {"success": False, "error": f"Failed to download dateispeicher file: {exc}"}
 
 
 def _is_empty_search_results(results: Any) -> bool:
