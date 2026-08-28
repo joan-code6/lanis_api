@@ -512,17 +512,24 @@ def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
 
             summary: Dict[str, float] = {}
             raw_summary = course.get("attendance_summary", {})
+            parse_failed = not isinstance(raw_summary, dict) or not raw_summary
             if isinstance(raw_summary, dict):
                 for raw_label, raw_count in raw_summary.items():
                     label = _normalise_attendance_label(raw_label)
                     count = _parse_attendance_count(raw_count)
-                    if not label or count is None:
+                    if not label:
+                        continue
+                    if count is None:
+                        parse_failed = True
                         continue
                     summary[label] = summary.get(label, 0) + count
-                    totals[label] = totals.get(label, 0) + count
 
-            if not summary:
+            if parse_failed or not summary:
+                failed_course_count += 1
                 continue
+
+            for label, count in summary.items():
+                totals[label] = totals.get(label, 0) + count
 
             entry_metadata = overview_by_course_id.get(course_id, overview_entry)
 

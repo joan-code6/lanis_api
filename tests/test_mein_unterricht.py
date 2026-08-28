@@ -165,3 +165,33 @@ def test_attendance_overview_enumerates_course_folders_without_recent_entries(mo
 
     assert result["course_count"] == 2
     assert {course["course_id"] for course in result["courses"]} == {"1", "2"}
+
+
+def test_attendance_overview_marks_unparseable_summaries_as_failed(monkeypatch) -> None:
+    class AttendanceClient:
+        logged_in = True
+
+    monkeypatch.setattr(
+        mein_unterricht_api,
+        "meinunterricht_get_overview",
+        lambda _client: {
+            "success": True,
+            "courses": [{"book_id": "1", "name": "Mathe"}],
+            "entries": [],
+        },
+    )
+    monkeypatch.setattr(
+        mein_unterricht_api,
+        "meinunterricht_get_course",
+        lambda _client, _course_id: {
+            "success": True,
+            "attendance_summary": {"Anwesend": "nicht verfügbar"},
+        },
+    )
+
+    result = meinunterricht_get_attendance_overview(AttendanceClient())
+
+    assert result["success"] is True
+    assert result["totals"] == {}
+    assert result["courses"] == []
+    assert result["failed_course_count"] == 1
