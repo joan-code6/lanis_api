@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 import json
 import os
 import re
@@ -387,6 +387,96 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         return {"success": False, "error": f"Failed to fetch course details: {str(e)}"}
+
+
+def _normalise_attendance_label(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _parse_attendance_count(value: Any) -> Optional[float]:
+    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value or ""))
+    if not match:
+        return None
+    number = float(match.group(0).replace(",", "."))
+    return int(number) if number.is_integer() else number
+
+
+def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
+    """Combine native attendance summaries for all Mein Unterricht courses."""
+    if not self.logged_in:
+        return {"success": False, "error": "Not logged in"}
+
+    try:
+        overview = meinunterricht_get_overview(self)
+        if not overview.get("success"):
+            return overview
+
+        courses: List[Dict[str, Any]] = []
+        totals: Dict[str, float] = {}
+        seen_course_ids = set()
+        failed_course_count = 0
+
+        for overview_entry in overview.get("entries", []):
+            if not isinstance(overview_entry, dict):
+                continue
+            course_id = str(overview_entry.get("book_id") or "").strip()
+            if not course_id or course_id in seen_course_ids:
+                continue
+            seen_course_ids.add(course_id)
+
+            course = meinunterricht_get_course(self, course_id)
+            if not course.get("success"):
+                failed_course_count += 1
+                continue
+
+            summary: Dict[str, float] = {}
+            raw_summary = course.get("attendance_summary", {})
+            if isinstance(raw_summary, dict):
+                for raw_label, raw_count in raw_summary.items():
+                    label = _normalise_attendance_label(raw_label)
+                    count = _parse_attendance_count(raw_count)
+                    if not label or count is None:
+                        continue
+                    summary[label] = summary.get(label, 0) + count
+                    totals[label] = totals.get(label, 0) + count
+
+            if not summary:
+                continue
+
+            courses.append(
+                {
+                    "course_id": course_id,
+                    "course_name": str(
+                        course.get("course_name")
+                        or overview_entry.get("name")
+                        or course_id
+                    ).strip(),
+                    "teacher_short": str(
+                        course.get("teacher_short")
+                        or overview_entry.get("teacher_short")
+                        or ""
+                    ).strip(),
+                    "teacher_full": str(
+                        course.get("teacher_full")
+                        or overview_entry.get("teacher_full_name")
+                        or ""
+                    ).strip(),
+                    "attendance_summary": summary,
+                }
+            )
+
+        return {
+            "success": True,
+            "source": "schulportal",
+            "available": bool(courses),
+            "totals": totals,
+            "courses": courses,
+            "course_count": len(seen_course_ids),
+            "attendance_course_count": len(courses),
+            "failed_course_count": failed_course_count,
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to fetch attendance overview: {str(e)}"}
 
 
 def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:
