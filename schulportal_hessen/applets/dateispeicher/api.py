@@ -141,7 +141,11 @@ def dateispeicher_get_root(self) -> Dict[str, Any]:
 def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
     """Download a file from the native dateispeicher using the portal session."""
     if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
+        return {
+            "success": False,
+            "error": "Not logged in",
+            "error_kind": "authentication",
+        }
     if file_id <= 0:
         return {"success": False, "error": "Invalid file id"}
 
@@ -153,7 +157,33 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
         )
         response.raise_for_status()
 
+        headers = getattr(response, "headers", {}) or {}
         disposition = response.headers.get("Content-Disposition", "")
+        content_type = str(
+            headers.get("Content-Type") or headers.get("content-type") or ""
+        ).lower()
+        has_attachment = "attachment" in disposition.lower()
+        content = getattr(response, "content", b"")
+        if isinstance(content, bytes):
+            body_prefix = content[:8192].decode("utf-8", errors="ignore").lstrip().lower()
+        else:
+            body_prefix = str(content or "")[:8192].lstrip().lower()
+        looks_like_html = (
+            "text/html" in content_type
+            or "application/xhtml+xml" in content_type
+            or bool(re.match(r"<(?:!doctype\s+html|html|head|body)\b", body_prefix))
+        )
+        looks_like_login_page = looks_like_html and bool(
+            re.search(r"<form\b", body_prefix)
+            and re.search(r"login|anmeld|passwort|schulportal", body_prefix)
+        )
+        if looks_like_html and (not has_attachment or looks_like_login_page):
+            return {
+                "success": False,
+                "error": "Dateispeicher session expired or portal returned a login page",
+                "error_kind": "authentication",
+            }
+
         filename = ""
         encoded_match = re.search(r"filename\*=UTF-8''([^;]+)", disposition)
         if encoded_match:
@@ -167,15 +197,34 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
             "success": True,
             "file_id": file_id,
             "filename": filename or f"dateispeicher-{file_id}",
-            "content_type": response.headers.get("Content-Type")
+            "content_type": headers.get("Content-Type")
             or "application/octet-stream",
-            "content": response.content,
+            "content": content,
             "url": download_url,
         }
+    except requests.HTTPError as exc:
+        result: Dict[str, Any] = {
+            "success": False,
+            "error": f"Failed to download dateispeicher file: {exc}",
+            "error_kind": "upstream",
+        }
+        upstream_response = getattr(exc, "response", None)
+        upstream_status = getattr(upstream_response, "status_code", None)
+        if isinstance(upstream_status, int):
+            result["upstream_status"] = upstream_status
+        return result
     except requests.RequestException as exc:
-        return {"success": False, "error": f"Failed to download dateispeicher file: {exc}"}
+        return {
+            "success": False,
+            "error": f"Failed to download dateispeicher file: {exc}",
+            "error_kind": "upstream",
+        }
     except Exception as exc:
-        return {"success": False, "error": f"Failed to download dateispeicher file: {exc}"}
+        return {
+            "success": False,
+            "error": f"Failed to download dateispeicher file: {exc}",
+            "error_kind": "upstream",
+        }
 
 
 def _is_empty_search_results(results: Any) -> bool:

@@ -1326,8 +1326,15 @@ async def download_dateispeicher_file(
         auth.client.dateispeicher_download_file, file_id
     )
     if not result.get("success") or not isinstance(result.get("content"), bytes):
+        error_kind = result.get("error_kind")
+        if error_kind == "authentication":
+            error_status = status.HTTP_401_UNAUTHORIZED
+        elif result.get("upstream_status") == status.HTTP_404_NOT_FOUND:
+            error_status = status.HTTP_404_NOT_FOUND
+        else:
+            error_status = status.HTTP_502_BAD_GATEWAY
         raise HTTPException(
-            status_code=404,
+            status_code=error_status,
             detail=result.get("error", "File not found"),
         )
 
