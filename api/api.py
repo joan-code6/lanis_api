@@ -89,6 +89,7 @@ from .message_notifications import (
     is_valid_push_subscription,
     is_trusted_push_endpoint,
     validate_notification_preferences,
+    vertretungsplan_notification_options,
 )
 
 from dotenv import load_dotenv
@@ -170,7 +171,17 @@ class TokenRefreshResponse(BaseModel):
 
 
 class NotificationPreferencesRequest(BaseModel):
-    enabled: bool = Field(False, description="Poll for new messages and send push notifications")
+    enabled: bool = Field(False, description="Master switch for browser push notifications")
+    messages_enabled: bool = Field(True, description="Notify for new messages")
+    vertretungsplan_enabled: bool = Field(
+        False, description="Notify for new matching Vertretungsplan entries"
+    )
+    vertretungsplan_class_mode: str = Field(
+        "own", description="Class scope: own, selected, or all"
+    )
+    vertretungsplan_classes: List[str] = Field(
+        default_factory=list, description="Classes used when class mode is selected"
+    )
     start_time: str = Field("07:00", description="Local time at which polling may start")
     end_time: str = Field("21:00", description="Local time at which polling may stop")
     poll_interval_minutes: int = Field(15, ge=5, le=60)
@@ -1245,6 +1256,13 @@ async def update_user_notification_preferences(
         if hasattr(payload, "model_dump")
         else payload.dict()
     )
+    preferences["vertretungsplan_classes"] = list(
+        dict.fromkeys(
+            value.strip()
+            for value in preferences.get("vertretungsplan_classes", [])
+            if value.strip()
+        )
+    )
     try:
         validate_notification_preferences(preferences)
     except ValueError as error:
@@ -1253,6 +1271,38 @@ async def update_user_notification_preferences(
     saved = await save_notification_preferences(auth.user_id, preferences)
     saved.pop("user_id", None)
     return {"success": True, "preferences": saved}
+
+
+@app.get("/notifications/vertretungsplan/options")
+async def get_vertretungsplan_notification_options(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return the signed-in user's class and classes visible in the current plan."""
+    profile_result = await sessions.get_cached(auth.user_id, "/benutzer")
+    if profile_result is None:
+        profile_result = await run_in_threadpool(auth.client.benutzer_get_data)
+        await sessions.set_cache(auth.user_id, "/benutzer", profile_result)
+
+    plan_params = _make_param_key({"include_raw": False})
+    plan_result = await sessions.get_cached(
+        auth.user_id, "/vertretungsplan", plan_params
+    )
+    if plan_result is None:
+        plan_result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, False)
+        await sessions.set_cache(
+            auth.user_id, "/vertretungsplan", plan_result, plan_params
+        )
+    if not plan_result.get("success"):
+        return {
+            "success": False,
+            "error": plan_result.get("error") or "Vertretungsplan could not be loaded",
+            "own_class": "",
+            "available_classes": [],
+        }
+    return {
+        "success": True,
+        **vertretungsplan_notification_options(profile_result, plan_result),
+    }
 
 
 @app.post("/notifications/subscription")

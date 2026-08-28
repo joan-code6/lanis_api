@@ -39,6 +39,8 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
 
         defaults = await auth_db.get_notification_preferences("user-a")
         assert defaults["enabled"] is False
+        assert defaults["messages_enabled"] is True
+        assert defaults["vertretungsplan_class_mode"] == "own"
         assert defaults["poll_interval_minutes"] == 15
 
         await auth_db.save_notification_preferences(
@@ -67,6 +69,14 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
             "checked_at": "2026-08-21T10:00:00+02:00",
             "conversations": {"c-1": "sig"},
         }
+        await auth_db.save_vertretungsplan_notification_state(
+            "user-a",
+            {"checked_at": "2026-08-21T10:00:00+02:00", "entries": {"v-1": "sig"}},
+        )
+        assert await auth_db.get_vertretungsplan_notification_state("user-a") == {
+            "checked_at": "2026-08-21T10:00:00+02:00",
+            "entries": {"v-1": "sig"},
+        }
         await auth_db.save_notification_preferences(
             "user-a",
             {
@@ -79,6 +89,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
             },
         )
         assert await auth_db.get_message_notification_state("user-a") is not None
+        assert await auth_db.get_vertretungsplan_notification_state("user-a") is not None
         await auth_db.save_notification_preferences(
             "user-a",
             {
@@ -95,6 +106,10 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
         assert await auth_db.get_notification_preferences("user-a") == {
             "user_id": "user-a",
             "enabled": True,
+            "messages_enabled": True,
+            "vertretungsplan_enabled": False,
+            "vertretungsplan_class_mode": "own",
+            "vertretungsplan_classes": [],
             "start_time": "08:00",
             "end_time": "18:30",
             "poll_interval_minutes": 30,
@@ -108,6 +123,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
             }
         ]
         assert await auth_db.get_message_notification_state("user-a") is None
+        assert await auth_db.get_vertretungsplan_notification_state("user-a") is None
         assert [user["user_id"] for user in await auth_db.get_enabled_notification_users()] == [
             "user-a"
         ]
@@ -157,6 +173,136 @@ def test_notification_preferences_reject_timezone_offsets_in_clocks():
     assert not notifications.is_notification_window_open(
         preferences, datetime(2026, 8, 21, 12, 0, tzinfo=ZoneInfo("Europe/Berlin"))
     )
+
+
+def test_vertretungsplan_snapshot_defaults_to_the_users_own_class():
+    result = {
+        "success": True,
+        "days": [
+            {
+                "date": "28.08.2026",
+                "substitutions": [
+                    {"tag_en": "2026-08-28", "stunde": "1", "klasse": "10a", "fach": "Mathe"},
+                    {"tag_en": "2026-08-28", "stunde": "2", "klasse": "10b", "fach": "Deutsch"},
+                ],
+            }
+        ],
+    }
+    preferences = {
+        "vertretungsplan_class_mode": "own",
+        "vertretungsplan_classes": [],
+    }
+
+    snapshot, details = notifications.build_vertretungsplan_snapshot(
+        result, preferences, "10a"
+    )
+
+    assert len(snapshot) == 1
+    assert [entry["class"] for entry in details.values()] == ["10a"]
+
+
+def test_vertretungsplan_scope_supports_selected_and_all_classes():
+    result = {
+        "days": [
+            {
+                "date": "28.08.2026",
+                "substitutions": [
+                    {"stunde": "1", "klasse": "10a", "fach": "Mathe"},
+                    {"stunde": "2", "klasse": "10b", "fach": "Deutsch"},
+                ],
+            }
+        ]
+    }
+
+    selected, _ = notifications.build_vertretungsplan_snapshot(
+        result,
+        {"vertretungsplan_class_mode": "selected", "vertretungsplan_classes": ["10b"]},
+    )
+    all_entries, _ = notifications.build_vertretungsplan_snapshot(
+        result,
+        {"vertretungsplan_class_mode": "all", "vertretungsplan_classes": []},
+    )
+
+    assert len(selected) == 1
+    assert len(all_entries) == 2
+
+
+def test_vertretungsplan_poll_baselines_then_notifies_for_a_new_own_class_entry(monkeypatch):
+    state = None
+    sent_payloads = []
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return [{"endpoint": "https://push.example/subscription", "keys": {}}]
+
+    async def send_push(_user_id, deliveries):
+        sent_payloads.extend(payload for _subscription, payload in deliveries.values())
+        return {endpoint: "delivered" for endpoint in deliveries}
+
+    monkeypatch.setattr(notifications, "get_vertretungsplan_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_vertretungsplan_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+    monkeypatch.setattr(notifications, "_send_push_payloads", send_push)
+
+    baseline = {
+        "success": True,
+        "days": [{"date": "28.08.2026", "substitutions": []}],
+    }
+    changed = {
+        "success": True,
+        "days": [
+            {
+                "date": "28.08.2026",
+                "substitutions": [
+                    {"stunde": "3", "klasse": "10a", "fach": "Mathe", "art": "Vertretung"},
+                    {"stunde": "4", "klasse": "10b", "fach": "Deutsch", "art": "Ausfall"},
+                ],
+            }
+        ],
+    }
+
+    class FakeClient:
+        plans = [baseline, changed]
+
+        def vertretungsplan_get_plan(self, _include_raw):
+            return self.plans.pop(0)
+
+        def benutzer_get_data(self):
+            return {"success": True, "data": {"klasse": "10a"}}
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "vertretungsplan_enabled": True,
+        "vertretungsplan_class_mode": "own",
+        "vertretungsplan_classes": [],
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+    }
+    client = FakeClient()
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=client)
+
+    async def scenario():
+        now = datetime(2026, 8, 28, 10, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+        assert not await notifications.check_user_vertretungsplan(user, get_client, now)
+        assert await notifications.check_user_vertretungsplan(
+            user, get_client, now.replace(minute=15)
+        )
+
+    asyncio.run(scenario())
+    assert len(sent_payloads) == 1
+    assert "10a" in sent_payloads[0]["body"]
+    assert "10b" not in sent_payloads[0]["body"]
 
 
 def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypatch):

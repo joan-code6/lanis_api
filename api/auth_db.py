@@ -24,6 +24,10 @@ DB_PATH = os.path.join("data", "auth.db")
 REFRESH_TOKEN_TTL_DAYS = 90
 DEFAULT_NOTIFICATION_PREFERENCES: Dict[str, Any] = {
     "enabled": False,
+    "messages_enabled": True,
+    "vertretungsplan_enabled": False,
+    "vertretungsplan_class_mode": "own",
+    "vertretungsplan_classes": [],
     "start_time": "07:00",
     "end_time": "21:00",
     "poll_interval_minutes": 15,
@@ -155,6 +159,7 @@ async def _migrate_user_ids(db: aiosqlite.Connection) -> None:
         ("custom_lessons", ("user_id", "lesson_date", "period")),
         ("class_link_overrides", ("user_id", "course_id")),
         ("message_notification_state", ("user_id",)),
+        ("vertretungsplan_notification_state", ("user_id",)),
     ):
         migrated += await _merge_user_id_table(db, table, conflict_columns)
     migrated += await _canonicalize_push_subscription_user_ids(db)
@@ -190,6 +195,10 @@ async def initialize() -> None:
             CREATE TABLE IF NOT EXISTS notification_preferences (
                 user_id TEXT PRIMARY KEY,
                 enabled INTEGER NOT NULL DEFAULT 0,
+                messages_enabled INTEGER NOT NULL DEFAULT 1,
+                vertretungsplan_enabled INTEGER NOT NULL DEFAULT 0,
+                vertretungsplan_class_mode TEXT NOT NULL DEFAULT 'own',
+                vertretungsplan_classes TEXT NOT NULL DEFAULT '[]',
                 start_time TEXT NOT NULL DEFAULT '07:00',
                 end_time TEXT NOT NULL DEFAULT '21:00',
                 poll_interval_minutes INTEGER NOT NULL DEFAULT 15,
@@ -199,6 +208,18 @@ async def initialize() -> None:
             )
             """
         )
+        async with db.execute("PRAGMA table_info(notification_preferences)") as cursor:
+            notification_columns = {row[1] for row in await cursor.fetchall()}
+        for column, definition in (
+            ("messages_enabled", "INTEGER NOT NULL DEFAULT 1"),
+            ("vertretungsplan_enabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("vertretungsplan_class_mode", "TEXT NOT NULL DEFAULT 'own'"),
+            ("vertretungsplan_classes", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
+            if column not in notification_columns:
+                await db.execute(
+                    f"ALTER TABLE notification_preferences ADD COLUMN {column} {definition}"
+                )
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS custom_lessons (
@@ -265,6 +286,15 @@ async def initialize() -> None:
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS message_notification_state (
+                user_id TEXT PRIMARY KEY,
+                snapshot TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vertretungsplan_notification_state (
                 user_id TEXT PRIMARY KEY,
                 snapshot TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -433,8 +463,18 @@ async def delete_user_push_subscriptions(user_id: str) -> None:
 
 
 def _notification_preferences_from_row(row: Any) -> Dict[str, Any]:
+    try:
+        classes = json.loads(row["vertretungsplan_classes"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        classes = []
+    if not isinstance(classes, list):
+        classes = []
     return {
         "enabled": bool(row["enabled"]),
+        "messages_enabled": bool(row["messages_enabled"]),
+        "vertretungsplan_enabled": bool(row["vertretungsplan_enabled"]),
+        "vertretungsplan_class_mode": row["vertretungsplan_class_mode"],
+        "vertretungsplan_classes": [str(value) for value in classes],
         "start_time": row["start_time"],
         "end_time": row["end_time"],
         "poll_interval_minutes": int(row["poll_interval_minutes"]),
@@ -449,7 +489,9 @@ async def get_notification_preferences(user_id: str) -> Dict[str, Any]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT enabled, start_time, end_time, poll_interval_minutes, timezone, show_preview "
+            "SELECT enabled, messages_enabled, vertretungsplan_enabled, "
+            "vertretungsplan_class_mode, vertretungsplan_classes, start_time, "
+            "end_time, poll_interval_minutes, timezone, show_preview "
             "FROM notification_preferences WHERE user_id = ?",
             (user_id,),
         ) as cursor:
@@ -472,18 +514,34 @@ async def save_notification_preferences(
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT enabled FROM notification_preferences WHERE user_id = ?",
+                "SELECT enabled, messages_enabled, vertretungsplan_enabled, "
+                "vertretungsplan_class_mode, vertretungsplan_classes "
+                "FROM notification_preferences WHERE user_id = ?",
                 (user_id,),
             ) as cursor:
                 row = await cursor.fetchone()
             was_enabled = bool(row[0]) if row else False
+            previous_messages_enabled = bool(row[1]) if row else True
+            previous_vertretungsplan_enabled = bool(row[2]) if row else False
+            previous_vertretungsplan_scope = (
+                (row[3], row[4]) if row else ("own", "[]")
+            )
+            classes_json = json.dumps(
+                values["vertretungsplan_classes"], ensure_ascii=False, sort_keys=True
+            )
             await db.execute(
                 """
                 INSERT INTO notification_preferences
-                    (user_id, enabled, start_time, end_time, poll_interval_minutes, timezone, show_preview, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (user_id, enabled, messages_enabled, vertretungsplan_enabled,
+                     vertretungsplan_class_mode, vertretungsplan_classes, start_time,
+                     end_time, poll_interval_minutes, timezone, show_preview, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_id) DO UPDATE SET
                     enabled = excluded.enabled,
+                    messages_enabled = excluded.messages_enabled,
+                    vertretungsplan_enabled = excluded.vertretungsplan_enabled,
+                    vertretungsplan_class_mode = excluded.vertretungsplan_class_mode,
+                    vertretungsplan_classes = excluded.vertretungsplan_classes,
                     start_time = excluded.start_time,
                     end_time = excluded.end_time,
                     poll_interval_minutes = excluded.poll_interval_minutes,
@@ -494,6 +552,10 @@ async def save_notification_preferences(
                 (
                     user_id,
                     int(bool(values["enabled"])),
+                    int(bool(values["messages_enabled"])),
+                    int(bool(values["vertretungsplan_enabled"])),
+                    values["vertretungsplan_class_mode"],
+                    classes_json,
                     values["start_time"],
                     values["end_time"],
                     int(values["poll_interval_minutes"]),
@@ -504,6 +566,29 @@ async def save_notification_preferences(
             if values["enabled"] and not was_enabled:
                 await db.execute(
                     "DELETE FROM message_notification_state WHERE user_id = ?",
+                    (user_id,),
+                )
+                await db.execute(
+                    "DELETE FROM vertretungsplan_notification_state WHERE user_id = ?",
+                    (user_id,),
+                )
+            elif values["messages_enabled"] and not previous_messages_enabled:
+                await db.execute(
+                    "DELETE FROM message_notification_state WHERE user_id = ?",
+                    (user_id,),
+                )
+            next_vertretungsplan_scope = (
+                values["vertretungsplan_class_mode"], classes_json
+            )
+            if (
+                values["vertretungsplan_enabled"]
+                and (
+                    not previous_vertretungsplan_enabled
+                    or next_vertretungsplan_scope != previous_vertretungsplan_scope
+                )
+            ):
+                await db.execute(
+                    "DELETE FROM vertretungsplan_notification_state WHERE user_id = ?",
                     (user_id,),
                 )
             await db.commit()
@@ -714,7 +799,9 @@ async def get_enabled_notification_users() -> List[Dict[str, Any]]:
         async with db.execute(
             """
             SELECT p.user_id, p.enabled, p.start_time, p.end_time,
-                   p.poll_interval_minutes, p.timezone, p.show_preview
+                   p.poll_interval_minutes, p.timezone, p.show_preview,
+                   p.messages_enabled, p.vertretungsplan_enabled,
+                   p.vertretungsplan_class_mode, p.vertretungsplan_classes
             FROM notification_preferences p
             WHERE p.enabled = 1
               AND EXISTS (
@@ -811,6 +898,41 @@ async def save_message_notification_state(
             await db.execute(
                 """
                 INSERT INTO message_notification_state (user_id, snapshot, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    snapshot = excluded.snapshot,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, json.dumps(snapshot, ensure_ascii=False, sort_keys=True)),
+            )
+            await db.commit()
+
+
+async def get_vertretungsplan_notification_state(
+    user_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the last persisted Vertretungsplan snapshot for a user."""
+    user_id = _canonical_user_id(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT snapshot FROM vertretungsplan_notification_state WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return json.loads(row[0]) if row else None
+
+
+async def save_vertretungsplan_notification_state(
+    user_id: str, snapshot: Dict[str, Any]
+) -> None:
+    """Persist the Vertretungsplan snapshot used for change detection."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO vertretungsplan_notification_state
+                    (user_id, snapshot, updated_at)
                 VALUES (?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_id) DO UPDATE SET
                     snapshot = excluded.snapshot,

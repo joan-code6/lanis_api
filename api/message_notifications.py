@@ -1,10 +1,11 @@
-"""Daytime message polling and Web Push notifications."""
+"""Daytime message and Vertretungsplan polling with Web Push delivery."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import logging
 import os
@@ -22,7 +23,9 @@ from .auth_db import (
     get_enabled_notification_users,
     get_message_notification_state,
     get_push_subscriptions,
+    get_vertretungsplan_notification_state,
     save_message_notification_state,
+    save_vertretungsplan_notification_state,
 )
 
 logger = logging.getLogger("message_notifications")
@@ -94,6 +97,114 @@ def build_message_snapshot(
     return snapshot, details
 
 
+def _normalized_class(value: Any) -> str:
+    return re.sub(r"\s+", "", _plain_text(value)).casefold()
+
+
+def _class_values(value: Any) -> List[str]:
+    text = _plain_text(value)
+    if not text:
+        return []
+    return [part.strip() for part in re.split(r"[,;/|]+", text) if part.strip()]
+
+
+def _entry_classes(entry: Dict[str, Any]) -> List[str]:
+    values: List[str] = []
+    for key in ("klasse", "klasse_alt", "Klasse", "Klasse_alt"):
+        for class_name in _class_values(entry.get(key)):
+            if class_name not in values:
+                values.append(class_name)
+    return values
+
+
+def _entry_matches_classes(entry: Dict[str, Any], selected_classes: List[str]) -> bool:
+    selected = {_normalized_class(value) for value in selected_classes if _plain_text(value)}
+    if not selected:
+        return False
+    entry_classes = {_normalized_class(value) for value in _entry_classes(entry)}
+    return bool(selected & entry_classes)
+
+
+def _vertretungsplan_entry_signature(entry: Dict[str, Any], day: Dict[str, Any]) -> str:
+    values = {
+        "date": entry.get("tag_en") or entry.get("tag") or day.get("date"),
+        "period": entry.get("stunde"),
+        "class": entry.get("klasse"),
+        "previous_class": entry.get("klasse_alt"),
+        "subject": entry.get("fach"),
+        "previous_subject": entry.get("fach_alt"),
+        "kind": entry.get("art"),
+        "teacher": entry.get("lehrer"),
+        "substitute": entry.get("vertreter"),
+        "room": entry.get("raum"),
+        "previous_room": entry.get("raum_alt"),
+        "note": entry.get("hinweis"),
+        "note_2": entry.get("hinweis2"),
+        "group": entry.get("lerngruppe"),
+    }
+    return json.dumps(values, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def build_vertretungsplan_snapshot(
+    result: Dict[str, Any], preferences: Dict[str, Any], own_class: str = ""
+) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+    """Build stable markers for the entries selected by the user's class scope."""
+    mode = str(preferences.get("vertretungsplan_class_mode") or "own")
+    if mode == "own":
+        selected_classes = [own_class] if own_class else []
+    else:
+        raw_classes = preferences.get("vertretungsplan_classes") or []
+        selected_classes = raw_classes if isinstance(raw_classes, list) else []
+
+    snapshot: Dict[str, str] = {}
+    details: Dict[str, Dict[str, str]] = {}
+    for day in result.get("days") or []:
+        if not isinstance(day, dict):
+            continue
+        for entry in day.get("substitutions") or []:
+            if not isinstance(entry, dict):
+                continue
+            if mode != "all" and not _entry_matches_classes(entry, selected_classes):
+                continue
+            signature = _vertretungsplan_entry_signature(entry, day)
+            entry_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()
+            snapshot[entry_id] = signature
+            details[entry_id] = {
+                "date": _plain_text(
+                    entry.get("tag") or entry.get("tag_en") or day.get("date") or ""
+                ),
+                "period": _plain_text(entry.get("stunde") or ""),
+                "class": _plain_text(entry.get("klasse") or entry.get("klasse_alt") or ""),
+                "subject": _plain_text(entry.get("fach") or entry.get("fach_alt") or ""),
+                "kind": _plain_text(entry.get("art") or entry.get("hinweis") or "Änderung"),
+            }
+    return snapshot, details
+
+
+def vertretungsplan_notification_options(
+    profile_result: Dict[str, Any], plan_result: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return the user's class and every class currently visible in the plan."""
+    profile = profile_result.get("data") if profile_result.get("success") else {}
+    profile = profile if isinstance(profile, dict) else {}
+    own_class = _plain_text(
+        profile.get("klasse") or profile.get("class") or profile.get("Klasse") or ""
+    )
+    classes: set[str] = set()
+    for day in plan_result.get("days") or []:
+        if not isinstance(day, dict):
+            continue
+        for entry in day.get("substitutions") or []:
+            if isinstance(entry, dict):
+                classes.update(_entry_classes(entry))
+    if own_class:
+        classes.add(own_class)
+    return {
+        "own_class": own_class,
+        "available_classes": sorted(classes, key=lambda value: value.casefold()),
+    }
+
+
 def _parse_notification_clock(value: Any) -> time:
     text = str(value)
     if not CLOCK_PATTERN.fullmatch(text):
@@ -149,6 +260,21 @@ def validate_notification_preferences(preferences: Dict[str, Any]) -> None:
         raise ValueError("poll_interval_minutes must be between 5 and 60") from error
     if interval < 5 or interval > 60:
         raise ValueError("poll_interval_minutes must be between 5 and 60")
+
+    class_mode = str(preferences.get("vertretungsplan_class_mode", "own"))
+    if class_mode not in {"own", "selected", "all"}:
+        raise ValueError("vertretungsplan_class_mode must be own, selected, or all")
+    classes = preferences.get("vertretungsplan_classes", [])
+    if not isinstance(classes, list) or any(not isinstance(value, str) for value in classes):
+        raise ValueError("vertretungsplan_classes must be a list of class names")
+    if len(classes) > 200 or any(len(value.strip()) > 100 for value in classes):
+        raise ValueError("vertretungsplan_classes contains too many or overly long values")
+    if (
+        preferences.get("vertretungsplan_enabled")
+        and class_mode == "selected"
+        and not any(value.strip() for value in classes)
+    ):
+        raise ValueError("At least one class is required for selected class mode")
 
 
 def is_notification_window_open(
@@ -404,7 +530,11 @@ async def check_user_messages(
 ) -> bool:
     """Poll one configured user and notify on new or changed conversations."""
     user_id = str(user["user_id"])
-    if not user.get("enabled") or not is_notification_window_open(user, now):
+    if (
+        not user.get("enabled")
+        or not user.get("messages_enabled", True)
+        or not is_notification_window_open(user, now)
+    ):
         return False
 
     try:
@@ -452,7 +582,11 @@ async def check_user_messages(
             logger.warning("Message notification preferences read failed for %s: %s", user_id, error)
             await _record_failed_poll(user_id, previous_state, local_now)
             return False
-        if not current_user.get("enabled") or not is_notification_window_open(current_user, now):
+        if (
+            not current_user.get("enabled")
+            or not current_user.get("messages_enabled", True)
+            or not is_notification_window_open(current_user, now)
+        ):
             return False
         previous_state = await get_message_notification_state(user_id)
 
@@ -542,6 +676,168 @@ async def check_user_messages(
     return bool(changed_ids)
 
 
+async def _record_failed_vertretungsplan_poll(
+    user_id: str, previous_state: Dict[str, Any] | None, checked_at: datetime
+) -> None:
+    state = dict(previous_state) if isinstance(previous_state, dict) else {}
+    state["checked_at"] = checked_at.isoformat()
+    try:
+        await save_vertretungsplan_notification_state(user_id, state)
+    except Exception as error:
+        logger.warning(
+            "Failed to record Vertretungsplan poll attempt for %s: %s", user_id, error
+        )
+
+
+async def check_user_vertretungsplan(
+    user: Dict[str, Any],
+    get_client: Callable[[str], Awaitable[Any]],
+    now: datetime | None = None,
+    invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,
+    get_preferences: Callable[[str], Awaitable[Dict[str, Any]]] | None = None,
+) -> bool:
+    """Poll one user's plan and notify only for newly appearing matching entries."""
+    user_id = str(user["user_id"])
+    if (
+        not user.get("enabled")
+        or not user.get("vertretungsplan_enabled", False)
+        or not is_notification_window_open(user, now)
+    ):
+        return False
+
+    try:
+        timezone = ZoneInfo(str(user["timezone"]))
+    except (KeyError, ZoneInfoNotFoundError):
+        logger.warning("Vertretungsplan notification poll skipped for %s: invalid timezone", user_id)
+        return False
+    local_now = datetime.now(timezone) if now is None else now.astimezone(timezone)
+    previous_state = await get_vertretungsplan_notification_state(user_id)
+    try:
+        interval = int(user.get("poll_interval_minutes", 15))
+    except (TypeError, ValueError):
+        logger.warning("Vertretungsplan notification poll skipped for %s: invalid interval", user_id)
+        return False
+    if not _is_due(previous_state, interval, local_now):
+        return False
+
+    subscriptions = await get_push_subscriptions(user_id)
+    if not subscriptions:
+        return False
+
+    try:
+        session_data = await get_client(user_id)
+        client = getattr(session_data, "client", session_data)
+        plan_result = await run_in_threadpool(client.vertretungsplan_get_plan, False)
+        profile_result: Dict[str, Any] = {"success": True, "data": {}}
+        if str(user.get("vertretungsplan_class_mode") or "own") == "own":
+            profile_result = await run_in_threadpool(client.benutzer_get_data)
+    except Exception as error:
+        logger.warning("Vertretungsplan notification poll failed for %s: %s", user_id, error)
+        await _record_failed_vertretungsplan_poll(user_id, previous_state, local_now)
+        return False
+
+    if not plan_result.get("success"):
+        logger.warning(
+            "Vertretungsplan notification poll returned an error for %s: %s",
+            user_id,
+            plan_result.get("error"),
+        )
+        await _record_failed_vertretungsplan_poll(user_id, previous_state, local_now)
+        return False
+
+    current_user = user
+    if get_preferences:
+        try:
+            current_user = {**user, **(await get_preferences(user_id))}
+        except Exception as error:
+            logger.warning("Vertretungsplan preferences read failed for %s: %s", user_id, error)
+            await _record_failed_vertretungsplan_poll(user_id, previous_state, local_now)
+            return False
+        if (
+            not current_user.get("enabled")
+            or not current_user.get("vertretungsplan_enabled", False)
+            or not is_notification_window_open(current_user, now)
+        ):
+            return False
+        previous_state = await get_vertretungsplan_notification_state(user_id)
+
+    own_class = vertretungsplan_notification_options(profile_result, plan_result)["own_class"]
+    if (
+        str(current_user.get("vertretungsplan_class_mode") or "own") == "own"
+        and not own_class
+    ):
+        logger.warning(
+            "Vertretungsplan notification poll skipped for %s: own class is unavailable",
+            user_id,
+        )
+        await _record_failed_vertretungsplan_poll(user_id, previous_state, local_now)
+        return False
+    current_snapshot, details = build_vertretungsplan_snapshot(
+        plan_result, current_user, own_class
+    )
+    has_baseline = isinstance(previous_state, dict) and "entries" in previous_state
+    previous_snapshot = (previous_state or {}).get("entries") or {}
+    if not isinstance(previous_snapshot, dict):
+        previous_snapshot = {}
+    new_ids = [entry_id for entry_id in current_snapshot if has_baseline and entry_id not in previous_snapshot]
+
+    subscriptions_by_endpoint = {
+        subscription["endpoint"]: subscription
+        for subscription in subscriptions
+        if subscription.get("endpoint")
+    }
+    pending_deliveries = _get_pending_deliveries(
+        previous_state, set(subscriptions_by_endpoint)
+    )
+
+    if new_ids:
+        if invalidate_cache:
+            try:
+                await invalidate_cache(user_id, "/vertretungsplan")
+            except Exception as error:
+                logger.warning("Vertretungsplan cache invalidation failed for %s: %s", user_id, error)
+        first = details[new_ids[0]]
+        summary_parts = [
+            first[key]
+            for key in ("date", "class", "period", "subject", "kind")
+            if first[key]
+        ]
+        body = " · ".join(summary_parts) or "Der Vertretungsplan wurde ergänzt."
+        if len(new_ids) > 1:
+            body = f"{len(new_ids)} neue Einträge für deine Auswahl"
+        payload = {
+            "title": (
+                "Neuer Eintrag im Vertretungsplan"
+                if len(new_ids) == 1
+                else "Neue Einträge im Vertretungsplan"
+            ),
+            "body": body,
+            "url": "/dsb",
+            "tag": f"lanis-vertretungsplan-{new_ids[0]}",
+        }
+        for endpoint in subscriptions_by_endpoint:
+            pending_deliveries[endpoint] = [payload]
+
+    deliveries = {
+        endpoint: (subscriptions_by_endpoint[endpoint], queued[-1])
+        for endpoint, queued in pending_deliveries.items()
+        if queued and endpoint in subscriptions_by_endpoint
+    }
+    statuses = await _send_push_payloads(user_id, deliveries) if deliveries else {}
+    for endpoint, status in statuses.items():
+        if status in {"delivered", "gone"}:
+            pending_deliveries.pop(endpoint, None)
+
+    next_state: Dict[str, Any] = {
+        "checked_at": local_now.isoformat(),
+        "entries": current_snapshot,
+    }
+    if pending_deliveries:
+        next_state["pending_deliveries"] = pending_deliveries
+    await save_vertretungsplan_notification_state(user_id, next_state)
+    return bool(new_ids)
+
+
 async def run_message_notification_cycle(
     get_client: Callable[[str], Awaitable[Any]],
     invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,
@@ -563,6 +859,12 @@ async def run_message_notification_cycle(
                         invalidate_cache=invalidate_cache,
                         get_preferences=get_preferences,
                     )
+                await check_user_vertretungsplan(
+                    user,
+                    get_client,
+                    invalidate_cache=invalidate_cache,
+                    get_preferences=get_preferences,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as error:

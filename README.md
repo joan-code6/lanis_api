@@ -103,9 +103,9 @@ keep navigation responsive.
 - **File cache:** SHA-256 hashed, stored in `data/files/`
 - **Background revalidation:** stale entries are refreshed asynchronously
 
-## Message push notifications
+## Push notifications
 
-Authenticated users can opt in to daytime message polling from the Lanis UI settings. The default polling window is 07:00–21:00 in the user's configured timezone, with a 15-minute interval. The first poll creates a baseline so enabling the feature does not send old messages as notifications.
+Authenticated users can opt in to daytime polling for new messages and Vertretungsplan entries from the Lanis UI settings. The default polling window is 07:00–21:00 in the user's configured timezone, with a 15-minute interval. Each category creates its own baseline before sending notifications, so enabling it does not alert on existing content. Vertretungsplan notifications default to the user's own class and can instead target selected classes or the full plan.
 
 Web Push requires these environment variables on the API server:
 
@@ -113,7 +113,7 @@ Web Push requires these environment variables on the API server:
 - `VAPID_PRIVATE_KEY`
 - `VAPID_SUBJECT` (for example, `mailto:admin@example.org`)
 
-The `pywebpush` dependency is included in `requirements.txt`. Users can configure the active window, interval, timezone, and whether notification previews contain the sender and subject in **Settings → Nachrichten-Benachrichtigungen**.
+The `pywebpush` dependency is included in `requirements.txt`. Users can configure notification categories, Vertretungsplan class scope, the active window, interval, timezone, and whether message previews contain the sender and subject in **Settings → Benachrichtigungen**.
 
 
 ## Deployment
