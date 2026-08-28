@@ -1281,7 +1281,9 @@ async def get_vertretungsplan_notification_options(
     profile_result = await sessions.get_cached(auth.user_id, "/benutzer")
     if profile_result is None:
         profile_result = await run_in_threadpool(auth.client.benutzer_get_data)
-        await sessions.set_cache(auth.user_id, "/benutzer", profile_result)
+        await sessions.set_cache(
+            auth.user_id, "/benutzer", profile_result, is_long_term=True
+        )
 
     plan_params = _make_param_key({"include_raw": False})
     plan_result = await sessions.get_cached(

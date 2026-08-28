@@ -227,6 +227,89 @@ def test_vertretungsplan_scope_supports_selected_and_all_classes():
     assert len(all_entries) == 2
 
 
+def test_vertretungsplan_splits_whitespace_delimited_classes():
+    result = {
+        "success": True,
+        "days": [
+            {
+                "date": "28.08.2026",
+                "substitutions": [
+                    {"stunde": "1", "klasse": "10a 10b", "fach": "Mathe"}
+                ],
+            }
+        ],
+    }
+
+    snapshot, _ = notifications.build_vertretungsplan_snapshot(
+        result,
+        {"vertretungsplan_class_mode": "own", "vertretungsplan_classes": []},
+        "10a",
+    )
+    options = notifications.vertretungsplan_notification_options(
+        {"success": True, "data": {"klasse": "10a"}}, result
+    )
+
+    assert len(snapshot) == 1
+    assert options["available_classes"] == ["10a", "10b"]
+
+
+def test_vertretungsplan_poll_uses_refreshed_class_mode_for_profile_fetch(monkeypatch):
+    state = None
+
+    async def get_state(_user_id):
+        return state
+
+    async def save_state(_user_id, snapshot):
+        nonlocal state
+        state = snapshot
+
+    async def get_subscriptions(_user_id):
+        return [{"endpoint": "https://push.example/subscription", "keys": {}}]
+
+    monkeypatch.setattr(notifications, "get_vertretungsplan_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_vertretungsplan_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+
+    class FakeClient:
+        profile_calls = 0
+
+        def vertretungsplan_get_plan(self, _include_raw):
+            return {"success": True, "days": []}
+
+        def benutzer_get_data(self):
+            self.profile_calls += 1
+            return {"success": True, "data": {"klasse": "10a"}}
+
+    user = {
+        "user_id": "user-a",
+        "enabled": True,
+        "vertretungsplan_enabled": True,
+        "vertretungsplan_class_mode": "all",
+        "vertretungsplan_classes": [],
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+    }
+    client = FakeClient()
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=client)
+
+    async def get_preferences(_user_id):
+        return {"vertretungsplan_class_mode": "own"}
+
+    async def scenario():
+        now = datetime(2026, 8, 28, 10, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+        assert not await notifications.check_user_vertretungsplan(
+            user, get_client, now, get_preferences=get_preferences
+        )
+
+    asyncio.run(scenario())
+    assert client.profile_calls == 1
+    assert state["entries"] == {}
+
+
 def test_vertretungsplan_poll_baselines_then_notifies_for_a_new_own_class_entry(monkeypatch):
     state = None
     sent_payloads = []

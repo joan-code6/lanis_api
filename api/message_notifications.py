@@ -105,7 +105,7 @@ def _class_values(value: Any) -> List[str]:
     text = _plain_text(value)
     if not text:
         return []
-    return [part.strip() for part in re.split(r"[,;/|]+", text) if part.strip()]
+    return [part.strip() for part in re.split(r"[,;/|\s]+", text) if part.strip()]
 
 
 def _entry_classes(entry: Dict[str, Any]) -> List[str]:
@@ -728,9 +728,6 @@ async def check_user_vertretungsplan(
         session_data = await get_client(user_id)
         client = getattr(session_data, "client", session_data)
         plan_result = await run_in_threadpool(client.vertretungsplan_get_plan, False)
-        profile_result: Dict[str, Any] = {"success": True, "data": {}}
-        if str(user.get("vertretungsplan_class_mode") or "own") == "own":
-            profile_result = await run_in_threadpool(client.benutzer_get_data)
     except Exception as error:
         logger.warning("Vertretungsplan notification poll failed for %s: %s", user_id, error)
         await _record_failed_vertretungsplan_poll(user_id, previous_state, local_now)
@@ -760,6 +757,19 @@ async def check_user_vertretungsplan(
         ):
             return False
         previous_state = await get_vertretungsplan_notification_state(user_id)
+
+    profile_result: Dict[str, Any] = {"success": True, "data": {}}
+    if str(current_user.get("vertretungsplan_class_mode") or "own") == "own":
+        try:
+            profile_result = await run_in_threadpool(client.benutzer_get_data)
+        except Exception as error:
+            logger.warning(
+                "Vertretungsplan profile fetch failed for %s: %s", user_id, error
+            )
+            await _record_failed_vertretungsplan_poll(
+                user_id, previous_state, local_now
+            )
+            return False
 
     own_class = vertretungsplan_notification_options(profile_result, plan_result)["own_class"]
     if (
