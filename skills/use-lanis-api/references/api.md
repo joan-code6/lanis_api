@@ -50,6 +50,9 @@ tokens are long-lived secrets.
 | GET | `/meinunterricht/weekly` | — | Weekly course view |
 | GET | `/meinunterricht/submissions` | — | Submissions |
 | GET | `/search/semantic` | `q`, `top_k=20` (1–100) | Optional semantic search |
+| GET | `/notifications/config` | — | Public Web Push configuration |
+| GET | `/notifications/preferences` | — | Saved notification categories, schedule, and class scope |
+| GET | `/notifications/vertretungsplan/options` | — | Own class and classes visible in the current plan |
 
 Common `get_type` values include `All`, `Unread`, and `Sent`; use values returned or accepted by
 the user's SPH instance rather than inventing a mailbox value. Treat response shapes as
@@ -63,6 +66,10 @@ endpoint-owned and check `success` where present; applet payloads vary by enable
 | POST | `/nachrichten/reply` | `{conversation_id, body, to: "all"}` | Reply to conversation |
 | POST | `/nachrichten/mark-read` | JSON string containing conversation ID | Mark read |
 | POST | `/meinunterricht/homework-done` | form fields `course_id`, `entry_id`, `done` | Change done state |
+| PUT | `/notifications/preferences` | `{enabled, messages_enabled, vertretungsplan_enabled, vertretungsplan_class_mode, vertretungsplan_classes, start_time, end_time, poll_interval_minutes, timezone, show_preview}` | Save Web Push preferences |
+| POST | `/notifications/subscription` | Browser Push API subscription | Register a browser for notifications |
+| POST | `/notifications/unsubscribe` | `{endpoint}` | Unregister one browser |
+| POST | `/notifications/test` | `{}` | Send a test push to registered browsers |
 
 Get explicit user confirmation immediately before invoking any of these.
 

@@ -96,6 +96,7 @@ from .message_notifications import (
     is_valid_push_subscription,
     is_trusted_push_endpoint,
     validate_notification_preferences,
+    vertretungsplan_notification_options,
 )
 
 from dotenv import load_dotenv
@@ -177,7 +178,17 @@ class TokenRefreshResponse(BaseModel):
 
 
 class NotificationPreferencesRequest(BaseModel):
-    enabled: bool = Field(False, description="Poll for new messages and send push notifications")
+    enabled: bool = Field(False, description="Master switch for browser push notifications")
+    messages_enabled: bool = Field(True, description="Notify for new messages")
+    vertretungsplan_enabled: bool = Field(
+        False, description="Notify for new matching Vertretungsplan entries"
+    )
+    vertretungsplan_class_mode: str = Field(
+        "own", description="Class scope: own, selected, or all"
+    )
+    vertretungsplan_classes: List[str] = Field(
+        default_factory=list, description="Classes used when class mode is selected"
+    )
     start_time: str = Field("07:00", description="Local time at which polling may start")
     end_time: str = Field("21:00", description="Local time at which polling may stop")
     poll_interval_minutes: int = Field(15, ge=5, le=60)
@@ -464,7 +475,11 @@ class AuthManager:
             expired = [
                 key
                 for key, entry in self._cache.items()
-                if entry.is_expired(CACHE_TTL_SECONDS)
+                if entry.is_expired(
+                    LONG_CACHE_TTL_SECONDS
+                    if entry.is_long_term
+                    else CACHE_TTL_SECONDS
+                )
             ]
             for key in expired:
                 self._cache.pop(key)
@@ -941,11 +956,28 @@ async def dsb_plan_endpoint(
 # --- Apps / Modules ---
 
 
+def _fetch_modules(client: SchulportalHessenAPI) -> Dict[str, object]:
+    """Fetch modules while preserving an app-list failure for cache decisions."""
+    apps_result = client.get_apps()
+    if not apps_result.get("success"):
+        return {
+            "success": False,
+            "error": apps_result.get("error") or "Apps could not be loaded",
+            "modules": [],
+        }
+    return {
+        "success": True,
+        "modules": client.get_available_modules(apps_result),
+    }
+
+
 async def _revalidate_endpoint(
     user_id: str, endpoint: str, fetch_func
 ) -> None:
     try:
         fresh_data = await run_in_threadpool(fetch_func)
+        if not isinstance(fresh_data, dict) or not fresh_data.get("success"):
+            return
         cached_data = await sessions.get_cached(user_id, endpoint)
         if cached_data is not None and not _responses_equal(cached_data, fresh_data):
             await sessions.set_cache(user_id, endpoint, fresh_data, is_long_term=True)
@@ -953,10 +985,11 @@ async def _revalidate_endpoint(
         pass
 
 
-async def _revalidate_modules(user_id: str, fetch_func) -> None:
+async def _revalidate_modules(user_id: str, client: SchulportalHessenAPI) -> None:
     try:
-        fresh_modules = await run_in_threadpool(fetch_func)
-        fresh_data = {"success": True, "modules": fresh_modules}
+        fresh_data = await run_in_threadpool(_fetch_modules, client)
+        if not fresh_data.get("success"):
+            return
         cached_data = await sessions.get_cached(user_id, "/modules")
         if cached_data is not None and not _responses_equal(cached_data, fresh_data):
             await sessions.set_cache(
@@ -983,7 +1016,8 @@ async def get_apps(
         return cached_data
 
     result = await run_in_threadpool(auth.client.get_apps)
-    await sessions.set_cache(auth.user_id, "/apps", result, is_long_term=True)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/apps", result, is_long_term=True)
     return result
 
 
@@ -997,15 +1031,15 @@ async def get_modules(
 
     if needs_revalidation:
         asyncio.create_task(
-            _revalidate_modules(auth.user_id, auth.client.get_available_modules)
+            _revalidate_modules(auth.user_id, auth.client)
         )
 
     if cached_data is not None:
         return cached_data
 
-    modules = await run_in_threadpool(auth.client.get_available_modules)
-    result = {"success": True, "modules": modules}
-    await sessions.set_cache(auth.user_id, "/modules", result, is_long_term=True)
+    result = await run_in_threadpool(_fetch_modules, auth.client)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/modules", result, is_long_term=True)
     return result
 
 
@@ -1028,7 +1062,8 @@ async def get_user_data(
         return cached_data
 
     result = await run_in_threadpool(auth.client.benutzer_get_data)
-    await sessions.set_cache(auth.user_id, "/benutzer", result, is_long_term=True)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/benutzer", result, is_long_term=True)
     return result
 
 
@@ -1331,6 +1366,13 @@ async def update_user_notification_preferences(
         if hasattr(payload, "model_dump")
         else payload.dict()
     )
+    preferences["vertretungsplan_classes"] = list(
+        dict.fromkeys(
+            value.strip()
+            for value in preferences.get("vertretungsplan_classes", [])
+            if value.strip()
+        )
+    )
     try:
         validate_notification_preferences(preferences)
     except ValueError as error:
@@ -1339,6 +1381,41 @@ async def update_user_notification_preferences(
     saved = await save_notification_preferences(auth.user_id, preferences)
     saved.pop("user_id", None)
     return {"success": True, "preferences": saved}
+
+
+@app.get("/notifications/vertretungsplan/options")
+async def get_vertretungsplan_notification_options(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return the signed-in user's class and classes visible in the current plan."""
+    profile_result = await sessions.get_cached(auth.user_id, "/benutzer")
+    if profile_result is None:
+        profile_result = await run_in_threadpool(auth.client.benutzer_get_data)
+        if profile_result.get("success"):
+            await sessions.set_cache(
+                auth.user_id, "/benutzer", profile_result, is_long_term=True
+            )
+
+    plan_params = _make_param_key({"include_raw": False})
+    plan_result = await sessions.get_cached(
+        auth.user_id, "/vertretungsplan", plan_params
+    )
+    if plan_result is None:
+        plan_result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, False)
+        await sessions.set_cache(
+            auth.user_id, "/vertretungsplan", plan_result, plan_params
+        )
+    if not plan_result.get("success"):
+        return {
+            "success": False,
+            "error": plan_result.get("error") or "Vertretungsplan could not be loaded",
+            "own_class": "",
+            "available_classes": [],
+        }
+    return {
+        "success": True,
+        **vertretungsplan_notification_options(profile_result, plan_result),
+    }
 
 
 @app.post("/notifications/subscription")

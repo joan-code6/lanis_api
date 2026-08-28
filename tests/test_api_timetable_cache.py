@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from api import api as api_module
 from api.api import AuthManager, AuthSession
@@ -17,6 +17,29 @@ def test_user_cache_invalidation_removes_only_that_users_entries():
         assert await manager.get_cached("user-a", "/stundenplan") is None
         assert await manager.get_cached("user-a", "/meinunterricht") is None
         assert await manager.get_cached("user-b", "/stundenplan") == {"value": "b"}
+
+    asyncio.run(scenario())
+
+
+def test_cache_purge_uses_the_long_term_ttl_for_long_term_entries():
+    async def scenario():
+        manager = AuthManager()
+        await manager.set_cache("user-a", "/short", {"value": "short"})
+        await manager.set_cache(
+            "user-a", "/long", {"value": "long"}, is_long_term=True
+        )
+        old_timestamp = datetime.utcnow() - timedelta(
+            seconds=api_module.CACHE_TTL_SECONDS + 1
+        )
+        manager._cache[
+            manager._make_cache_key("user-a", "/short")
+        ].created_at = old_timestamp
+        manager._cache[
+            manager._make_cache_key("user-a", "/long")
+        ].created_at = old_timestamp
+
+        assert await manager.get_cached("user-a", "/long") == {"value": "long"}
+        assert await manager.get_cached("user-a", "/short") is None
 
     asyncio.run(scenario())
 
@@ -101,6 +124,173 @@ def test_timetable_does_not_cache_a_failed_course_overview(monkeypatch):
 
     assert result["success"] is True
     assert [endpoint for _, endpoint, _ in fake_sessions.cached] == ["/stundenplan"]
+
+
+def test_vertretungsplan_options_keep_profile_cache_long_term(monkeypatch):
+    class FakeClient:
+        def benutzer_get_data(self):
+            return {"success": True, "data": {"klasse": "10a"}}
+
+    class FakeSessions:
+        def __init__(self):
+            self.cache_writes = []
+
+        async def get_cached(self, _user_id, endpoint, _params=""):
+            if endpoint == "/vertretungsplan":
+                return {"success": True, "days": []}
+            return None
+
+        async def set_cache(
+            self, _user_id, endpoint, _data, _params="", is_long_term=False
+        ):
+            self.cache_writes.append((endpoint, is_long_term))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(
+        api_module.get_vertretungsplan_notification_options(auth=auth)
+    )
+
+    assert result["success"] is True
+    assert fake_sessions.cache_writes == [("/benutzer", True)]
+
+
+def test_vertretungsplan_options_do_not_cache_a_failed_profile_lookup(monkeypatch):
+    class FakeClient:
+        def benutzer_get_data(self):
+            return {"success": False, "error": "temporary failure"}
+
+    class FakeSessions:
+        def __init__(self):
+            self.cache_writes = []
+
+        async def get_cached(self, _user_id, endpoint, _params=""):
+            if endpoint == "/vertretungsplan":
+                return {"success": True, "days": []}
+            return None
+
+        async def set_cache(
+            self, _user_id, endpoint, _data, _params="", is_long_term=False
+        ):
+            self.cache_writes.append((endpoint, is_long_term))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(
+        api_module.get_vertretungsplan_notification_options(auth=auth)
+    )
+
+    assert result["success"] is True
+    assert result["own_class"] == ""
+    assert fake_sessions.cache_writes == []
+
+
+def test_apps_do_not_long_cache_a_failed_portal_response(monkeypatch):
+    class FakeClient:
+        def get_apps(self):
+            return {"success": False, "error": "temporary failure"}
+
+    class FakeSessions:
+        def __init__(self):
+            self.cache_writes = []
+
+        async def get_cached_with_revalidate(self, _user_id, _endpoint):
+            return None, False
+
+        async def set_cache(
+            self, _user_id, endpoint, _data, _params="", is_long_term=False
+        ):
+            self.cache_writes.append((endpoint, is_long_term))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.get_apps(auth=auth))
+
+    assert result["success"] is False
+    assert fake_sessions.cache_writes == []
+
+
+def test_modules_do_not_long_cache_an_empty_list_from_a_failed_app_lookup(monkeypatch):
+    class FakeClient:
+        def get_apps(self):
+            return {"success": False, "error": "temporary failure"}
+
+        def get_available_modules(self, _apps_result=None):
+            raise AssertionError("modules should not be built from a failed app lookup")
+
+    class FakeSessions:
+        def __init__(self):
+            self.cache_writes = []
+
+        async def get_cached_with_revalidate(self, _user_id, _endpoint):
+            return None, False
+
+        async def set_cache(
+            self, _user_id, endpoint, _data, _params="", is_long_term=False
+        ):
+            self.cache_writes.append((endpoint, is_long_term))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.get_modules(auth=auth))
+
+    assert result == {
+        "success": False,
+        "error": "temporary failure",
+        "modules": [],
+    }
+    assert fake_sessions.cache_writes == []
+
+
+def test_modules_long_cache_a_successful_app_lookup(monkeypatch):
+    apps_result = {"success": True, "data": {"entrys": []}}
+
+    class FakeClient:
+        def get_apps(self):
+            return apps_result
+
+        def get_available_modules(self, received_apps_result=None):
+            assert received_apps_result is apps_result
+            return [{"name": "Kalender"}]
+
+    class FakeSessions:
+        def __init__(self):
+            self.cache_writes = []
+
+        async def get_cached_with_revalidate(self, _user_id, _endpoint):
+            return None, False
+
+        async def set_cache(
+            self, _user_id, endpoint, data, _params="", is_long_term=False
+        ):
+            self.cache_writes.append((endpoint, data, is_long_term))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.get_modules(auth=auth))
+
+    assert result == {"success": True, "modules": [{"name": "Kalender"}]}
+    assert fake_sessions.cache_writes == [("/modules", result, True)]
 
 
 def test_timetable_cache_is_keyed_by_the_current_week(monkeypatch):
