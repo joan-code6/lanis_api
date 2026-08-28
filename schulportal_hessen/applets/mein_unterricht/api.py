@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 import json
 import os
 import re
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from schulportal_hessen.tools.cryptor import Cryptor
 
@@ -26,6 +26,57 @@ def _extract_filename(content_disposition: Optional[str], fallback_url: str) -> 
     fallback = fallback_url.split("?")[0].rstrip("/")
     name = os.path.basename(fallback)
     return name or "download.bin"
+
+
+def _extract_course_folders(soup: Any) -> List[Dict[str, Any]]:
+    """Extract every course folder exposed by the overview page.
+
+    Activity rows are not a complete course list: a course with no recent
+    activity can still have a ``sus_view`` folder link. Keep both selectors so
+    the attendance aggregate can enumerate those folders as well.
+    """
+    folders: Dict[str, Dict[str, Any]] = {}
+
+    def add_folder(course_id: Any, name: str = "", course_link: str = "") -> None:
+        normalized_id = str(course_id or "").strip()
+        if not normalized_id:
+            return
+        folder = folders.setdefault(
+            normalized_id,
+            {
+                "book_id": normalized_id,
+                "name": "",
+                "course_link": "",
+                "teacher_full_name": "",
+                "teacher_short": "",
+            },
+        )
+        if name.strip() and not folder["name"]:
+            folder["name"] = name.strip()
+        if course_link.strip() and not folder["course_link"]:
+            folder["course_link"] = course_link.strip()
+
+    for element in soup.select("[data-book]"):
+        course_link = ""
+        link = element if element.name == "a" else element.find("a", href=True)
+        if link:
+            course_link = link.get("href", "")
+        name_node = element.select_one(".name")
+        name = name_node.get_text(" ", strip=True) if name_node else ""
+        add_folder(element.get("data-book"), name, course_link)
+
+    for link in soup.select("a[href]"):
+        href = link.get("href", "")
+        if "sus_view" not in href:
+            continue
+        course_id = parse_qs(urlparse(href).query).get("id", [""])[0]
+        if not course_id:
+            continue
+        name_node = link.select_one(".name")
+        name = name_node.get_text(" ", strip=True) if name_node else link.get_text(" ", strip=True)
+        add_folder(course_id, name, href)
+
+    return list(folders.values())
 
 
 def meinunterricht_get_overview(self) -> Dict[str, Any]:
@@ -130,7 +181,14 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
 
             entries.append(entry)
 
-        return {"success": True, "entries": entries, "entry_count": len(entries)}
+        courses = _extract_course_folders(soup)
+        return {
+            "success": True,
+            "entries": entries,
+            "entry_count": len(entries),
+            "courses": courses,
+            "course_count": len(courses),
+        }
 
     except Exception as e:
         return {"success": False, "error": f"Failed to fetch mein Unterricht: {str(e)}"}
@@ -416,7 +474,30 @@ def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
         seen_course_ids = set()
         failed_course_count = 0
 
-        for overview_entry in overview.get("entries", []):
+        overview_entries = [
+            entry for entry in overview.get("entries", []) if isinstance(entry, dict)
+        ]
+        overview_by_course_id = {
+            str(entry.get("book_id") or "").strip(): entry
+            for entry in overview_entries
+            if str(entry.get("book_id") or "").strip()
+        }
+        course_folders = overview.get("courses")
+        if not isinstance(course_folders, list) or not course_folders:
+            course_folders = overview_entries
+        else:
+            known_ids = {
+                str(folder.get("book_id") or "").strip()
+                for folder in course_folders
+                if isinstance(folder, dict)
+            }
+            course_folders = list(course_folders) + [
+                entry
+                for entry in overview_entries
+                if str(entry.get("book_id") or "").strip() not in known_ids
+            ]
+
+        for overview_entry in course_folders:
             if not isinstance(overview_entry, dict):
                 continue
             course_id = str(overview_entry.get("book_id") or "").strip()
@@ -443,22 +524,24 @@ def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
             if not summary:
                 continue
 
+            entry_metadata = overview_by_course_id.get(course_id, overview_entry)
+
             courses.append(
                 {
                     "course_id": course_id,
                     "course_name": str(
                         course.get("course_name")
-                        or overview_entry.get("name")
+                        or entry_metadata.get("name")
                         or course_id
                     ).strip(),
                     "teacher_short": str(
                         course.get("teacher_short")
-                        or overview_entry.get("teacher_short")
+                        or entry_metadata.get("teacher_short")
                         or ""
                     ).strip(),
                     "teacher_full": str(
                         course.get("teacher_full")
-                        or overview_entry.get("teacher_full_name")
+                        or entry_metadata.get("teacher_full_name")
                         or ""
                     ).strip(),
                     "attendance_summary": summary,

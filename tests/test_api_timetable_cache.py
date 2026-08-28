@@ -126,6 +126,40 @@ def test_timetable_does_not_cache_a_failed_course_overview(monkeypatch):
     assert [endpoint for _, endpoint, _ in fake_sessions.cached] == ["/stundenplan"]
 
 
+def test_attendance_does_not_cache_partial_course_aggregates(monkeypatch):
+    class FakeClient:
+        def meinunterricht_get_attendance_overview(self):
+            return {
+                "success": True,
+                "totals": {"anwesend": 1},
+                "courses": [],
+                "failed_course_count": 1,
+            }
+
+    class FakeSessions:
+        def __init__(self):
+            self.cached = []
+
+        async def get_cached(self, _user_id, _endpoint, _params=""):
+            return None
+
+        async def set_cache(
+            self, user_id, endpoint, data, params="", is_long_term=False
+        ):
+            self.cached.append((user_id, endpoint, data))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.meinunterricht_attendance(auth=auth))
+
+    assert result["failed_course_count"] == 1
+    assert fake_sessions.cached == []
+
+
 def test_vertretungsplan_options_keep_profile_cache_long_term(monkeypatch):
     class FakeClient:
         def benutzer_get_data(self):

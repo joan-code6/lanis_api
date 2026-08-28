@@ -2,6 +2,7 @@ from schulportal_hessen.applets.mein_unterricht import api as mein_unterricht_ap
 from schulportal_hessen.applets.mein_unterricht.api import (
     meinunterricht_get_attendance_overview,
     meinunterricht_get_course,
+    meinunterricht_get_overview,
 )
 
 
@@ -41,6 +42,40 @@ def test_course_heading_uses_first_visible_text() -> None:
     assert result["success"] is True
     assert result["course_name"] == "Mathematik 10a"
     assert result["semester"] == "2. Halbjahr"
+
+
+def test_overview_includes_course_folders_without_activity_rows() -> None:
+    class OverviewResponse:
+        text = """
+        <html><body>
+          <table><tbody>
+            <tr data-book="1">
+              <td><a href="meinunterricht.php?a=sus_view&amp;id=1"><span class="name">Mathe</span></a></td>
+            </tr>
+          </tbody></table>
+          <div class="course-folder">
+            <a href="meinunterricht.php?a=sus_view&amp;id=2"><span class="name">Informatik</span></a>
+          </div>
+        </body></html>
+        """
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class OverviewSession:
+        def get(self, *_args, **_kwargs):
+            return OverviewResponse()
+
+    class OverviewClient:
+        logged_in = True
+        session = OverviewSession()
+        BASE_START_URL = "https://example.invalid"
+
+    result = meinunterricht_get_overview(OverviewClient())
+
+    assert result["success"] is True
+    assert result["course_count"] == 2
+    assert {course["book_id"] for course in result["courses"]} == {"1", "2"}
 
 
 def test_attendance_overview_combines_course_summaries(monkeypatch) -> None:
@@ -98,3 +133,35 @@ def test_attendance_overview_combines_course_summaries(monkeypatch) -> None:
         "anwesend": 12,
         "entschuldigt": 1,
     }
+
+
+def test_attendance_overview_enumerates_course_folders_without_recent_entries(monkeypatch) -> None:
+    class AttendanceClient:
+        logged_in = True
+
+    monkeypatch.setattr(
+        mein_unterricht_api,
+        "meinunterricht_get_overview",
+        lambda _client: {
+            "success": True,
+            "entries": [{"book_id": "1", "name": "Mathe"}],
+            "courses": [
+                {"book_id": "1", "name": "Mathe"},
+                {"book_id": "2", "name": "Informatik"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        mein_unterricht_api,
+        "meinunterricht_get_course",
+        lambda _client, course_id: {
+            "success": True,
+            "course_name": course_id,
+            "attendance_summary": {"Anwesend": "1"},
+        },
+    )
+
+    result = meinunterricht_get_attendance_overview(AttendanceClient())
+
+    assert result["course_count"] == 2
+    assert {course["course_id"] for course in result["courses"]} == {"1", "2"}

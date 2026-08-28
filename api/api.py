@@ -1713,7 +1713,7 @@ async def meinunterricht_attendance(
         return cached
 
     result = await run_in_threadpool(auth.client.meinunterricht_get_attendance_overview)
-    if result.get("success"):
+    if result.get("success") and not result.get("failed_course_count"):
         await sessions.set_cache(auth.user_id, "/meinunterricht/attendance", result)
     return result
 
