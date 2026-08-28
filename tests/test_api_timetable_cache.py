@@ -159,6 +159,40 @@ def test_vertretungsplan_options_keep_profile_cache_long_term(monkeypatch):
     assert fake_sessions.cache_writes == [("/benutzer", True)]
 
 
+def test_vertretungsplan_options_do_not_cache_a_failed_profile_lookup(monkeypatch):
+    class FakeClient:
+        def benutzer_get_data(self):
+            return {"success": False, "error": "temporary failure"}
+
+    class FakeSessions:
+        def __init__(self):
+            self.cache_writes = []
+
+        async def get_cached(self, _user_id, endpoint, _params=""):
+            if endpoint == "/vertretungsplan":
+                return {"success": True, "days": []}
+            return None
+
+        async def set_cache(
+            self, _user_id, endpoint, _data, _params="", is_long_term=False
+        ):
+            self.cache_writes.append((endpoint, is_long_term))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(
+        api_module.get_vertretungsplan_notification_options(auth=auth)
+    )
+
+    assert result["success"] is True
+    assert result["own_class"] == ""
+    assert fake_sessions.cache_writes == []
+
+
 def test_timetable_cache_is_keyed_by_the_current_week(monkeypatch):
     class FakeClient:
         def __init__(self):
