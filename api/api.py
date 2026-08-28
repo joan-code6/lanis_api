@@ -956,11 +956,28 @@ async def dsb_plan_endpoint(
 # --- Apps / Modules ---
 
 
+def _fetch_modules(client: SchulportalHessenAPI) -> Dict[str, object]:
+    """Fetch modules while preserving an app-list failure for cache decisions."""
+    apps_result = client.get_apps()
+    if not apps_result.get("success"):
+        return {
+            "success": False,
+            "error": apps_result.get("error") or "Apps could not be loaded",
+            "modules": [],
+        }
+    return {
+        "success": True,
+        "modules": client.get_available_modules(apps_result),
+    }
+
+
 async def _revalidate_endpoint(
     user_id: str, endpoint: str, fetch_func
 ) -> None:
     try:
         fresh_data = await run_in_threadpool(fetch_func)
+        if not isinstance(fresh_data, dict) or not fresh_data.get("success"):
+            return
         cached_data = await sessions.get_cached(user_id, endpoint)
         if cached_data is not None and not _responses_equal(cached_data, fresh_data):
             await sessions.set_cache(user_id, endpoint, fresh_data, is_long_term=True)
@@ -968,10 +985,11 @@ async def _revalidate_endpoint(
         pass
 
 
-async def _revalidate_modules(user_id: str, fetch_func) -> None:
+async def _revalidate_modules(user_id: str, client: SchulportalHessenAPI) -> None:
     try:
-        fresh_modules = await run_in_threadpool(fetch_func)
-        fresh_data = {"success": True, "modules": fresh_modules}
+        fresh_data = await run_in_threadpool(_fetch_modules, client)
+        if not fresh_data.get("success"):
+            return
         cached_data = await sessions.get_cached(user_id, "/modules")
         if cached_data is not None and not _responses_equal(cached_data, fresh_data):
             await sessions.set_cache(
@@ -998,7 +1016,8 @@ async def get_apps(
         return cached_data
 
     result = await run_in_threadpool(auth.client.get_apps)
-    await sessions.set_cache(auth.user_id, "/apps", result, is_long_term=True)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/apps", result, is_long_term=True)
     return result
 
 
@@ -1012,15 +1031,15 @@ async def get_modules(
 
     if needs_revalidation:
         asyncio.create_task(
-            _revalidate_modules(auth.user_id, auth.client.get_available_modules)
+            _revalidate_modules(auth.user_id, auth.client)
         )
 
     if cached_data is not None:
         return cached_data
 
-    modules = await run_in_threadpool(auth.client.get_available_modules)
-    result = {"success": True, "modules": modules}
-    await sessions.set_cache(auth.user_id, "/modules", result, is_long_term=True)
+    result = await run_in_threadpool(_fetch_modules, auth.client)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/modules", result, is_long_term=True)
     return result
 
 
@@ -1043,7 +1062,8 @@ async def get_user_data(
         return cached_data
 
     result = await run_in_threadpool(auth.client.benutzer_get_data)
-    await sessions.set_cache(auth.user_id, "/benutzer", result, is_long_term=True)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/benutzer", result, is_long_term=True)
     return result
 
 

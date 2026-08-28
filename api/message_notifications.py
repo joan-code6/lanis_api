@@ -282,6 +282,13 @@ def validate_notification_preferences(preferences: Dict[str, Any]) -> None:
     if interval < 5 or interval > 60:
         raise ValueError("poll_interval_minutes must be between 5 and 60")
 
+    if (
+        preferences.get("enabled")
+        and not preferences.get("messages_enabled")
+        and not preferences.get("vertretungsplan_enabled")
+    ):
+        raise ValueError("At least one notification category must be enabled")
+
     class_mode = str(preferences.get("vertretungsplan_class_mode", "own"))
     if class_mode not in {"own", "selected", "all"}:
         raise ValueError("vertretungsplan_class_mode must be own, selected, or all")

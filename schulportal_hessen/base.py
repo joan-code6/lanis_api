@@ -214,13 +214,21 @@ class SchulportalHessenAPI:
         except requests.RequestException:
             return url
 
-    def get_available_modules(self) -> List[Dict[str, Any]]:
+    def get_available_modules(
+        self, apps_data: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
         """Return the logged-in user's available modules with resolved URLs.
 
         This helper reads the raw app list returned by :meth:`get_apps` and
         normalizes each entry into a compact structure that is easier to use in
         client code. Relative links are converted to absolute URLs and portal
         tracking redirects are resolved to their final destinations.
+
+        Parameters
+        ----------
+        apps_data : Dict[str, Any], optional
+            A previously fetched :meth:`get_apps` result. When omitted, the
+            app list is fetched before building the modules.
 
         Returns
         -------
@@ -241,7 +249,7 @@ class SchulportalHessenAPI:
         If the user is not logged in or the app list cannot be loaded, an
         empty list is returned.
         """
-        apps_data = self.get_apps()
+        apps_data = apps_data if apps_data is not None else self.get_apps()
 
         if not apps_data.get("success"):
             return []

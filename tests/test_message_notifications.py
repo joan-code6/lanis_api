@@ -175,6 +175,23 @@ def test_notification_preferences_reject_timezone_offsets_in_clocks():
     )
 
 
+def test_enabled_notification_preferences_require_a_notification_category():
+    preferences = {
+        "enabled": True,
+        "messages_enabled": False,
+        "vertretungsplan_enabled": False,
+        "vertretungsplan_class_mode": "own",
+        "vertretungsplan_classes": [],
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+    }
+
+    with pytest.raises(ValueError, match="notification category"):
+        notifications.validate_notification_preferences(preferences)
+
+
 def test_vertretungsplan_snapshot_defaults_to_the_users_own_class():
     result = {
         "success": True,
