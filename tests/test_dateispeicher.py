@@ -87,6 +87,13 @@ def test_dateispeicher_route_distinguishes_authentication_and_upstream_failures(
         school_id="school",
         username="user",
     )
+    invalidated_users = []
+
+    class FakeSessions:
+        async def invalidate_schulportal_client(self, user_id):
+            invalidated_users.append(user_id)
+
+    monkeypatch.setattr(api_module, "sessions", FakeSessions())
 
     async def run_in_threadpool(_func, _file_id):
         return {
@@ -99,6 +106,7 @@ def test_dateispeicher_route_distinguishes_authentication_and_upstream_failures(
     with pytest.raises(HTTPException) as authentication_error:
         asyncio.run(api_module.download_dateispeicher_file(42, auth=auth))
     assert authentication_error.value.status_code == 401
+    assert invalidated_users == ["user-a"]
 
     async def run_in_threadpool_upstream(_func, _file_id):
         return {

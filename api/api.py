@@ -450,6 +450,14 @@ class AuthManager:
             self._schulportal_clients[user_id] = session_data
         return user_id
 
+    async def invalidate_schulportal_client(self, user_id: str) -> None:
+        """Close and evict a cached Schulportal client without logging out remotely."""
+        user_id = canonicalize_user_id(user_id)
+        async with self._lock:
+            data = self._schulportal_clients.pop(user_id, None)
+        if data:
+            data.client.close()
+
     async def drop_schulportal_session(self, user_id: str) -> None:
         """Close and remove a Schulportal session."""
         user_id = canonicalize_user_id(user_id)
@@ -774,6 +782,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(documentation_router)
@@ -1328,6 +1337,7 @@ async def download_dateispeicher_file(
     if not result.get("success") or not isinstance(result.get("content"), bytes):
         error_kind = result.get("error_kind")
         if error_kind == "authentication":
+            await sessions.invalidate_schulportal_client(auth.user_id)
             error_status = status.HTTP_401_UNAUTHORIZED
         elif result.get("upstream_status") == status.HTTP_404_NOT_FOUND:
             error_status = status.HTTP_404_NOT_FOUND
