@@ -212,6 +212,8 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
         upstream_status = getattr(upstream_response, "status_code", None)
         if isinstance(upstream_status, int):
             result["upstream_status"] = upstream_status
+            if upstream_status in {401, 403}:
+                result["error_kind"] = "authentication"
         return result
     except requests.RequestException as exc:
         return {

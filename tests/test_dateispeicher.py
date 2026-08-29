@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+import requests
 from fastapi import HTTPException
 
 from api import api as api_module
@@ -48,6 +49,17 @@ class LoginResponse:
         return None
 
 
+class HttpErrorResponse:
+    content = b""
+    headers = {}
+
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        raise requests.HTTPError("portal authentication failed", response=self)
+
+
 def test_dateispeicher_download_uses_authenticated_portal_url():
     client = FakeClient()
 
@@ -78,6 +90,15 @@ def test_dateispeicher_download_rejects_login_page_as_authentication_failure():
     assert result["success"] is False
     assert result["error_kind"] == "authentication"
     assert "login page" in result["error"]
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_dateispeicher_download_classifies_http_auth_failures(status_code):
+    result = dateispeicher_download_file(FakeClient(HttpErrorResponse(status_code)), 42)
+
+    assert result["success"] is False
+    assert result["error_kind"] == "authentication"
+    assert result["upstream_status"] == status_code
 
 
 def test_dateispeicher_route_distinguishes_authentication_and_upstream_failures(monkeypatch):
