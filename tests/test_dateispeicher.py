@@ -64,6 +64,13 @@ class LoginResponse:
         return None
 
 
+class HtmlAttachmentResponse(LoginResponse):
+    headers = {
+        "Content-Disposition": 'attachment; filename="hinweise.html"',
+        "Content-Type": "text/html; charset=utf-8",
+    }
+
+
 class HttpErrorResponse:
     content = b""
     headers = {}
@@ -112,6 +119,14 @@ def test_dateispeicher_download_rejects_login_page_as_authentication_failure():
     assert "login page" in result["error"]
 
 
+def test_dateispeicher_download_accepts_html_attachment():
+    result = dateispeicher_download_file(FakeClient(HtmlAttachmentResponse()), 42)
+
+    assert result["success"] is True
+    assert result["filename"] == "hinweise.html"
+    assert b"".join(result["stream"]) == HtmlAttachmentResponse.content
+
+
 @pytest.mark.parametrize("status_code", [401, 403])
 def test_dateispeicher_download_classifies_http_auth_failures(status_code):
     result = dateispeicher_download_file(FakeClient(HttpErrorResponse(status_code)), 42)
@@ -131,8 +146,8 @@ def test_dateispeicher_route_distinguishes_authentication_and_upstream_failures(
     invalidated_users = []
 
     class FakeSessions:
-        async def invalidate_schulportal_client(self, user_id):
-            invalidated_users.append(user_id)
+        async def invalidate_schulportal_client(self, user_id, expected_client):
+            invalidated_users.append((user_id, expected_client))
 
     monkeypatch.setattr(api_module, "sessions", FakeSessions())
 
@@ -147,7 +162,7 @@ def test_dateispeicher_route_distinguishes_authentication_and_upstream_failures(
     with pytest.raises(HTTPException) as authentication_error:
         asyncio.run(api_module.download_dateispeicher_file(42, auth=auth))
     assert authentication_error.value.status_code == 401
-    assert invalidated_users == ["user-a"]
+    assert invalidated_users == [("user-a", auth.client)]
 
     async def run_in_threadpool_upstream(_func, _file_id):
         return {

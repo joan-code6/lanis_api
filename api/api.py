@@ -450,11 +450,20 @@ class AuthManager:
             self._schulportal_clients[user_id] = session_data
         return user_id
 
-    async def invalidate_schulportal_client(self, user_id: str) -> None:
+    async def invalidate_schulportal_client(
+        self,
+        user_id: str,
+        expected_client: Optional[SchulportalHessenAPI] = None,
+    ) -> None:
         """Close and evict a cached Schulportal client without logging out remotely."""
         user_id = canonicalize_user_id(user_id)
         async with self._lock:
-            data = self._schulportal_clients.pop(user_id, None)
+            data = self._schulportal_clients.get(user_id)
+            if data is None or (
+                expected_client is not None and data.client is not expected_client
+            ):
+                return
+            self._schulportal_clients.pop(user_id, None)
         if data:
             data.client.close()
 
@@ -1341,7 +1350,7 @@ async def download_dateispeicher_file(
     ):
         error_kind = result.get("error_kind")
         if error_kind == "authentication":
-            await sessions.invalidate_schulportal_client(auth.user_id)
+            await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
             error_status = status.HTTP_401_UNAUTHORIZED
         elif result.get("upstream_status") == status.HTTP_404_NOT_FOUND:
             error_status = status.HTTP_404_NOT_FOUND

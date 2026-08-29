@@ -194,11 +194,7 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
             or "application/xhtml+xml" in content_type
             or bool(re.match(r"<(?:!doctype\s+html|html|head|body)\b", body_prefix))
         )
-        looks_like_login_page = looks_like_html and bool(
-            re.search(r"<form\b", body_prefix)
-            and re.search(r"login|anmeld|passwort|schulportal", body_prefix)
-        )
-        if looks_like_html and (not has_attachment or looks_like_login_page):
+        if looks_like_html and not has_attachment:
             _close_response(response)
             response = None
             return {
