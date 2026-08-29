@@ -19,6 +19,15 @@ class FakeResponse:
         "Content-Type": "application/pdf",
     }
 
+    def __init__(self):
+        self.closed = False
+
+    def iter_content(self, chunk_size=8192):
+        yield self.content
+
+    def close(self):
+        self.closed = True
+
     def raise_for_status(self):
         return None
 
@@ -45,6 +54,12 @@ class LoginResponse:
     content = b"<html><body><form action='/login'>Anmelden</form></body></html>"
     headers = {"Content-Type": "text/html; charset=utf-8"}
 
+    def iter_content(self, chunk_size=8192):
+        yield self.content
+
+    def close(self):
+        self.closed = True
+
     def raise_for_status(self):
         return None
 
@@ -55,6 +70,10 @@ class HttpErrorResponse:
 
     def __init__(self, status_code):
         self.status_code = status_code
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def raise_for_status(self):
         raise requests.HTTPError("portal authentication failed", response=self)
@@ -69,11 +88,12 @@ def test_dateispeicher_download_uses_authenticated_portal_url():
     assert result["file_id"] == 42
     assert result["filename"] == "Arbeitsblatt (2026).pdf"
     assert result["content_type"] == "application/pdf"
-    assert result["content"] == b"file contents"
+    assert b"".join(result["stream"]) == b"file contents"
+    assert client.session.response.closed is True
     assert client.session.calls == [
         (
             ("https://portal.example/dateispeicher.php",),
-            {"params": {"a": "download", "f": "42"}},
+            {"params": {"a": "download", "f": "42"}, "stream": True},
         )
     ]
 

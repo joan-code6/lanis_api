@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import unquote
 
 import requests
@@ -138,6 +138,25 @@ def dateispeicher_get_root(self) -> Dict[str, Any]:
     return dateispeicher_get_node(self, folder_id=0)
 
 
+def _close_response(response: Any) -> None:
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
+
+
+def _iter_download_response(
+    response: Any, first_chunk: bytes, chunks: Iterator[bytes]
+) -> Iterator[bytes]:
+    try:
+        if first_chunk:
+            yield first_chunk
+        for chunk in chunks:
+            if chunk:
+                yield chunk
+    finally:
+        _close_response(response)
+
+
 def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
     """Download a file from the native dateispeicher using the portal session."""
     if not self.logged_in:
@@ -149,25 +168,27 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
     if file_id <= 0:
         return {"success": False, "error": "Invalid file id"}
 
+    response = None
     try:
         download_url = f"{self.BASE_START_URL}/dateispeicher.php"
         response = self.session.get(
             download_url,
             params={"a": "download", "f": str(file_id)},
+            stream=True,
         )
         response.raise_for_status()
 
         headers = getattr(response, "headers", {}) or {}
-        disposition = response.headers.get("Content-Disposition", "")
+        disposition = str(headers.get("Content-Disposition") or "")
         content_type = str(
             headers.get("Content-Type") or headers.get("content-type") or ""
         ).lower()
         has_attachment = "attachment" in disposition.lower()
-        content = getattr(response, "content", b"")
-        if isinstance(content, bytes):
-            body_prefix = content[:8192].decode("utf-8", errors="ignore").lstrip().lower()
-        else:
-            body_prefix = str(content or "")[:8192].lstrip().lower()
+        content_iterator = response.iter_content(chunk_size=8192)
+        first_chunk = next(content_iterator, b"")
+        if not isinstance(first_chunk, bytes):
+            first_chunk = bytes(first_chunk or b"")
+        body_prefix = first_chunk[:8192].decode("utf-8", errors="ignore").lstrip().lower()
         looks_like_html = (
             "text/html" in content_type
             or "application/xhtml+xml" in content_type
@@ -178,6 +199,8 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
             and re.search(r"login|anmeld|passwort|schulportal", body_prefix)
         )
         if looks_like_html and (not has_attachment or looks_like_login_page):
+            _close_response(response)
+            response = None
             return {
                 "success": False,
                 "error": "Dateispeicher session expired or portal returned a login page",
@@ -199,10 +222,11 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
             "filename": filename or f"dateispeicher-{file_id}",
             "content_type": headers.get("Content-Type")
             or "application/octet-stream",
-            "content": content,
+            "stream": _iter_download_response(response, first_chunk, content_iterator),
             "url": download_url,
         }
     except requests.HTTPError as exc:
+        _close_response(response)
         result: Dict[str, Any] = {
             "success": False,
             "error": f"Failed to download dateispeicher file: {exc}",
@@ -216,12 +240,14 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
                 result["error_kind"] = "authentication"
         return result
     except requests.RequestException as exc:
+        _close_response(response)
         return {
             "success": False,
             "error": f"Failed to download dateispeicher file: {exc}",
             "error_kind": "upstream",
         }
     except Exception as exc:
+        _close_response(response)
         return {
             "success": False,
             "error": f"Failed to download dateispeicher file: {exc}",

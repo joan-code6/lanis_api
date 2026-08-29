@@ -1334,7 +1334,11 @@ async def download_dateispeicher_file(
     result = await run_in_threadpool(
         auth.client.dateispeicher_download_file, file_id
     )
-    if not result.get("success") or not isinstance(result.get("content"), bytes):
+    stream = result.get("stream")
+    content = result.get("content")
+    if not result.get("success") or (
+        stream is None and not isinstance(content, bytes)
+    ):
         error_kind = result.get("error_kind")
         if error_kind == "authentication":
             await sessions.invalidate_schulportal_client(auth.user_id)
@@ -1351,10 +1355,18 @@ async def download_dateispeicher_file(
     filename = str(result.get("filename") or f"dateispeicher-{file_id}")
     filename = re.sub(r'[\r\n"]', "_", filename)
     content_disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+    response_headers = {"Content-Disposition": content_disposition}
+    media_type = result.get("content_type") or "application/octet-stream"
+    if stream is not None:
+        return StreamingResponse(
+            content=stream,
+            media_type=media_type,
+            headers=response_headers,
+        )
     return Response(
-        content=result["content"],
-        media_type=result.get("content_type") or "application/octet-stream",
-        headers={"Content-Disposition": content_disposition},
+        content=content,
+        media_type=media_type,
+        headers=response_headers,
     )
 
 
