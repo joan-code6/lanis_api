@@ -175,6 +175,7 @@ def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
             download_url,
             params={"a": "download", "f": str(file_id)},
             stream=True,
+            timeout=(10, 60),
         )
         response.raise_for_status()
 

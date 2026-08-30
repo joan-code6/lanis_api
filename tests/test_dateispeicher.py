@@ -100,7 +100,11 @@ def test_dateispeicher_download_uses_authenticated_portal_url():
     assert client.session.calls == [
         (
             ("https://portal.example/dateispeicher.php",),
-            {"params": {"a": "download", "f": "42"}, "stream": True},
+            {
+                "params": {"a": "download", "f": "42"},
+                "stream": True,
+                "timeout": (10, 60),
+            },
         )
     ]
 
