@@ -1305,30 +1305,36 @@ async def reset_custom_timetable_lesson(
 @app.get("/dateispeicher")
 async def get_dateispeicher(
     folder_id: int = 0,
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     params = _make_param_key({"folder_id": folder_id})
-    cached = await sessions.get_cached(auth.user_id, "/dateispeicher", params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/dateispeicher", params)
+        if cached is not None:
+            return cached
 
     result = await run_in_threadpool(auth.client.dateispeicher_get_node, folder_id)
-    await sessions.set_cache(auth.user_id, "/dateispeicher", result, params)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/dateispeicher", result, params)
     return result
 
 
 @app.get("/dateispeicher/search")
 async def search_dateispeicher(
     q: str,
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     params = _make_param_key({"q": q})
-    cached = await sessions.get_cached(auth.user_id, "/dateispeicher/search", params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/dateispeicher/search", params)
+        if cached is not None:
+            return cached
 
     result = await run_in_threadpool(auth.client.dateispeicher_search_files, q)
-    await sessions.set_cache(auth.user_id, "/dateispeicher/search", result, params)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/dateispeicher/search", result, params)
     return result
 
 

@@ -175,3 +175,65 @@ def test_dateispeicher_route_distinguishes_authentication_and_upstream_failures(
     with pytest.raises(HTTPException) as upstream_error:
         asyncio.run(api_module.download_dateispeicher_file(42, auth=auth))
     assert upstream_error.value.status_code == 502
+
+
+def test_dateispeicher_refresh_bypasses_cached_folder(monkeypatch):
+    client = SimpleNamespace(
+        dateispeicher_get_node=lambda folder_id: {
+            "success": True,
+            "folder_id": folder_id,
+            "files": [],
+            "folders": [],
+        }
+    )
+    auth = AuthSession(
+        client=client, user_id="user-a", school_id="school", username="user"
+    )
+
+    class FakeSessions:
+        def __init__(self):
+            self.cached = []
+
+        async def get_cached(self, *_args, **_kwargs):
+            raise AssertionError("refresh must bypass the response cache")
+
+        async def set_cache(self, user_id, endpoint, data, params=""):
+            self.cached.append((user_id, endpoint, data, params))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+
+    result = asyncio.run(api_module.get_dateispeicher(7, refresh=True, auth=auth))
+
+    assert result["folder_id"] == 7
+    assert len(fake_sessions.cached) == 1
+
+
+def test_dateispeicher_search_does_not_cache_failures(monkeypatch):
+    client = SimpleNamespace(
+        dateispeicher_search_files=lambda _query: {
+            "success": False,
+            "error": "temporary failure",
+        }
+    )
+    auth = AuthSession(
+        client=client, user_id="user-a", school_id="school", username="user"
+    )
+
+    class FakeSessions:
+        def __init__(self):
+            self.cached = []
+
+        async def get_cached(self, *_args, **_kwargs):
+            return None
+
+        async def set_cache(self, *args, **_kwargs):
+            self.cached.append(args)
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+
+    result = asyncio.run(api_module.search_dateispeicher("zeugnis", auth=auth))
+
+    assert result["success"] is False
+    assert fake_sessions.cached == []
