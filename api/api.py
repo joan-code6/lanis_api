@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests as http_requests
 from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
@@ -253,6 +253,14 @@ class TimetablePreferencesRequest(BaseModel):
     view_mode: Optional[Literal["rolling", "week"]] = None
 
 
+class VertretungsplanPreferencesRequest(BaseModel):
+    class_override: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Optional class name override used by the native substitution plan",
+    )
+
+
 class OnboardingPreferencesRequest(BaseModel):
     version: Optional[int] = Field(None, ge=0, le=100)
     status: Optional[
@@ -267,6 +275,7 @@ class UserPreferencesRequest(BaseModel):
     appearance: Optional[AppearancePreferencesRequest] = None
     dashboard: Optional[DashboardPreferencesRequest] = None
     timetable: Optional[TimetablePreferencesRequest] = None
+    vertretungsplan: Optional[VertretungsplanPreferencesRequest] = None
     onboarding: Optional[OnboardingPreferencesRequest] = None
 
 
@@ -449,6 +458,23 @@ class AuthManager:
         async with self._lock:
             self._schulportal_clients[user_id] = session_data
         return user_id
+
+    async def invalidate_schulportal_client(
+        self,
+        user_id: str,
+        expected_client: Optional[SchulportalHessenAPI] = None,
+    ) -> None:
+        """Close and evict a cached Schulportal client without logging out remotely."""
+        user_id = canonicalize_user_id(user_id)
+        async with self._lock:
+            data = self._schulportal_clients.get(user_id)
+            if data is None or (
+                expected_client is not None and data.client is not expected_client
+            ):
+                return
+            self._schulportal_clients.pop(user_id, None)
+        if data:
+            data.client.close()
 
     async def drop_schulportal_session(self, user_id: str) -> None:
         """Close and remove a Schulportal session."""
@@ -774,6 +800,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(documentation_router)
@@ -1139,16 +1166,60 @@ async def get_calendar_event(
 @app.get("/vertretungsplan")
 async def get_vertretungsplan(
     include_raw: bool = False,
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     params = _make_param_key({"include_raw": include_raw})
-    cached = await sessions.get_cached(auth.user_id, "/vertretungsplan", params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/vertretungsplan", params)
+        if cached is not None:
+            return cached
 
     result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, include_raw)
-    await sessions.set_cache(auth.user_id, "/vertretungsplan", result, params)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/vertretungsplan", result, params)
     return result
+
+
+async def _load_vertretungsplan_options(auth: AuthSession) -> Dict[str, object]:
+    """Load the profile and native plan data used for class selection."""
+    profile_result = await sessions.get_cached(auth.user_id, "/benutzer")
+    if profile_result is None:
+        profile_result = await run_in_threadpool(auth.client.benutzer_get_data)
+        if profile_result.get("success"):
+            await sessions.set_cache(
+                auth.user_id, "/benutzer", profile_result, is_long_term=True
+            )
+
+    plan_params = _make_param_key({"include_raw": False})
+    plan_result = await sessions.get_cached(
+        auth.user_id, "/vertretungsplan", plan_params
+    )
+    if plan_result is None:
+        plan_result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, False)
+        if plan_result.get("success"):
+            await sessions.set_cache(
+                auth.user_id, "/vertretungsplan", plan_result, plan_params
+            )
+    if not plan_result.get("success"):
+        return {
+            "success": False,
+            "error": plan_result.get("error") or "Vertretungsplan could not be loaded",
+            "own_class": "",
+            "available_classes": [],
+        }
+    return {
+        "success": True,
+        **vertretungsplan_notification_options(profile_result, plan_result),
+    }
+
+
+@app.get("/vertretungsplan/options")
+async def get_vertretungsplan_options(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return profile and plan classes for the native plan filter."""
+    return await _load_vertretungsplan_options(auth)
 
 
 @app.get("/stundenplan")
@@ -1221,6 +1292,12 @@ async def update_account_preferences(
             cleaned_modules.append(cleaned)
         dashboard["pinned_modules"] = cleaned_modules
 
+    vertretungsplan = updates.get("vertretungsplan")
+    if isinstance(vertretungsplan, dict) and "class_override" in vertretungsplan:
+        vertretungsplan["class_override"] = str(
+            vertretungsplan["class_override"] or ""
+        ).strip()
+
     preferences = await save_user_preferences(auth.user_id, updates)
     return {
         "success": True,
@@ -1287,31 +1364,84 @@ async def reset_custom_timetable_lesson(
 @app.get("/dateispeicher")
 async def get_dateispeicher(
     folder_id: int = 0,
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     params = _make_param_key({"folder_id": folder_id})
-    cached = await sessions.get_cached(auth.user_id, "/dateispeicher", params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/dateispeicher", params)
+        if cached is not None:
+            return cached
 
     result = await run_in_threadpool(auth.client.dateispeicher_get_node, folder_id)
-    await sessions.set_cache(auth.user_id, "/dateispeicher", result, params)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/dateispeicher", result, params)
     return result
 
 
 @app.get("/dateispeicher/search")
 async def search_dateispeicher(
     q: str,
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     params = _make_param_key({"q": q})
-    cached = await sessions.get_cached(auth.user_id, "/dateispeicher/search", params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/dateispeicher/search", params)
+        if cached is not None:
+            return cached
 
     result = await run_in_threadpool(auth.client.dateispeicher_search_files, q)
-    await sessions.set_cache(auth.user_id, "/dateispeicher/search", result, params)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/dateispeicher/search", result, params)
     return result
+
+
+@app.get("/dateispeicher/file/{file_id}")
+async def download_dateispeicher_file(
+    file_id: int,
+    auth: AuthSession = Depends(client_dependency),
+):
+    if file_id <= 0:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    result = await run_in_threadpool(
+        auth.client.dateispeicher_download_file, file_id
+    )
+    stream = result.get("stream")
+    content = result.get("content")
+    if not result.get("success") or (
+        stream is None and not isinstance(content, bytes)
+    ):
+        error_kind = result.get("error_kind")
+        if error_kind == "authentication":
+            await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+            error_status = status.HTTP_401_UNAUTHORIZED
+        elif result.get("upstream_status") == status.HTTP_404_NOT_FOUND:
+            error_status = status.HTTP_404_NOT_FOUND
+        else:
+            error_status = status.HTTP_502_BAD_GATEWAY
+        raise HTTPException(
+            status_code=error_status,
+            detail=result.get("error", "File not found"),
+        )
+
+    filename = str(result.get("filename") or f"dateispeicher-{file_id}")
+    filename = re.sub(r'[\r\n"]', "_", filename)
+    content_disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+    response_headers = {"Content-Disposition": content_disposition}
+    media_type = result.get("content_type") or "application/octet-stream"
+    if stream is not None:
+        return StreamingResponse(
+            content=stream,
+            media_type=media_type,
+            headers=response_headers,
+        )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers=response_headers,
+    )
 
 
 # --- Lerngruppen ---
@@ -1388,34 +1518,7 @@ async def get_vertretungsplan_notification_options(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     """Return the signed-in user's class and classes visible in the current plan."""
-    profile_result = await sessions.get_cached(auth.user_id, "/benutzer")
-    if profile_result is None:
-        profile_result = await run_in_threadpool(auth.client.benutzer_get_data)
-        if profile_result.get("success"):
-            await sessions.set_cache(
-                auth.user_id, "/benutzer", profile_result, is_long_term=True
-            )
-
-    plan_params = _make_param_key({"include_raw": False})
-    plan_result = await sessions.get_cached(
-        auth.user_id, "/vertretungsplan", plan_params
-    )
-    if plan_result is None:
-        plan_result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, False)
-        await sessions.set_cache(
-            auth.user_id, "/vertretungsplan", plan_result, plan_params
-        )
-    if not plan_result.get("success"):
-        return {
-            "success": False,
-            "error": plan_result.get("error") or "Vertretungsplan could not be loaded",
-            "own_class": "",
-            "available_classes": [],
-        }
-    return {
-        "success": True,
-        **vertretungsplan_notification_options(profile_result, plan_result),
-    }
+    return await _load_vertretungsplan_options(auth)
 
 
 @app.post("/notifications/subscription")

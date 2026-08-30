@@ -286,6 +286,7 @@ class SchulportalHessenAPI:
                 "dateispeicher_get_root",
                 "dateispeicher_get_node",
                 "dateispeicher_search_files",
+                "dateispeicher_download_file",
             ],
             "lerngruppen.php": ["lerngruppen_get_overview"],
             "benutzerverwaltung.php": ["benutzer_get_data"],
@@ -597,6 +598,10 @@ class SchulportalHessenAPI:
         """Search files in the dateispeicher by name."""
         ...
 
+    def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
+        """Download a file from the native dateispeicher."""
+        ...
+
     # Lerngruppen methods
     def lerngruppen_get_overview(self) -> Dict[str, Any]:
         """Fetch study groups and exam data (lerngruppen.php)."""
@@ -791,11 +796,13 @@ from .applets.dateispeicher.api import (
     dateispeicher_get_root,
     dateispeicher_get_node,
     dateispeicher_search_files,
+    dateispeicher_download_file,
 )
 
 SchulportalHessenAPI.dateispeicher_get_root = dateispeicher_get_root
 SchulportalHessenAPI.dateispeicher_get_node = dateispeicher_get_node
 SchulportalHessenAPI.dateispeicher_search_files = dateispeicher_search_files
+SchulportalHessenAPI.dateispeicher_download_file = dateispeicher_download_file
 
 # Import and attach the lerngruppen methods
 from .applets.lerngruppen.api import lerngruppen_get_overview

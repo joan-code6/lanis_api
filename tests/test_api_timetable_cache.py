@@ -192,6 +192,61 @@ def test_attendance_refresh_bypasses_cached_aggregate(monkeypatch):
     assert len(fake_sessions.cached) == 1
 
 
+def test_vertretungsplan_refresh_bypasses_cache(monkeypatch):
+    class FakeClient:
+        def vertretungsplan_get_plan(self, include_raw):
+            assert include_raw is False
+            return {"success": True, "count": 1}
+
+    class FakeSessions:
+        def __init__(self):
+            self.cached = []
+
+        async def get_cached(self, *_args, **_kwargs):
+            raise AssertionError("refresh must bypass the response cache")
+
+        async def set_cache(self, user_id, endpoint, data, params=""):
+            self.cached.append((user_id, endpoint, data, params))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.get_vertretungsplan(refresh=True, auth=auth))
+
+    assert result == {"success": True, "count": 1}
+    assert len(fake_sessions.cached) == 1
+
+
+def test_vertretungsplan_does_not_cache_failed_responses(monkeypatch):
+    class FakeClient:
+        def vertretungsplan_get_plan(self, _include_raw):
+            return {"success": False, "error": "temporary failure"}
+
+    class FakeSessions:
+        def __init__(self):
+            self.cached = []
+
+        async def get_cached(self, *_args, **_kwargs):
+            return None
+
+        async def set_cache(self, *args, **_kwargs):
+            self.cached.append(args)
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.get_vertretungsplan(auth=auth))
+
+    assert result["success"] is False
+    assert fake_sessions.cached == []
+
+
 def test_vertretungsplan_options_keep_profile_cache_long_term(monkeypatch):
     class FakeClient:
         def benutzer_get_data(self):
@@ -222,6 +277,49 @@ def test_vertretungsplan_options_keep_profile_cache_long_term(monkeypatch):
     )
 
     assert result["success"] is True
+    assert fake_sessions.cache_writes == [("/benutzer", True)]
+
+
+def test_native_vertretungsplan_options_endpoint_returns_profile_and_plan_classes(monkeypatch):
+    class FakeClient:
+        def benutzer_get_data(self):
+            return {"success": True, "data": {"klasse": "10a"}}
+
+    class FakeSessions:
+        def __init__(self):
+            self.cache_writes = []
+
+        async def get_cached(self, _user_id, endpoint, _params=""):
+            if endpoint == "/vertretungsplan":
+                return {
+                    "success": True,
+                    "days": [{
+                        "substitutions": [
+                            {"klasse": "10a"},
+                            {"klasse": "10b"},
+                        ]
+                    }],
+                }
+            return None
+
+        async def set_cache(
+            self, _user_id, endpoint, _data, _params="", is_long_term=False
+        ):
+            self.cache_writes.append((endpoint, is_long_term))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.get_vertretungsplan_options(auth=auth))
+
+    assert result == {
+        "success": True,
+        "own_class": "10a",
+        "available_classes": ["10a", "10b"],
+    }
     assert fake_sessions.cache_writes == [("/benutzer", True)]
 
 

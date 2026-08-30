@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -135,6 +136,120 @@ def dateispeicher_get_node(self, folder_id: int = 0) -> Dict[str, Any]:
 def dateispeicher_get_root(self) -> Dict[str, Any]:
     """Fetch files and subfolders for the root dateispeicher folder."""
     return dateispeicher_get_node(self, folder_id=0)
+
+
+def _close_response(response: Any) -> None:
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
+
+
+def _iter_download_response(
+    response: Any, first_chunk: bytes, chunks: Iterator[bytes]
+) -> Iterator[bytes]:
+    try:
+        if first_chunk:
+            yield first_chunk
+        for chunk in chunks:
+            if chunk:
+                yield chunk
+    finally:
+        _close_response(response)
+
+
+def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
+    """Download a file from the native dateispeicher using the portal session."""
+    if not self.logged_in:
+        return {
+            "success": False,
+            "error": "Not logged in",
+            "error_kind": "authentication",
+        }
+    if file_id <= 0:
+        return {"success": False, "error": "Invalid file id"}
+
+    response = None
+    try:
+        download_url = f"{self.BASE_START_URL}/dateispeicher.php"
+        response = self.session.get(
+            download_url,
+            params={"a": "download", "f": str(file_id)},
+            stream=True,
+            timeout=(10, 60),
+        )
+        response.raise_for_status()
+
+        headers = getattr(response, "headers", {}) or {}
+        disposition = str(headers.get("Content-Disposition") or "")
+        content_type = str(
+            headers.get("Content-Type") or headers.get("content-type") or ""
+        ).lower()
+        has_attachment = "attachment" in disposition.lower()
+        content_iterator = response.iter_content(chunk_size=8192)
+        first_chunk = next(content_iterator, b"")
+        if not isinstance(first_chunk, bytes):
+            first_chunk = bytes(first_chunk or b"")
+        body_prefix = first_chunk[:8192].decode("utf-8", errors="ignore").lstrip().lower()
+        looks_like_html = (
+            "text/html" in content_type
+            or "application/xhtml+xml" in content_type
+            or bool(re.match(r"<(?:!doctype\s+html|html|head|body)\b", body_prefix))
+        )
+        if looks_like_html and not has_attachment:
+            _close_response(response)
+            response = None
+            return {
+                "success": False,
+                "error": "Dateispeicher session expired or portal returned a login page",
+                "error_kind": "authentication",
+            }
+
+        filename = ""
+        encoded_match = re.search(r"filename\*=UTF-8''([^;]+)", disposition)
+        if encoded_match:
+            filename = unquote(encoded_match.group(1))
+        else:
+            plain_match = re.search(r'filename="?([^";]+)"?', disposition)
+            if plain_match:
+                filename = plain_match.group(1).strip()
+
+        return {
+            "success": True,
+            "file_id": file_id,
+            "filename": filename or f"dateispeicher-{file_id}",
+            "content_type": headers.get("Content-Type")
+            or "application/octet-stream",
+            "stream": _iter_download_response(response, first_chunk, content_iterator),
+            "url": download_url,
+        }
+    except requests.HTTPError as exc:
+        _close_response(response)
+        result: Dict[str, Any] = {
+            "success": False,
+            "error": f"Failed to download dateispeicher file: {exc}",
+            "error_kind": "upstream",
+        }
+        upstream_response = getattr(exc, "response", None)
+        upstream_status = getattr(upstream_response, "status_code", None)
+        if isinstance(upstream_status, int):
+            result["upstream_status"] = upstream_status
+            if upstream_status in {401, 403}:
+                result["error_kind"] = "authentication"
+        return result
+    except requests.RequestException as exc:
+        _close_response(response)
+        return {
+            "success": False,
+            "error": f"Failed to download dateispeicher file: {exc}",
+            "error_kind": "upstream",
+        }
+    except Exception as exc:
+        _close_response(response)
+        return {
+            "success": False,
+            "error": f"Failed to download dateispeicher file: {exc}",
+            "error_kind": "upstream",
+        }
 
 
 def _is_empty_search_results(results: Any) -> bool:
