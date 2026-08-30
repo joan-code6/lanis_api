@@ -194,12 +194,16 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to fetch mein Unterricht: {str(e)}"}
 
 
-def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
+def meinunterricht_get_course(
+    self, course_id: str, decrypt_attendance: bool = True
+) -> Dict[str, Any]:
     """
     Fetch detailed view of a specific course/class folder
 
     Args:
         course_id: The course book ID (from data-book attribute)
+        decrypt_attendance: Decrypt per-entry attendance fields. The aggregate
+            plaintext summary can be loaded without Cryptor authentication.
 
     Returns:
         Dict with success status and parsed course details including:
@@ -218,7 +222,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
         return {"success": False, "error": "Not logged in"}
 
     # Initialize cryptor if needed
-    if not self.cryptor or not self.cryptor.authenticated:
+    if decrypt_attendance and (not self.cryptor or not self.cryptor.authenticated):
         if not self.cryptor:
             self.cryptor = Cryptor(self.session)
 
@@ -329,7 +333,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
 
                 # Extract and decrypt attendance
                 encoded_tag = row.find("encoded")
-                if encoded_tag:
+                if encoded_tag and decrypt_attendance:
                     encrypted_attendance = encoded_tag.get_text(separator="\n")
                     try:
                         decrypted = self.cryptor.decrypt(encrypted_attendance)
@@ -505,7 +509,9 @@ def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
                 continue
             seen_course_ids.add(course_id)
 
-            course = meinunterricht_get_course(self, course_id)
+            course = meinunterricht_get_course(
+                self, course_id, decrypt_attendance=False
+            )
             if not course.get("success"):
                 failed_course_count += 1
                 continue

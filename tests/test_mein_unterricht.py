@@ -44,6 +44,38 @@ def test_course_heading_uses_first_visible_text() -> None:
     assert result["semester"] == "2. Halbjahr"
 
 
+def test_course_summary_can_load_without_cryptor_authentication() -> None:
+    class SummaryResponse:
+        text = """
+        <html><body>
+          <h1 data-book="42">Mathematik 10a</h1>
+          <div id="attendanceTable">
+            <table><tr><td>Anwesend</td><td>12 Stunden</td></tr></table>
+          </div>
+        </body></html>
+        """
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class SummarySession:
+        def get(self, *_args, **_kwargs):
+            return SummaryResponse()
+
+    class SummaryClient:
+        logged_in = True
+        cryptor = None
+        session = SummarySession()
+        BASE_START_URL = "https://example.invalid"
+
+    result = meinunterricht_get_course(
+        SummaryClient(), "42", decrypt_attendance=False
+    )
+
+    assert result["success"] is True
+    assert result["attendance_summary"] == {"Anwesend": "12 Stunden"}
+
+
 def test_overview_includes_course_folders_without_activity_rows() -> None:
     class OverviewResponse:
         text = """
@@ -113,7 +145,7 @@ def test_attendance_overview_combines_course_summaries(monkeypatch) -> None:
     monkeypatch.setattr(
         mein_unterricht_api,
         "meinunterricht_get_course",
-        lambda _client, course_id: details[course_id],
+        lambda _client, course_id, decrypt_attendance=True: details[course_id],
     )
 
     result = meinunterricht_get_attendance_overview(AttendanceClient())
@@ -154,7 +186,7 @@ def test_attendance_overview_enumerates_course_folders_without_recent_entries(mo
     monkeypatch.setattr(
         mein_unterricht_api,
         "meinunterricht_get_course",
-        lambda _client, course_id: {
+        lambda _client, course_id, decrypt_attendance=True: {
             "success": True,
             "course_name": course_id,
             "attendance_summary": {"Anwesend": "1"},
@@ -183,7 +215,7 @@ def test_attendance_overview_marks_unparseable_summaries_as_failed(monkeypatch) 
     monkeypatch.setattr(
         mein_unterricht_api,
         "meinunterricht_get_course",
-        lambda _client, _course_id: {
+        lambda _client, _course_id, decrypt_attendance=True: {
             "success": True,
             "attendance_summary": {"Anwesend": "nicht verfügbar"},
         },

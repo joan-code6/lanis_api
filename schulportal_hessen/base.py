@@ -439,11 +439,14 @@ class SchulportalHessenAPI:
         """
         ...
 
-    def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
+    def meinunterricht_get_course(
+        self, course_id: str, decrypt_attendance: bool = True
+    ) -> Dict[str, Any]:
         """Fetch the detailed page for a single course folder.
 
         Args:
             course_id: Course/book id from the portal's data-book attribute.
+            decrypt_attendance: Whether to decrypt per-entry attendance fields.
 
         Returns:
             Dict containing course metadata, entries, attendance information,
