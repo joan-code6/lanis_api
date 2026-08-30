@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests as http_requests
 from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
@@ -459,6 +459,23 @@ class AuthManager:
             self._schulportal_clients[user_id] = session_data
         return user_id
 
+    async def invalidate_schulportal_client(
+        self,
+        user_id: str,
+        expected_client: Optional[SchulportalHessenAPI] = None,
+    ) -> None:
+        """Close and evict a cached Schulportal client without logging out remotely."""
+        user_id = canonicalize_user_id(user_id)
+        async with self._lock:
+            data = self._schulportal_clients.get(user_id)
+            if data is None or (
+                expected_client is not None and data.client is not expected_client
+            ):
+                return
+            self._schulportal_clients.pop(user_id, None)
+        if data:
+            data.client.close()
+
     async def drop_schulportal_session(self, user_id: str) -> None:
         """Close and remove a Schulportal session."""
         user_id = canonicalize_user_id(user_id)
@@ -783,6 +800,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(documentation_router)
@@ -1346,31 +1364,84 @@ async def reset_custom_timetable_lesson(
 @app.get("/dateispeicher")
 async def get_dateispeicher(
     folder_id: int = 0,
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     params = _make_param_key({"folder_id": folder_id})
-    cached = await sessions.get_cached(auth.user_id, "/dateispeicher", params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/dateispeicher", params)
+        if cached is not None:
+            return cached
 
     result = await run_in_threadpool(auth.client.dateispeicher_get_node, folder_id)
-    await sessions.set_cache(auth.user_id, "/dateispeicher", result, params)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/dateispeicher", result, params)
     return result
 
 
 @app.get("/dateispeicher/search")
 async def search_dateispeicher(
     q: str,
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     params = _make_param_key({"q": q})
-    cached = await sessions.get_cached(auth.user_id, "/dateispeicher/search", params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/dateispeicher/search", params)
+        if cached is not None:
+            return cached
 
     result = await run_in_threadpool(auth.client.dateispeicher_search_files, q)
-    await sessions.set_cache(auth.user_id, "/dateispeicher/search", result, params)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/dateispeicher/search", result, params)
     return result
+
+
+@app.get("/dateispeicher/file/{file_id}")
+async def download_dateispeicher_file(
+    file_id: int,
+    auth: AuthSession = Depends(client_dependency),
+):
+    if file_id <= 0:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    result = await run_in_threadpool(
+        auth.client.dateispeicher_download_file, file_id
+    )
+    stream = result.get("stream")
+    content = result.get("content")
+    if not result.get("success") or (
+        stream is None and not isinstance(content, bytes)
+    ):
+        error_kind = result.get("error_kind")
+        if error_kind == "authentication":
+            await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+            error_status = status.HTTP_401_UNAUTHORIZED
+        elif result.get("upstream_status") == status.HTTP_404_NOT_FOUND:
+            error_status = status.HTTP_404_NOT_FOUND
+        else:
+            error_status = status.HTTP_502_BAD_GATEWAY
+        raise HTTPException(
+            status_code=error_status,
+            detail=result.get("error", "File not found"),
+        )
+
+    filename = str(result.get("filename") or f"dateispeicher-{file_id}")
+    filename = re.sub(r'[\r\n"]', "_", filename)
+    content_disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+    response_headers = {"Content-Disposition": content_disposition}
+    media_type = result.get("content_type") or "application/octet-stream"
+    if stream is not None:
+        return StreamingResponse(
+            content=stream,
+            media_type=media_type,
+            headers=response_headers,
+        )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers=response_headers,
+    )
 
 
 # --- Lerngruppen ---
