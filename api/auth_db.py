@@ -46,6 +46,9 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     "timetable": {
         "view_mode": "rolling",
     },
+    "vertretungsplan": {
+        "class_override": "",
+    },
     "onboarding": {
         "version": 0,
         "status": "not_started",
