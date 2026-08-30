@@ -97,7 +97,7 @@ def _has_native_plan_markup(soup: BeautifulSoup, dates: List[str]) -> bool:
     """Return whether the page exposes the native SPH substitution plan.
 
     Schools without the native module can still return a successful HTML page
-    from ``vertretungsplan.php``.  Looking for the page's date/table markers
+    from ``vertretungsplan.php``. Looking for the page's date/table markers
     lets callers distinguish that response from an actually available plan.
     """
     if dates:

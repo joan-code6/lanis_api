@@ -1148,15 +1148,18 @@ async def get_calendar_event(
 @app.get("/vertretungsplan")
 async def get_vertretungsplan(
     include_raw: bool = False,
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     params = _make_param_key({"include_raw": include_raw})
-    cached = await sessions.get_cached(auth.user_id, "/vertretungsplan", params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/vertretungsplan", params)
+        if cached is not None:
+            return cached
 
     result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, include_raw)
-    await sessions.set_cache(auth.user_id, "/vertretungsplan", result, params)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/vertretungsplan", result, params)
     return result
 
 
@@ -1176,9 +1179,10 @@ async def _load_vertretungsplan_options(auth: AuthSession) -> Dict[str, object]:
     )
     if plan_result is None:
         plan_result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, False)
-        await sessions.set_cache(
-            auth.user_id, "/vertretungsplan", plan_result, plan_params
-        )
+        if plan_result.get("success"):
+            await sessions.set_cache(
+                auth.user_id, "/vertretungsplan", plan_result, plan_params
+            )
     if not plan_result.get("success"):
         return {
             "success": False,
