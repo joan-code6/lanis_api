@@ -1807,6 +1807,22 @@ async def meinunterricht_overview(
     return result
 
 
+@app.get("/meinunterricht/attendance")
+async def meinunterricht_attendance(
+    refresh: bool = False,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/meinunterricht/attendance")
+        if cached is not None:
+            return cached
+
+    result = await run_in_threadpool(auth.client.meinunterricht_get_attendance_overview)
+    if result.get("success") and not result.get("failed_course_count"):
+        await sessions.set_cache(auth.user_id, "/meinunterricht/attendance", result)
+    return result
+
+
 @app.get("/settings/class-links")
 async def get_class_link_settings(
     auth: AuthSession = Depends(client_dependency),

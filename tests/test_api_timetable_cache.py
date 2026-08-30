@@ -126,6 +126,72 @@ def test_timetable_does_not_cache_a_failed_course_overview(monkeypatch):
     assert [endpoint for _, endpoint, _ in fake_sessions.cached] == ["/stundenplan"]
 
 
+def test_attendance_does_not_cache_partial_course_aggregates(monkeypatch):
+    class FakeClient:
+        def meinunterricht_get_attendance_overview(self):
+            return {
+                "success": True,
+                "totals": {"anwesend": 1},
+                "courses": [],
+                "failed_course_count": 1,
+            }
+
+    class FakeSessions:
+        def __init__(self):
+            self.cached = []
+
+        async def get_cached(self, _user_id, _endpoint, _params=""):
+            return None
+
+        async def set_cache(
+            self, user_id, endpoint, data, params="", is_long_term=False
+        ):
+            self.cached.append((user_id, endpoint, data))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.meinunterricht_attendance(auth=auth))
+
+    assert result["failed_course_count"] == 1
+    assert fake_sessions.cached == []
+
+
+def test_attendance_refresh_bypasses_cached_aggregate(monkeypatch):
+    class FakeClient:
+        def meinunterricht_get_attendance_overview(self):
+            return {
+                "success": True,
+                "totals": {"anwesend": 2},
+                "courses": [],
+                "failed_course_count": 0,
+            }
+
+    class FakeSessions:
+        def __init__(self):
+            self.cached = []
+
+        async def get_cached(self, *_args, **_kwargs):
+            raise AssertionError("refresh must bypass the response cache")
+
+        async def set_cache(self, user_id, endpoint, data, params=""):
+            self.cached.append((user_id, endpoint, data, params))
+
+    fake_sessions = FakeSessions()
+    monkeypatch.setattr(api_module, "sessions", fake_sessions)
+    auth = AuthSession(
+        client=FakeClient(), user_id="user-a", school_id="school", username="user"
+    )
+
+    result = asyncio.run(api_module.meinunterricht_attendance(refresh=True, auth=auth))
+
+    assert result["totals"] == {"anwesend": 2}
+    assert len(fake_sessions.cached) == 1
+
+
 def test_vertretungsplan_refresh_bypasses_cache(monkeypatch):
     class FakeClient:
         def vertretungsplan_get_plan(self, include_raw):

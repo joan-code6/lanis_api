@@ -1,8 +1,8 @@
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 import json
 import os
 import re
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from schulportal_hessen.tools.cryptor import Cryptor
 
@@ -26,6 +26,57 @@ def _extract_filename(content_disposition: Optional[str], fallback_url: str) -> 
     fallback = fallback_url.split("?")[0].rstrip("/")
     name = os.path.basename(fallback)
     return name or "download.bin"
+
+
+def _extract_course_folders(soup: Any) -> List[Dict[str, Any]]:
+    """Extract every course folder exposed by the overview page.
+
+    Activity rows are not a complete course list: a course with no recent
+    activity can still have a ``sus_view`` folder link. Keep both selectors so
+    the attendance aggregate can enumerate those folders as well.
+    """
+    folders: Dict[str, Dict[str, Any]] = {}
+
+    def add_folder(course_id: Any, name: str = "", course_link: str = "") -> None:
+        normalized_id = str(course_id or "").strip()
+        if not normalized_id:
+            return
+        folder = folders.setdefault(
+            normalized_id,
+            {
+                "book_id": normalized_id,
+                "name": "",
+                "course_link": "",
+                "teacher_full_name": "",
+                "teacher_short": "",
+            },
+        )
+        if name.strip() and not folder["name"]:
+            folder["name"] = name.strip()
+        if course_link.strip() and not folder["course_link"]:
+            folder["course_link"] = course_link.strip()
+
+    for element in soup.select("[data-book]"):
+        course_link = ""
+        link = element if element.name == "a" else element.find("a", href=True)
+        if link:
+            course_link = link.get("href", "")
+        name_node = element.select_one(".name")
+        name = name_node.get_text(" ", strip=True) if name_node else ""
+        add_folder(element.get("data-book"), name, course_link)
+
+    for link in soup.select("a[href]"):
+        href = link.get("href", "")
+        if "sus_view" not in href:
+            continue
+        course_id = parse_qs(urlparse(href).query).get("id", [""])[0]
+        if not course_id:
+            continue
+        name_node = link.select_one(".name")
+        name = name_node.get_text(" ", strip=True) if name_node else link.get_text(" ", strip=True)
+        add_folder(course_id, name, href)
+
+    return list(folders.values())
 
 
 def meinunterricht_get_overview(self) -> Dict[str, Any]:
@@ -130,18 +181,29 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
 
             entries.append(entry)
 
-        return {"success": True, "entries": entries, "entry_count": len(entries)}
+        courses = _extract_course_folders(soup)
+        return {
+            "success": True,
+            "entries": entries,
+            "entry_count": len(entries),
+            "courses": courses,
+            "course_count": len(courses),
+        }
 
     except Exception as e:
         return {"success": False, "error": f"Failed to fetch mein Unterricht: {str(e)}"}
 
 
-def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
+def meinunterricht_get_course(
+    self, course_id: str, decrypt_attendance: bool = True
+) -> Dict[str, Any]:
     """
     Fetch detailed view of a specific course/class folder
 
     Args:
         course_id: The course book ID (from data-book attribute)
+        decrypt_attendance: Decrypt per-entry attendance fields. The aggregate
+            plaintext summary can be loaded without Cryptor authentication.
 
     Returns:
         Dict with success status and parsed course details including:
@@ -160,7 +222,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
         return {"success": False, "error": "Not logged in"}
 
     # Initialize cryptor if needed
-    if not self.cryptor or not self.cryptor.authenticated:
+    if decrypt_attendance and (not self.cryptor or not self.cryptor.authenticated):
         if not self.cryptor:
             self.cryptor = Cryptor(self.session)
 
@@ -271,7 +333,7 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
 
                 # Extract and decrypt attendance
                 encoded_tag = row.find("encoded")
-                if encoded_tag:
+                if encoded_tag and decrypt_attendance:
                     encrypted_attendance = encoded_tag.get_text(separator="\n")
                     try:
                         decrypted = self.cryptor.decrypt(encrypted_attendance)
@@ -387,6 +449,130 @@ def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         return {"success": False, "error": f"Failed to fetch course details: {str(e)}"}
+
+
+def _normalise_attendance_label(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _parse_attendance_count(value: Any) -> Optional[float]:
+    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value or ""))
+    if not match:
+        return None
+    number = float(match.group(0).replace(",", "."))
+    return int(number) if number.is_integer() else number
+
+
+def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
+    """Combine native attendance summaries for all Mein Unterricht courses."""
+    if not self.logged_in:
+        return {"success": False, "error": "Not logged in"}
+
+    try:
+        overview = meinunterricht_get_overview(self)
+        if not overview.get("success"):
+            return overview
+
+        courses: List[Dict[str, Any]] = []
+        totals: Dict[str, float] = {}
+        seen_course_ids = set()
+        failed_course_count = 0
+
+        overview_entries = [
+            entry for entry in overview.get("entries", []) if isinstance(entry, dict)
+        ]
+        overview_by_course_id = {
+            str(entry.get("book_id") or "").strip(): entry
+            for entry in overview_entries
+            if str(entry.get("book_id") or "").strip()
+        }
+        course_folders = overview.get("courses")
+        if not isinstance(course_folders, list) or not course_folders:
+            course_folders = overview_entries
+        else:
+            known_ids = {
+                str(folder.get("book_id") or "").strip()
+                for folder in course_folders
+                if isinstance(folder, dict)
+            }
+            course_folders = list(course_folders) + [
+                entry
+                for entry in overview_entries
+                if str(entry.get("book_id") or "").strip() not in known_ids
+            ]
+
+        for overview_entry in course_folders:
+            if not isinstance(overview_entry, dict):
+                continue
+            course_id = str(overview_entry.get("book_id") or "").strip()
+            if not course_id or course_id in seen_course_ids:
+                continue
+            seen_course_ids.add(course_id)
+
+            course = meinunterricht_get_course(
+                self, course_id, decrypt_attendance=False
+            )
+            if not course.get("success"):
+                failed_course_count += 1
+                continue
+
+            summary: Dict[str, float] = {}
+            raw_summary = course.get("attendance_summary", {})
+            parse_failed = not isinstance(raw_summary, dict) or not raw_summary
+            if isinstance(raw_summary, dict):
+                for raw_label, raw_count in raw_summary.items():
+                    label = _normalise_attendance_label(raw_label)
+                    count = _parse_attendance_count(raw_count)
+                    if not label:
+                        continue
+                    if count is None:
+                        parse_failed = True
+                        continue
+                    summary[label] = summary.get(label, 0) + count
+
+            if parse_failed or not summary:
+                failed_course_count += 1
+                continue
+
+            for label, count in summary.items():
+                totals[label] = totals.get(label, 0) + count
+
+            entry_metadata = overview_by_course_id.get(course_id, overview_entry)
+
+            courses.append(
+                {
+                    "course_id": course_id,
+                    "course_name": str(
+                        course.get("course_name")
+                        or entry_metadata.get("name")
+                        or course_id
+                    ).strip(),
+                    "teacher_short": str(
+                        course.get("teacher_short")
+                        or entry_metadata.get("teacher_short")
+                        or ""
+                    ).strip(),
+                    "teacher_full": str(
+                        course.get("teacher_full")
+                        or entry_metadata.get("teacher_full_name")
+                        or ""
+                    ).strip(),
+                    "attendance_summary": summary,
+                }
+            )
+
+        return {
+            "success": True,
+            "source": "schulportal",
+            "available": bool(courses),
+            "totals": totals,
+            "courses": courses,
+            "course_count": len(seen_course_ids),
+            "attendance_course_count": len(courses),
+            "failed_course_count": failed_course_count,
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to fetch attendance overview: {str(e)}"}
 
 
 def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:

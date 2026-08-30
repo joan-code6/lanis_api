@@ -278,6 +278,7 @@ class SchulportalHessenAPI:
                 "meinunterricht_get_submissions",
                 "meinunterricht_set_homework_done",
                 "meinunterricht_download_file",
+                "meinunterricht_get_attendance_overview",
             ],
             "vertretungsplan.php": ["vertretungsplan_get_plan"],
             "stundenplan.php": ["stundenplan_get_plan"],
@@ -439,11 +440,14 @@ class SchulportalHessenAPI:
         """
         ...
 
-    def meinunterricht_get_course(self, course_id: str) -> Dict[str, Any]:
+    def meinunterricht_get_course(
+        self, course_id: str, decrypt_attendance: bool = True
+    ) -> Dict[str, Any]:
         """Fetch the detailed page for a single course folder.
 
         Args:
             course_id: Course/book id from the portal's data-book attribute.
+            decrypt_attendance: Whether to decrypt per-entry attendance fields.
 
         Returns:
             Dict containing course metadata, entries, attendance information,
@@ -503,6 +507,10 @@ class SchulportalHessenAPI:
         Returns:
             Dict containing filename metadata and binary content.
         """
+        ...
+
+    def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
+        """Combine native attendance summaries for all courses."""
         ...
 
     # Kalender methods
@@ -750,6 +758,7 @@ from .applets.mein_unterricht.api import (
     meinunterricht_get_submissions,
     meinunterricht_set_homework_done,
     meinunterricht_download_file,
+    meinunterricht_get_attendance_overview,
 )
 
 SchulportalHessenAPI.meinunterricht_get_overview = meinunterricht_get_overview
@@ -759,6 +768,7 @@ SchulportalHessenAPI.meinunterricht_get_weekly_view = meinunterricht_get_weekly_
 SchulportalHessenAPI.meinunterricht_get_submissions = meinunterricht_get_submissions
 SchulportalHessenAPI.meinunterricht_set_homework_done = meinunterricht_set_homework_done
 SchulportalHessenAPI.meinunterricht_download_file = meinunterricht_download_file
+SchulportalHessenAPI.meinunterricht_get_attendance_overview = meinunterricht_get_attendance_overview
 
 # Import and attach the kalender methods
 from .applets.kalender.api import (
