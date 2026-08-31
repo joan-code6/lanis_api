@@ -19,7 +19,6 @@ import json
 import logging
 import os
 import re
-import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
@@ -118,12 +117,9 @@ LONG_CACHE_ENDPOINTS = {
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 JWT_SECRET = os.getenv("JWT_SECRET")
 if not JWT_SECRET:
-    JWT_SECRET = uuid.uuid4().hex
-    logger.warning(
-        "JWT_SECRET not set in environment — using random value %s. "
-        "Access tokens will be invalidated on restart. "
-        "Set JWT_SECRET in .env for persistent tokens.",
-        JWT_SECRET,
+    raise RuntimeError(
+        "JWT_SECRET must be set to a stable value; refusing to start because "
+        "a random key would invalidate every access token on restart"
     )
 JWT_ALGORITHM = "HS256"
 
@@ -335,6 +331,7 @@ class AuthManager:
 
     def __init__(self, ttl_seconds: int = SESSION_TTL_SECONDS) -> None:
         self._schulportal_clients: Dict[str, SchulportalSessionData] = {}
+        self._schulportal_restore_locks: Dict[str, asyncio.Lock] = {}
         self._cache: Dict[str, CacheEntry] = {}
         self._cache_versions: Dict[tuple[str, str], int] = {}
         self._lock = asyncio.Lock()
@@ -397,38 +394,80 @@ class AuthManager:
                 data.last_used = datetime.utcnow()
                 return data
 
-        # Cache miss — re-establish Schulportal session from DB credentials
-        rt_data = await get_refresh_token_by_user_id(user_id)
-        if not rt_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="No valid session found — please log in again",
+            # A page load fans out into several API requests.  After a process
+            # restart they must share one upstream login instead of racing to
+            # create multiple Schulportal sessions for the same account.
+            restore_lock = self._schulportal_restore_locks.setdefault(
+                user_id, asyncio.Lock()
             )
 
-        client = SchulportalHessenAPI()
-        login_result = await run_in_threadpool(
-            client.login, rt_data["school_id"], rt_data["username"], rt_data["password"]
-        )
-        if not login_result.get("success"):
-            client.close()
-            await delete_user_tokens(user_id)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session re-establishment failed — please log in again",
+        async with restore_lock:
+            # Another waiter may have restored the client while we waited.
+            async with self._lock:
+                data = self._schulportal_clients.get(user_id)
+                if data:
+                    data.last_used = datetime.utcnow()
+                    return data
+
+            # Cache miss — re-establish Schulportal session from DB credentials.
+            rt_data = await get_refresh_token_by_user_id(user_id)
+            if not rt_data:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="No valid session found — please log in again",
+                )
+
+            client = SchulportalHessenAPI()
+            try:
+                login_result = await run_in_threadpool(
+                    client.login,
+                    rt_data["school_id"],
+                    rt_data["username"],
+                    rt_data["password"],
+                )
+            except Exception:
+                client.close()
+                logger.exception(
+                    "Schulportal session restoration raised an exception for %s",
+                    user_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Schulportal session could not be restored — please retry",
+                    headers={"Retry-After": "5"},
+                )
+
+            if not login_result.get("success"):
+                client.close()
+                logger.warning(
+                    "Schulportal session restoration failed for %s: %s",
+                    user_id,
+                    login_result.get("message")
+                    or login_result.get("error")
+                    or "unknown error",
+                )
+                # A failed upstream login can be a short-lived network or
+                # Schulportal problem.  Keep the persisted refresh token so a
+                # later request can retry instead of permanently logging out
+                # every browser belonging to this account.
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Schulportal session could not be restored — please retry",
+                    headers={"Retry-After": "5"},
+                )
+
+            session_data = SchulportalSessionData(
+                client=client,
+                created_at=datetime.utcnow(),
+                last_used=datetime.utcnow(),
+                username=rt_data["username"],
+                school_id=rt_data["school_id"],
             )
 
-        session_data = SchulportalSessionData(
-            client=client,
-            created_at=datetime.utcnow(),
-            last_used=datetime.utcnow(),
-            username=rt_data["username"],
-            school_id=rt_data["school_id"],
-        )
+            async with self._lock:
+                self._schulportal_clients[user_id] = session_data
 
-        async with self._lock:
-            self._schulportal_clients[user_id] = session_data
-
-        return session_data
+            return session_data
 
     async def create_schulportal_session(
         self, school_id: str, username: str, password: str
@@ -490,8 +529,11 @@ class AuthManager:
         async with self._lock:
             sessions = list(self._schulportal_clients.items())
             self._schulportal_clients.clear()
+            self._schulportal_restore_locks.clear()
         for _, data in sessions:
-            await run_in_threadpool(data.client.logout)
+            # A deploy is not a user logout.  In particular, logout() calls
+            # Schulportal's `logout=all` endpoint and can invalidate sessions
+            # outside this backend process.
             data.client.close()
 
     # -- Response cache ----------------------------------------------
@@ -919,10 +961,10 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
             detail="Invalid or expired refresh token",
         )
 
-    # Re-establish Schulportal session (will use in-memory cache if still valid)
-    await sessions._get_or_create_schulportal_client(rt_data["user_id"])
-
-    # Issue new access token
+    # Refresh-token validation is deliberately independent of the upstream
+    # Schulportal.  A backend restart or temporary SPH outage must not turn a
+    # valid persisted login into a permanent authentication failure.  The live
+    # Schulportal client is restored lazily by the next protected data request.
     access_token = sessions.create_access_token(
         user_id=rt_data["user_id"],
         school_id=rt_data["school_id"],

@@ -60,6 +60,16 @@ python -m pip install sph-client
 
 ### API Server
 
+Create a `.env` file with a stable, private signing key before the first start:
+
+```dotenv
+JWT_SECRET=replace-this-with-a-long-random-value
+```
+
+Keep that value unchanged across deployments; changing it invalidates issued
+access tokens. The server refuses to start without it instead of silently using
+an ephemeral key.
+
 ```bash
 uvicorn api.api:app
 ```
