@@ -140,6 +140,16 @@ def test_dateispeicher_download_classifies_http_auth_failures(status_code):
     assert result["upstream_status"] == status_code
 
 
+def test_dateispeicher_download_route_is_published():
+    routes = {
+        (route.path, method)
+        for route in api_module.app.routes
+        for method in getattr(route, "methods", set())
+    }
+
+    assert ("/dateispeicher/file/{file_id}", "GET") in routes
+
+
 def test_dateispeicher_route_distinguishes_authentication_and_upstream_failures(monkeypatch):
     auth = AuthSession(
         client=SimpleNamespace(dateispeicher_download_file=lambda _file_id: None),

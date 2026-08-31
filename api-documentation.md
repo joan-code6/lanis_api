@@ -1135,6 +1135,21 @@ Search files in the dateispeicher.
 }
 ```
 
+#### GET `/dateispeicher/file/{file_id}`
+
+Download a Dateispeicher file through the authenticated backend session.
+
+**Headers:**
+- `X-Session-Token: {token}` (required)
+
+**Path Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `file_id` | integer | File id returned by `/dateispeicher` or `/dateispeicher/search` |
+
+**Response:** The file body is streamed with its upstream content type and a
+`Content-Disposition: attachment` filename header.
+
 ---
 
 ### Study Groups (Lerngruppen)
