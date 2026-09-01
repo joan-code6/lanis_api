@@ -95,7 +95,13 @@ async def main(context: Any) -> Any:
     """Forward one Appwrite execution to FastAPI without running a web server."""
     try:
         headers = _headers(context.req)
-        get_backend(dynamic_key=headers.get("x-appwrite-key"))
+        runtime_headers = getattr(context.req, "headers", {}) or {}
+        dynamic_key = (
+            runtime_headers.get("x-appwrite-key")
+            if hasattr(runtime_headers, "get")
+            else None
+        )
+        get_backend(dynamic_key=str(dynamic_key) if dynamic_key else None)
         await _ensure_started()
         status_code, raw_headers, body = await _invoke_asgi(context)
         response_headers = {
