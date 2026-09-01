@@ -249,6 +249,10 @@ class TimetablePreferencesRequest(BaseModel):
     view_mode: Optional[Literal["rolling", "week"]] = None
 
 
+class HomeworkPreferencesRequest(BaseModel):
+    hide_completed_in_overview: Optional[bool] = None
+
+
 class VertretungsplanPreferencesRequest(BaseModel):
     class_override: Optional[str] = Field(
         None,
@@ -263,7 +267,15 @@ class OnboardingPreferencesRequest(BaseModel):
         Literal["not_started", "in_progress", "completed", "skipped"]
     ] = None
     last_step: Optional[
-        Literal["welcome", "appearance", "dashboard", "timetable", "guide", "complete"]
+        Literal[
+            "welcome",
+            "appearance",
+            "dashboard",
+            "timetable",
+            "homework",
+            "guide",
+            "complete",
+        ]
     ] = None
 
 
@@ -271,6 +283,7 @@ class UserPreferencesRequest(BaseModel):
     appearance: Optional[AppearancePreferencesRequest] = None
     dashboard: Optional[DashboardPreferencesRequest] = None
     timetable: Optional[TimetablePreferencesRequest] = None
+    homework: Optional[HomeworkPreferencesRequest] = None
     vertretungsplan: Optional[VertretungsplanPreferencesRequest] = None
     onboarding: Optional[OnboardingPreferencesRequest] = None
 

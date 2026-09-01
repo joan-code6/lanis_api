@@ -9,6 +9,7 @@ from api import api as api_module
 from api import auth_db
 from api.api import (
     DashboardPreferencesRequest,
+    HomeworkPreferencesRequest,
     UserPreferencesRequest,
     VertretungsplanPreferencesRequest,
     get_account_preferences,
@@ -35,6 +36,7 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "theme_color": "cyan",
     }
     assert defaults["dashboard"]["pinned_modules"] == []
+    assert defaults["homework"] == {"hide_completed_in_overview": True}
     assert defaults["vertretungsplan"] == {"class_override": ""}
     assert defaults["onboarding"]["status"] == "not_started"
 
@@ -111,6 +113,31 @@ def test_preferences_route_cleans_module_names(monkeypatch) -> None:
 def test_vertretungsplan_preferences_limit_class_override() -> None:
     with pytest.raises(ValidationError):
         VertretungsplanPreferencesRequest(class_override="x" * 101)
+
+
+def test_homework_preferences_accept_overview_visibility_choice() -> None:
+    hidden = HomeworkPreferencesRequest(hide_completed_in_overview=True)
+    visible = HomeworkPreferencesRequest(hide_completed_in_overview=False)
+
+    assert hidden.hide_completed_in_overview is True
+    assert visible.hide_completed_in_overview is False
+
+
+def test_homework_preferences_are_included_in_updates() -> None:
+    payload = UserPreferencesRequest(
+        homework={"hide_completed_in_overview": False},
+        onboarding={"last_step": "homework"},
+    )
+    dumped = (
+        payload.model_dump(exclude_none=True)
+        if hasattr(payload, "model_dump")
+        else payload.dict(exclude_none=True)
+    )
+
+    assert dumped == {
+        "homework": {"hide_completed_in_overview": False},
+        "onboarding": {"last_step": "homework"},
+    }
 
 
 def test_empty_vertretungsplan_preference_group_does_not_clear_override() -> None:

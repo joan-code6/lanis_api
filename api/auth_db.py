@@ -46,6 +46,9 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     "timetable": {
         "view_mode": "rolling",
     },
+    "homework": {
+        "hide_completed_in_overview": True,
+    },
     "vertretungsplan": {
         "class_override": "",
     },
