@@ -129,6 +129,7 @@
         {"key": "expires_at", "type": "datetime", "required": true, "array": false}
       ],
       "indexes": [
+        {"key": "by_token_hash", "type": "unique", "columns": ["token_hash"]},
         {"key": "by_user_expiry", "type": "key", "columns": ["user_key", "expires_at", "created_at"]}
       ]
     },

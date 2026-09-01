@@ -284,6 +284,15 @@ def _row_id(namespace: str, value: str) -> str:
     return f"d{digest[:35]}"
 
 
+def _identity_value(school_id: str, username: str) -> str:
+    """Return the case-insensitive SPH identity used for every Appwrite key."""
+    return f"{str(school_id).strip()}:{str(username).strip().casefold()}"
+
+
+def _identity_user_id(school_id: str, username: str) -> str:
+    return _row_id("identity", _identity_value(school_id, username))
+
+
 def _user_key(user_id: str) -> str:
     return hashlib.sha256(user_id.encode()).hexdigest()
 
@@ -436,14 +445,16 @@ class CredentialStore(_Table):
     ) -> str:
         token = uuid.uuid4().hex
         now = _now()
+        identity = _identity_value(school_id, username)
+        canonical_user_id = _identity_user_id(school_id, username)
         await self._upsert(
-            _row_id("refresh-token", token),
+            _row_id("credentials", identity),
             {
                 "token_hash": hashlib.sha256(token.encode()).hexdigest(),
-                "user_key": _user_key(user_id),
-                "user_id": user_id,
-                "school_id": school_id,
-                "username": username,
+                "user_key": _user_key(canonical_user_id),
+                "user_id": canonical_user_id,
+                "school_id": str(school_id).strip(),
+                "username": str(username).strip().casefold(),
                 "password_encrypted": self._cipher.encrypt(password),
                 "created_at": _iso(now),
                 "expires_at": _iso(now + timedelta(days=self._ttl_days)),
@@ -465,9 +476,17 @@ class CredentialStore(_Table):
         )
 
     async def get_refresh_token(self, token: str) -> dict[str, Any] | None:
-        row = await self._get(_row_id("refresh-token", token))
-        if not row:
+        rows = await self._list(
+            [
+                self._query(
+                    "equal", "token_hash", [hashlib.sha256(token.encode()).hexdigest()]
+                ),
+                self._query("limit", 1),
+            ]
+        )
+        if not rows:
             return None
+        row = rows[0]
         if _parse_time(row["expires_at"]) <= _now():
             await self.delete_refresh_token(token)
             return None
@@ -489,7 +508,16 @@ class CredentialStore(_Table):
         return None if credentials is None else credentials.as_dict()
 
     async def delete_refresh_token(self, token: str) -> None:
-        await self._delete(_row_id("refresh-token", token))
+        rows = await self._list(
+            [
+                self._query(
+                    "equal", "token_hash", [hashlib.sha256(token.encode()).hexdigest()]
+                ),
+                self._query("limit", 1),
+            ]
+        )
+        if rows:
+            await self._delete(rows[0]["$id"])
 
     async def delete_user_tokens(self, user_id: str) -> None:
         rows = await self._all([self._query("equal", "user_key", [_user_key(user_id)])])
@@ -975,7 +1003,8 @@ class IdentityService:
     async def ensure_user_and_create_token(
         self, school_id: str, username: str
     ) -> IdentityToken:
-        user_id = _row_id("identity", f"{school_id}:{username}")
+        normalized_username = str(username).strip().casefold()
+        user_id = _identity_user_id(school_id, normalized_username)
         try:
             await asyncio.to_thread(self._users.get, user_id=user_id)
         except Exception as exc:
@@ -983,7 +1012,9 @@ class IdentityService:
                 raise
             try:
                 await asyncio.to_thread(
-                    self._users.create, user_id=user_id, name=username[:128]
+                    self._users.create,
+                    user_id=user_id,
+                    name=normalized_username[:128],
                 )
             except Exception as create_exc:
                 if not _status(create_exc, 409):
