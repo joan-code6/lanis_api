@@ -6,9 +6,9 @@
       "$id": "lanis-api",
       "name": "LANiS HTTP API",
       "runtime": "python-3.12",
-      "path": ".",
-      "entrypoint": "src/main.py",
-      "commands": "pip install -r requirements-api.txt",
+      "path": "..",
+      "entrypoint": "appwrite_functions/src/fastapi_main.py",
+      "commands": "pip install -r appwrite_functions/requirements-api.txt",
       "execute": ["any"],
       "events": [],
       "schedule": "",
@@ -26,10 +26,15 @@
       ],
       "ignore": [
         ".appwrite",
+        ".git",
+        ".venv",
         ".env",
         ".env.*",
         "**/__pycache__",
         "**/*.pyc",
+        "data",
+        "dist",
+        "tui",
         "README.md"
       ]
     },
@@ -37,12 +42,12 @@
       "$id": "lanis-worker",
       "name": "LANiS Async Worker",
       "runtime": "python-3.12",
-      "path": ".",
-      "entrypoint": "src/worker.py",
-      "commands": "pip install -r requirements-worker.txt",
+      "path": "..",
+      "entrypoint": "appwrite_functions/src/worker.py",
+      "commands": "pip install -r appwrite_functions/requirements-worker.txt",
       "execute": [],
       "events": [],
-      "schedule": "",
+      "schedule": "* * * * *",
       "timeout": 900,
       "enabled": true,
       "logging": true,
@@ -54,10 +59,15 @@
       ],
       "ignore": [
         ".appwrite",
+        ".git",
+        ".venv",
         ".env",
         ".env.*",
         "**/__pycache__",
         "**/*.pyc",
+        "data",
+        "dist",
+        "tui",
         "README.md"
       ]
     },
@@ -65,9 +75,9 @@
       "$id": "lanis-dsb-snapshot",
       "name": "LANiS DSB Snapshot",
       "runtime": "python-3.12",
-      "path": ".",
-      "entrypoint": "src/dsb_snapshot.py",
-      "commands": "pip install -r requirements-dsb-snapshot.txt",
+      "path": "..",
+      "entrypoint": "appwrite_functions/src/dsb_snapshot.py",
+      "commands": "pip install -r appwrite_functions/requirements-dsb-snapshot.txt",
       "execute": [],
       "events": [],
       "schedule": "0 15 * * *",
@@ -80,10 +90,15 @@
       ],
       "ignore": [
         ".appwrite",
+        ".git",
+        ".venv",
         ".env",
         ".env.*",
         "**/__pycache__",
         "**/*.pyc",
+        "data",
+        "dist",
+        "tui",
         "README.md"
       ]
     }
@@ -135,7 +150,29 @@
         {"key": "is_long_term", "type": "boolean", "required": false, "array": false, "default": false}
       ],
       "indexes": [
-        {"key": "by_user", "type": "key", "columns": ["user_key"]}
+        {"key": "by_user", "type": "key", "columns": ["user_key"]},
+        {"key": "by_user_endpoint", "type": "key", "columns": ["user_key", "endpoint"]}
+      ]
+    },
+    {
+      "$id": "user_state",
+      "$permissions": [],
+      "databaseId": "lanis",
+      "name": "User state",
+      "enabled": true,
+      "rowSecurity": false,
+      "columns": [
+        {"key": "user_key", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "user_id", "type": "varchar", "required": true, "array": false, "size": 255},
+        {"key": "kind", "type": "varchar", "required": true, "array": false, "size": 64},
+        {"key": "item_key", "type": "varchar", "required": true, "array": false, "size": 255},
+        {"key": "data_json", "type": "longtext", "required": true, "array": false},
+        {"key": "enabled", "type": "boolean", "required": false, "array": false, "default": false},
+        {"key": "updated_at", "type": "datetime", "required": true, "array": false}
+      ],
+      "indexes": [
+        {"key": "by_user_kind", "type": "key", "columns": ["user_key", "kind", "item_key"]},
+        {"key": "by_kind_enabled", "type": "key", "columns": ["kind", "enabled"]}
       ]
     },
     {

@@ -25,7 +25,17 @@ from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import quote, urljoin, urlparse
 
 import requests as http_requests
-from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -50,7 +60,7 @@ from .identity import (
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .documentation import router as documentation_router
-from .auth_db import (
+from .persistence import (
     initialize as auth_db_initialize,
     store_refresh_token,
     get_refresh_token,
@@ -99,9 +109,17 @@ from .message_notifications import (
 )
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 logger = logging.getLogger("api")
+APPWRITE_NATIVE = os.getenv("LANIS_APPWRITE_NATIVE", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+if APPWRITE_NATIVE:
+    from appwrite_functions.src.backend import get_backend
 
 
 SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive Schulportal sessions after 1 hour
@@ -116,7 +134,7 @@ LONG_CACHE_ENDPOINTS = {
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET:
+if not JWT_SECRET and not APPWRITE_NATIVE:
     raise RuntimeError(
         "JWT_SECRET must be set to a stable value; refusing to start because "
         "a random key would invalidate every access token on restart"
@@ -129,6 +147,7 @@ def _make_user_id(school_id: str, username: str) -> str:
 
 
 # --- Pydantic Models ---
+
 
 class LoginRequest(BaseModel):
     school_id: str = Field(..., description="Schul-ID (e.g. 1234)")
@@ -156,12 +175,15 @@ class DsbPlanRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    access_token: str
-    refresh_token: str
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
     school_id: str
     username: str
     encryption_ready: bool
     expires_in: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    appwrite_user_id: Optional[str] = None
+    appwrite_token: Optional[str] = None
+    appwrite_token_expire: Optional[str] = None
 
 
 class TokenRefreshRequest(BaseModel):
@@ -174,7 +196,9 @@ class TokenRefreshResponse(BaseModel):
 
 
 class NotificationPreferencesRequest(BaseModel):
-    enabled: bool = Field(False, description="Master switch for browser push notifications")
+    enabled: bool = Field(
+        False, description="Master switch for browser push notifications"
+    )
     messages_enabled: bool = Field(True, description="Notify for new messages")
     vertretungsplan_enabled: bool = Field(
         False, description="Notify for new matching Vertretungsplan entries"
@@ -185,11 +209,17 @@ class NotificationPreferencesRequest(BaseModel):
     vertretungsplan_classes: List[str] = Field(
         default_factory=list, description="Classes used when class mode is selected"
     )
-    start_time: str = Field("07:00", description="Local time at which polling may start")
+    start_time: str = Field(
+        "07:00", description="Local time at which polling may start"
+    )
     end_time: str = Field("21:00", description="Local time at which polling may stop")
     poll_interval_minutes: int = Field(15, ge=5, le=60)
-    timezone: str = Field("Europe/Berlin", description="IANA timezone used for the polling window")
-    show_preview: bool = Field(True, description="Include sender and subject in push notifications")
+    timezone: str = Field(
+        "Europe/Berlin", description="IANA timezone used for the polling window"
+    )
+    show_preview: bool = Field(
+        True, description="Include sender and subject in push notifications"
+    )
 
 
 class PushSubscriptionKeys(BaseModel):
@@ -259,9 +289,9 @@ class VertretungsplanPreferencesRequest(BaseModel):
 
 class OnboardingPreferencesRequest(BaseModel):
     version: Optional[int] = Field(None, ge=0, le=100)
-    status: Optional[
-        Literal["not_started", "in_progress", "completed", "skipped"]
-    ] = None
+    status: Optional[Literal["not_started", "in_progress", "completed", "skipped"]] = (
+        None
+    )
     last_step: Optional[
         Literal["welcome", "appearance", "dashboard", "timetable", "guide", "complete"]
     ] = None
@@ -276,6 +306,7 @@ class UserPreferencesRequest(BaseModel):
 
 
 # --- Internal Data Structures ---
+
 
 @dataclass
 class SchulportalSessionData:
@@ -340,6 +371,8 @@ class AuthManager:
     # -- JWT helpers -------------------------------------------------
 
     def create_access_token(self, user_id: str, school_id: str, username: str) -> str:
+        if APPWRITE_NATIVE:
+            raise RuntimeError("Appwrite Auth issues access credentials in native mode")
         user_id = canonicalize_user_id(user_id)
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         payload = {
@@ -354,7 +387,10 @@ class AuthManager:
     def decode_access_token(self, token: str) -> dict:
         try:
             payload = jwt.decode(
-                token, JWT_SECRET, algorithms=[JWT_ALGORITHM], options={"require": ["exp", "sub"]}
+                token,
+                JWT_SECRET,
+                algorithms=[JWT_ALGORITHM],
+                options={"require": ["exp", "sub"]},
             )
             return payload
         except jwt.ExpiredSignatureError:
@@ -544,9 +580,7 @@ class AuthManager:
                 key
                 for key, entry in self._cache.items()
                 if entry.is_expired(
-                    LONG_CACHE_TTL_SECONDS
-                    if entry.is_long_term
-                    else CACHE_TTL_SECONDS
+                    LONG_CACHE_TTL_SECONDS if entry.is_long_term else CACHE_TTL_SECONDS
                 )
             ]
             for key in expired:
@@ -559,6 +593,8 @@ class AuthManager:
     async def get_cached(
         self, user_id: str, endpoint: str, params: str = ""
     ) -> Optional[Any]:
+        if APPWRITE_NATIVE:
+            return await get_backend().cache.get(user_id, endpoint, params)
         await self._purge_expired_cache()
         cache_key = self._make_cache_key(user_id, endpoint, params)
 
@@ -578,6 +614,10 @@ class AuthManager:
     async def get_cached_with_revalidate(
         self, user_id: str, endpoint: str, params: str = ""
     ) -> tuple:
+        if APPWRITE_NATIVE:
+            return await get_backend().cache.get_with_revalidate(
+                user_id, endpoint, params
+            )
         await self._purge_expired_cache()
         cache_key = self._make_cache_key(user_id, endpoint, params)
 
@@ -604,6 +644,11 @@ class AuthManager:
         params: str = "",
         is_long_term: bool = False,
     ) -> None:
+        if APPWRITE_NATIVE:
+            await get_backend().cache.set(
+                user_id, endpoint, data, params, is_long_term=is_long_term
+            )
+            return
         cache_key = self._make_cache_key(user_id, endpoint, params)
         async with self._lock:
             self._cache[cache_key] = CacheEntry(
@@ -630,6 +675,14 @@ class AuthManager:
         is_long_term: bool = False,
     ) -> bool:
         """Store a response unless the endpoint was invalidated while fetching it."""
+        if APPWRITE_NATIVE:
+            async with self._lock:
+                if self._cache_versions.get((user_id, endpoint), 0) != version:
+                    return False
+            await self.set_cache(
+                user_id, endpoint, data, params, is_long_term=is_long_term
+            )
+            return True
         async with self._lock:
             version_key = (user_id, endpoint)
             if self._cache_versions.get(version_key, 0) != version:
@@ -648,6 +701,14 @@ class AuthManager:
 
     async def invalidate_endpoint_cache(self, user_id: str, endpoint: str) -> None:
         """Invalidate all cached parameter variants for one endpoint."""
+        if APPWRITE_NATIVE:
+            async with self._lock:
+                version_key = (user_id, endpoint)
+                self._cache_versions[version_key] = (
+                    self._cache_versions.get(version_key, 0) + 1
+                )
+            await get_backend().cache.invalidate_endpoint(user_id, endpoint)
+            return
         async with self._lock:
             version_key = (user_id, endpoint)
             self._cache_versions[version_key] = (
@@ -662,10 +723,14 @@ class AuthManager:
                 self._cache.pop(key)
 
     async def invalidate_user_cache(self, user_id: str) -> None:
+        if APPWRITE_NATIVE:
+            async with self._lock:
+                for key in [key for key in self._cache_versions if key[0] == user_id]:
+                    self._cache_versions[key] += 1
+            await get_backend().cache.invalidate_user(user_id)
+            return
         async with self._lock:
-            version_keys = [
-                key for key in self._cache_versions if key[0] == user_id
-            ]
+            version_keys = [key for key in self._cache_versions if key[0] == user_id]
             for version_key in version_keys:
                 self._cache_versions[version_key] += 1
             expired = [
@@ -683,7 +748,9 @@ _message_notification_task = None
 # --- Background Tasks ---
 
 
-async def fetch_and_store_user_data(user_id: str, school_id: str, username: str) -> None:
+async def fetch_and_store_user_data(
+    user_id: str, school_id: str, username: str
+) -> None:
     """Background task: fetch user profile and store in metrics DB."""
     user_id = canonicalize_user_id(user_id)
     school_id = normalize_school_id(school_id)
@@ -727,9 +794,19 @@ app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
 async def client_dependency(
     x_session_token: str = Header(..., alias="X-Session-Token"),
 ) -> AuthSession:
-    """Validate access token (JWT) and return the AuthSession with a live Schulportal client."""
-    payload = sessions.decode_access_token(x_session_token)
-    user_id = canonicalize_user_id(payload["sub"])
+    """Validate the configured auth token and restore the Schulportal client."""
+    if APPWRITE_NATIVE:
+        try:
+            account = await get_backend().identity.verify_jwt(x_session_token)
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired Appwrite session",
+            ) from error
+        user_id = str(account["$id"])
+    else:
+        payload = sessions.decode_access_token(x_session_token)
+        user_id = canonicalize_user_id(payload["sub"])
     session_data = await sessions._get_or_create_schulportal_client(user_id)
     return AuthSession(
         client=session_data.client,
@@ -799,9 +876,7 @@ def _validate_custom_lesson(payload: CustomLessonRequest) -> Dict[str, Any]:
                 detail=f"{label.capitalize()} time must use HH:MM format",
             )
 
-    values = (
-        payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-    )
+    values = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     return {
         **values,
         "date": payload.date,
@@ -852,6 +927,9 @@ app.include_router(documentation_router)
 async def _startup() -> None:
     global _dsb_scheduler_task, _message_notification_task
     await auth_db_initialize()
+    if APPWRITE_NATIVE:
+        logger.info("API started in Appwrite-native Functions mode")
+        return
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
     await task_queue.start()
@@ -888,8 +966,12 @@ async def health() -> Dict[str, str]:
 
 @app.get("/metrics/stats")
 async def get_metrics_stats() -> Dict[str, Any]:
-    db_stats = await user_metrics_db.get_stats()
-    queue_stats = task_queue.get_queue_stats()
+    if APPWRITE_NATIVE:
+        db_stats = await get_backend().metrics.get_stats()
+        queue_stats = {"provider": "appwrite-functions"}
+    else:
+        db_stats = await user_metrics_db.get_stats()
+        queue_stats = task_queue.get_queue_stats()
 
     return {
         "success": True,
@@ -911,6 +993,16 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
         school_id, username, payload.password
     )
 
+    identity = None
+    if APPWRITE_NATIVE:
+        identity = await get_backend().identity.ensure_user_and_create_token(
+            school_id, normalize_username(username)
+        )
+        async with sessions._lock:
+            session_data = sessions._schulportal_clients.pop(user_id)
+            sessions._schulportal_clients[identity.user_id] = session_data
+        user_id = identity.user_id
+
     # 2. Store long-term refresh token in DB
     refresh_token = await store_refresh_token(
         user_id=user_id,
@@ -919,11 +1011,13 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
         password=payload.password,
     )
 
-    # 3. Issue short-term access token (JWT)
-    access_token = sessions.create_access_token(
-        user_id=user_id,
-        school_id=school_id,
-        username=username,
+    # Appwrite Auth owns access tokens in native mode.
+    access_token = (
+        None
+        if APPWRITE_NATIVE
+        else sessions.create_access_token(
+            user_id=user_id, school_id=school_id, username=username
+        )
     )
 
     # 4. Read encryption state
@@ -934,14 +1028,23 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
     )
 
     # 5. Queue background metrics fetch
-    user_data_task = Task(
-        name=f"fetch_user_data:{username}@{school_id}",
-        func=fetch_and_store_user_data,
-        args=(user_id, school_id, normalize_username(username)),
-        priority=TaskPriority.LOW,
-        max_retries=2,
-    )
-    await task_queue.add_task(user_data_task)
+    if APPWRITE_NATIVE:
+        try:
+            await get_backend().dispatcher.dispatch(
+                "fetch_user_data",
+                {"user_id": user_id, "school_id": school_id, "username": username},
+            )
+        except Exception:
+            logger.warning("Appwrite profile-metrics dispatch failed", exc_info=True)
+    else:
+        user_data_task = Task(
+            name=f"fetch_user_data:{username}@{school_id}",
+            func=fetch_and_store_user_data,
+            args=(user_id, school_id, normalize_username(username)),
+            priority=TaskPriority.LOW,
+            max_retries=2,
+        )
+        await task_queue.add_task(user_data_task)
 
     return LoginResponse(
         access_token=access_token,
@@ -949,11 +1052,19 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
         school_id=school_id,
         username=username,
         encryption_ready=encryption_ready,
+        appwrite_user_id=identity.user_id if identity else None,
+        appwrite_token=identity.secret if identity else None,
+        appwrite_token_expire=identity.expire if identity else None,
     )
 
 
 @app.post("/auth/refresh", response_model=TokenRefreshResponse)
 async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse:
+    if APPWRITE_NATIVE:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Refresh the Appwrite account JWT with the Appwrite client SDK",
+        )
     rt_data = await get_refresh_token(payload.refresh_token)
     if not rt_data:
         raise HTTPException(
@@ -978,7 +1089,8 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
 async def logout_endpoint(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, str]:
-    await delete_user_tokens(auth.user_id)
+    if not APPWRITE_NATIVE:
+        await delete_user_tokens(auth.user_id)
     await delete_user_push_subscriptions(auth.user_id)
     await sessions.drop_schulportal_session(auth.user_id)
     return {"status": "logged_out"}
@@ -1040,9 +1152,7 @@ def _fetch_modules(client: SchulportalHessenAPI) -> Dict[str, object]:
     }
 
 
-async def _revalidate_endpoint(
-    user_id: str, endpoint: str, fetch_func
-) -> None:
+async def _revalidate_endpoint(user_id: str, endpoint: str, fetch_func) -> None:
     try:
         fresh_data = await run_in_threadpool(fetch_func)
         if not isinstance(fresh_data, dict) or not fresh_data.get("success"):
@@ -1061,9 +1171,7 @@ async def _revalidate_modules(user_id: str, client: SchulportalHessenAPI) -> Non
             return
         cached_data = await sessions.get_cached(user_id, "/modules")
         if cached_data is not None and not _responses_equal(cached_data, fresh_data):
-            await sessions.set_cache(
-                user_id, "/modules", fresh_data, is_long_term=True
-            )
+            await sessions.set_cache(user_id, "/modules", fresh_data, is_long_term=True)
     except Exception:
         pass
 
@@ -1099,9 +1207,7 @@ async def get_modules(
     )
 
     if needs_revalidation:
-        asyncio.create_task(
-            _revalidate_modules(auth.user_id, auth.client)
-        )
+        asyncio.create_task(_revalidate_modules(auth.user_id, auth.client))
 
     if cached_data is not None:
         return cached_data
@@ -1178,7 +1284,12 @@ async def get_calendar_events(
 
     result = await run_in_threadpool(
         auth.client.kalender_get_events,
-        year, start, category, search, target, view_id,
+        year,
+        start,
+        category,
+        search,
+        target,
+        view_id,
     )
     await sessions.set_cache(auth.user_id, "/kalender/events", result, params)
     return result
@@ -1195,9 +1306,7 @@ async def get_calendar_event(
     if cached is not None:
         return cached
 
-    result = await run_in_threadpool(
-        auth.client.kalender_get_event, event_id, view_id
-    )
+    result = await run_in_threadpool(auth.client.kalender_get_event, event_id, view_id)
     await sessions.set_cache(auth.user_id, "/kalender/event", result, params)
     return result
 
@@ -1238,7 +1347,9 @@ async def _load_vertretungsplan_options(auth: AuthSession) -> Dict[str, object]:
         auth.user_id, "/vertretungsplan", plan_params
     )
     if plan_result is None:
-        plan_result = await run_in_threadpool(auth.client.vertretungsplan_get_plan, False)
+        plan_result = await run_in_threadpool(
+            auth.client.vertretungsplan_get_plan, False
+        )
         if plan_result.get("success"):
             await sessions.set_cache(
                 auth.user_id, "/vertretungsplan", plan_result, plan_params
@@ -1291,12 +1402,8 @@ async def get_stundenplan(
         # Date-specific overrides are still applied to the legacy plan fields
         # below for backwards compatibility.
         result["week_start"] = week_start.isoformat()
-        result["template_plan_for_all"] = copy.deepcopy(
-            result.get("plan_for_all")
-        )
-        result["template_plan_for_own"] = copy.deepcopy(
-            result.get("plan_for_own")
-        )
+        result["template_plan_for_all"] = copy.deepcopy(result.get("plan_for_all"))
+        result["template_plan_for_own"] = copy.deepcopy(result.get("plan_for_own"))
     result = apply_custom_lessons(result, await get_custom_lessons(auth.user_id))
     await sessions.set_cache(auth.user_id, "/stundenplan", result, timetable_params)
     return result
@@ -1381,9 +1488,7 @@ async def reset_custom_timetable_lesson(
         date.fromisoformat(lesson_date)
     except ValueError as error:
         raise HTTPException(status_code=422, detail="Invalid lesson date") from error
-    period_match = re.fullmatch(
-        r"(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?", period.strip()
-    )
+    period_match = re.fullmatch(r"(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?", period.strip())
     if not period_match:
         raise HTTPException(status_code=422, detail="Invalid lesson period")
     period_start = int(period_match.group(1))
@@ -1429,7 +1534,9 @@ async def search_dateispeicher(
 ) -> Dict[str, object]:
     params = _make_param_key({"q": q})
     if not refresh:
-        cached = await sessions.get_cached(auth.user_id, "/dateispeicher/search", params)
+        cached = await sessions.get_cached(
+            auth.user_id, "/dateispeicher/search", params
+        )
         if cached is not None:
             return cached
 
@@ -1447,14 +1554,10 @@ async def download_dateispeicher_file(
     if file_id <= 0:
         raise HTTPException(status_code=404, detail="File not found")
 
-    result = await run_in_threadpool(
-        auth.client.dateispeicher_download_file, file_id
-    )
+    result = await run_in_threadpool(auth.client.dateispeicher_download_file, file_id)
     stream = result.get("stream")
     content = result.get("content")
-    if not result.get("success") or (
-        stream is None and not isinstance(content, bytes)
-    ):
+    if not result.get("success") or (stream is None and not isinstance(content, bytes)):
         error_kind = result.get("error_kind")
         if error_kind == "authentication":
             await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
@@ -1534,9 +1637,7 @@ async def update_user_notification_preferences(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     preferences = (
-        payload.model_dump()
-        if hasattr(payload, "model_dump")
-        else payload.dict()
+        payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     )
     preferences["vertretungsplan_classes"] = list(
         dict.fromkeys(
@@ -1580,9 +1681,7 @@ async def register_notification_subscription(
         )
 
     subscription = (
-        payload.model_dump()
-        if hasattr(payload, "model_dump")
-        else payload.dict()
+        payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     )
     if not is_valid_push_subscription(subscription):
         raise HTTPException(
@@ -1677,7 +1776,8 @@ async def get_message_headers(
         priority=TaskPriority.LOW,
         max_retries=2,
     )
-    await task_queue.add_task(task)
+    if not APPWRITE_NATIVE:
+        await task_queue.add_task(task)
     if cached is not None:
         return cached
     result = await run_in_threadpool(
@@ -1714,7 +1814,8 @@ async def search_recipients(
         priority=TaskPriority.LOW,
         max_retries=2,
     )
-    await task_queue.add_task(task)
+    if not APPWRITE_NATIVE:
+        await task_queue.add_task(task)
     if cached is not None:
         return cached
     result = await run_in_threadpool(auth.client.nachrichten_search_recipients, q)
@@ -1749,7 +1850,8 @@ async def get_conversation(
         priority=TaskPriority.LOW,
         max_retries=2,
     )
-    await task_queue.add_task(task)
+    if not APPWRITE_NATIVE:
+        await task_queue.add_task(task)
     if cached is not None:
         return cached
     result = await run_in_threadpool(
@@ -1799,9 +1901,7 @@ async def mark_read(
     conversation_id: str = Body(..., description="Conversation uniqid to mark read"),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    return await run_in_threadpool(
-        auth.client.nachrichten_mark_read, conversation_id
-    )
+    return await run_in_threadpool(auth.client.nachrichten_mark_read, conversation_id)
 
 
 # --- Mein Unterricht ---
@@ -1810,6 +1910,16 @@ async def mark_read(
 async def _download_course_file(
     user_id: str, download_url: str, file_hash: str
 ) -> None:
+    if APPWRITE_NATIVE:
+        files = get_backend().files
+        if await files.is_cached(file_hash):
+            await files.unmark_pending(file_hash)
+            return
+        await files.mark_pending(file_hash, download_url)
+        await get_backend().dispatcher.dispatch(
+            "download_course_file", {"user_id": user_id, "file_hash": file_hash}
+        )
+        return
     if is_file_cached(file_hash):
         unmark_pending(file_hash)
         return
@@ -1958,9 +2068,7 @@ async def meinunterricht_course(
 ) -> Dict[str, object]:
     params = _make_param_key({"course_id": course_id})
 
-    cached = await sessions.get_cached(
-        auth.user_id, "/meinunterricht/course", params
-    )
+    cached = await sessions.get_cached(auth.user_id, "/meinunterricht/course", params)
     if cached is not None:
         return cached
 
@@ -1979,7 +2087,21 @@ async def meinunterricht_course(
                 file_info["url"] = local_url
                 file_info["file_hash"] = file_hash
 
-                if not is_file_cached(file_hash) and not is_file_pending(file_hash):
+                needs_download = (
+                    not await get_backend().files.is_cached(file_hash)
+                    and not await get_backend().files.is_pending(file_hash)
+                    if APPWRITE_NATIVE
+                    else not is_file_cached(file_hash)
+                    and not is_file_pending(file_hash)
+                )
+                if needs_download:
+                    if APPWRITE_NATIVE:
+                        await get_backend().files.mark_pending(file_hash, original_url)
+                        await get_backend().dispatcher.dispatch(
+                            "download_course_file",
+                            {"user_id": auth.user_id, "file_hash": file_hash},
+                        )
+                        continue
                     mark_pending(file_hash)
                     download_task = Task(
                         name=f"download_file:{file_hash[:12]}",
@@ -1990,9 +2112,7 @@ async def meinunterricht_course(
                     )
                     await task_queue.add_task(download_task)
 
-    await sessions.set_cache(
-        auth.user_id, "/meinunterricht/course", result, params
-    )
+    await sessions.set_cache(auth.user_id, "/meinunterricht/course", result, params)
     return result
 
 
@@ -2002,6 +2122,45 @@ async def meinunterricht_file(
     x_session_token: str = Header(None, alias="X-Session-Token"),
 ):
     from fastapi.responses import FileResponse
+
+    if APPWRITE_NATIVE:
+        files = get_backend().files
+        metadata = await files.get_metadata(file_hash)
+        if metadata and metadata.status == "ready":
+            return Response(
+                content=await files.get_content(file_hash),
+                media_type=metadata.content_type or "application/octet-stream",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{metadata.filename or "download"}"'
+                },
+            )
+        if not x_session_token or not metadata or not metadata.source_url:
+            raise HTTPException(status_code=404, detail="File not found")
+        try:
+            account = await get_backend().identity.verify_jwt(x_session_token)
+            session_data = await sessions._get_or_create_schulportal_client(
+                str(account["$id"])
+            )
+        except Exception as error:
+            raise HTTPException(status_code=404, detail="File not found") from error
+        result = await run_in_threadpool(
+            session_data.client.meinunterricht_download_file, metadata.source_url
+        )
+        if result.get("success"):
+            await files.save(
+                file_hash,
+                result["content"],
+                result.get("content_type", "application/octet-stream"),
+                result.get("filename", "download"),
+            )
+            return Response(
+                content=await files.get_content(file_hash),
+                media_type=result.get("content_type", "application/octet-stream"),
+                headers={
+                    "Content-Disposition": f'attachment; filename="{result.get("filename", "download")}"'
+                },
+            )
+        raise HTTPException(status_code=404, detail="File not yet available")
 
     meta = get_meta(file_hash)
     content_path = get_content_path(file_hash)
@@ -2151,14 +2310,15 @@ async def school_list_search(q: str) -> Dict[str, object]:
     return result
 
 
-
 # --- App Proxy (for OAuth/SSO apps like bettermarks) ---
 
 _app_auth_cache: Dict[str, Dict[str, Any]] = {}
 """Cache: (user_id, app_name) -> {cookies: dict, base_url: str, target_host: str}"""
 
 
-def _follow_oauth_flow(client: SchulportalHessenAPI, portal_url: str) -> Optional[Dict[str, Any]]:
+def _follow_oauth_flow(
+    client: SchulportalHessenAPI, portal_url: str
+) -> Optional[Dict[str, Any]]:
     """Follow the full OAuth redirect chain for an app and extract auth cookies.
 
     Uses allow_redirects=True to follow the complete chain including all
@@ -2212,7 +2372,7 @@ def _rewrite_html(content: bytes, target_host: str, proxy_prefix: str) -> bytes:
         quote = m.group(2) or ""
         url = m.group(3)
         if url.startswith("/") and not url.startswith("//"):
-            return f'{attr}={quote}{proxy_prefix}{url}{quote}'
+            return f"{attr}={quote}{proxy_prefix}{url}{quote}"
         return m.group(0)
 
     text = re.sub(
@@ -2232,12 +2392,12 @@ def _rewrite_html(content: bytes, target_host: str, proxy_prefix: str) -> bytes:
     escaped_domain = re.escape(base_domain)
     # Match https?://(subdomain.)base_domain/path and //(subdomain.)base_domain/path
     text = re.sub(
-        rf'https?://(?:([a-zA-Z0-9.-]+)\.)?{escaped_domain}(/[\w.,@?^=%&:/~+#!-]*)?',
+        rf"https?://(?:([a-zA-Z0-9.-]+)\.)?{escaped_domain}(/[\w.,@?^=%&:/~+#!-]*)?",
         _rewrite_external,
         text,
     )
     text = re.sub(
-        rf'//(?:([a-zA-Z0-9.-]+)\.)?{escaped_domain}(/[\w.,@?^=%&:/~+#!-]*)?',
+        rf"//(?:([a-zA-Z0-9.-]+)\.)?{escaped_domain}(/[\w.,@?^=%&:/~+#!-]*)?",
         _rewrite_external,
         text,
     )
@@ -2289,7 +2449,10 @@ async def app_launch(
     """
     session_token = x_session_token or token
     if not session_token:
-        raise HTTPException(status_code=401, detail="X-Session-Token header or token query parameter required")
+        raise HTTPException(
+            status_code=401,
+            detail="X-Session-Token header or token query parameter required",
+        )
 
     try:
         payload = sessions.decode_access_token(session_token)
@@ -2306,9 +2469,13 @@ async def app_launch(
     except Exception:
         modules = []
 
-    module = next((m for m in modules if m.get("name", "").lower() == app_name.lower()), None)
+    module = next(
+        (m for m in modules if m.get("name", "").lower() == app_name.lower()), None
+    )
     if not module:
-        module = next((m for m in modules if app_name.lower() in m.get("name", "").lower()), None)
+        module = next(
+            (m for m in modules if app_name.lower() in m.get("name", "").lower()), None
+        )
     if not module:
         raise HTTPException(status_code=404, detail=f"App '{app_name}' not found")
 
@@ -2344,7 +2511,9 @@ async def app_launch(
     return Response(content=html, media_type="text/html")
 
 
-def _build_launch_urls(client: SchulportalHessenAPI, portal_url: str) -> Optional[Dict[str, str]]:
+def _build_launch_urls(
+    client: SchulportalHessenAPI, portal_url: str
+) -> Optional[Dict[str, str]]:
     """Follow OAuth flow to extract cookie-set and callback URLs.
 
     The cookie-set URL (first page that redirects to the target app's
@@ -2362,7 +2531,9 @@ def _build_launch_urls(client: SchulportalHessenAPI, portal_url: str) -> Optiona
 
     for _ in range(12):
         try:
-            resp = client.session.get(current_url, allow_redirects=False, timeout=10, stream=True)
+            resp = client.session.get(
+                current_url, allow_redirects=False, timeout=10, stream=True
+            )
             resp.close()
         except Exception:
             break
@@ -2381,11 +2552,16 @@ def _build_launch_urls(client: SchulportalHessenAPI, portal_url: str) -> Optiona
             # Capture the first redirect that lands on the target app's domain
             # (this response sets the initial auth cookie)
             if cookie_url is None and next_host:
-                if not any(next_host.endswith(h) for h in portal_hosts) and "vidis" not in next_host:
+                if (
+                    not any(next_host.endswith(h) for h in portal_hosts)
+                    and "vidis" not in next_host
+                ):
                     cookie_url = next_url
 
             if seen_oauth and "code=" in next_url:
-                if "vidis" not in next_host and not any(next_host.endswith(h) for h in portal_hosts):
+                if "vidis" not in next_host and not any(
+                    next_host.endswith(h) for h in portal_hosts
+                ):
                     callback_url = next_url
                     break
 

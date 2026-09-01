@@ -10,7 +10,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
+
+os.environ.setdefault("LANIS_APPWRITE_NATIVE", "1")
 
 try:
     from .backend import get_backend
@@ -84,7 +87,9 @@ async def _fetch_user_data(backend: Any, payload: dict[str, Any]) -> dict[str, A
     return {"user_id": user_id, "new": is_new, "updated": updated}
 
 
-async def _download_course_file(backend: Any, payload: dict[str, Any]) -> dict[str, Any]:
+async def _download_course_file(
+    backend: Any, payload: dict[str, Any]
+) -> dict[str, Any]:
     file_hash = str(payload["file_hash"])
     metadata = await backend.files.get_metadata(file_hash)
     if metadata is None or not metadata.source_url:
@@ -161,17 +166,48 @@ async def _run_job(backend: Any, job: str, payload: dict[str, Any]) -> dict[str,
     return await handler(backend, payload)
 
 
+async def _notification_cycle(backend: Any) -> dict[str, Any]:
+    from api.message_notifications import run_message_notification_cycle
+    from api.persistence import get_notification_preferences
+
+    clients: dict[str, SchulportalHessenAPI] = {}
+
+    async def get_client(user_id: str) -> SchulportalHessenAPI:
+        if user_id not in clients:
+            credentials = await backend.credentials.get_credentials(user_id)
+            if credentials is None:
+                raise RuntimeError("No credentials found for notification poll")
+            clients[user_id] = await _with_client(credentials)
+        return clients[user_id]
+
+    try:
+        await run_message_notification_cycle(
+            get_client,
+            backend.cache.invalidate_endpoint,
+            get_notification_preferences,
+        )
+    finally:
+        for client in clients.values():
+            client.close()
+    return {"status": "completed", "clients": len(clients)}
+
+
 async def main(context: Any) -> Any:
     """Appwrite Function entrypoint for asynchronous worker executions."""
     try:
         body = _body(context)
+        backend = get_backend(dynamic_key=_header(context, "x-appwrite-key"))
+        if not body:
+            result = await _notification_cycle(backend)
+            return context.res.json(
+                {"success": True, "job": "notification_cycle", "result": result}
+            )
         if body.get("version") != 1:
             raise ValueError("Unsupported job payload version")
         job = str(body.get("task", ""))
         payload = body.get("payload")
         if not isinstance(payload, dict):
             raise TypeError("Job payload must be an object")
-        backend = get_backend(dynamic_key=_header(context, "x-appwrite-key"))
         result = await _run_job(backend, job, payload)
         return context.res.json({"success": True, "job": job, "result": result})
     except Exception as exc:  # noqa: BLE001 - Appwrite must receive a safe 500

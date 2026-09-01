@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi.concurrency import run_in_threadpool
 
-from .auth_db import (
+from .persistence import (
     delete_push_subscription,
     get_enabled_notification_users,
     get_message_notification_state,
@@ -63,7 +63,8 @@ def _message_id(message: Dict[str, Any]) -> str:
 def _message_signature(message: Dict[str, Any]) -> str:
     activity = {
         "date": message.get("date") or message.get("Datum"),
-        "last_message_id": message.get("last_message_id") or message.get("lastMessageId"),
+        "last_message_id": message.get("last_message_id")
+        or message.get("lastMessageId"),
         "message_id": message.get("Id") or message.get("message_id"),
         "sender": message.get("sender") or message.get("Sender"),
         "subject": message.get("subject") or message.get("Betreff"),
@@ -85,7 +86,9 @@ def build_message_snapshot(
         snapshot[conversation_id] = _message_signature(conversation)
         details[conversation_id] = {
             "subject": _plain_text(
-                conversation.get("subject") or conversation.get("Betreff") or "Neue Nachricht"
+                conversation.get("subject")
+                or conversation.get("Betreff")
+                or "Neue Nachricht"
             ),
             "sender": _plain_text(
                 conversation.get("sender")
@@ -118,7 +121,9 @@ def _entry_classes(entry: Dict[str, Any]) -> List[str]:
 
 
 def _entry_matches_classes(entry: Dict[str, Any], selected_classes: List[str]) -> bool:
-    selected = {_normalized_class(value) for value in selected_classes if _plain_text(value)}
+    selected = {
+        _normalized_class(value) for value in selected_classes if _plain_text(value)
+    }
     if not selected:
         return False
     entry_classes = {_normalized_class(value) for value in _entry_classes(entry)}
@@ -174,9 +179,15 @@ def build_vertretungsplan_snapshot(
                     entry.get("tag") or entry.get("tag_en") or day.get("date") or ""
                 ),
                 "period": _plain_text(entry.get("stunde") or ""),
-                "class": _plain_text(entry.get("klasse") or entry.get("klasse_alt") or ""),
-                "subject": _plain_text(entry.get("fach") or entry.get("fach_alt") or ""),
-                "kind": _plain_text(entry.get("art") or entry.get("hinweis") or "Änderung"),
+                "class": _plain_text(
+                    entry.get("klasse") or entry.get("klasse_alt") or ""
+                ),
+                "subject": _plain_text(
+                    entry.get("fach") or entry.get("fach_alt") or ""
+                ),
+                "kind": _plain_text(
+                    entry.get("art") or entry.get("hinweis") or "Änderung"
+                ),
             }
     return snapshot, details
 
@@ -293,10 +304,14 @@ def validate_notification_preferences(preferences: Dict[str, Any]) -> None:
     if class_mode not in {"own", "selected", "all"}:
         raise ValueError("vertretungsplan_class_mode must be own, selected, or all")
     classes = preferences.get("vertretungsplan_classes", [])
-    if not isinstance(classes, list) or any(not isinstance(value, str) for value in classes):
+    if not isinstance(classes, list) or any(
+        not isinstance(value, str) for value in classes
+    ):
         raise ValueError("vertretungsplan_classes must be a list of class names")
     if len(classes) > 200 or any(len(value.strip()) > 100 for value in classes):
-        raise ValueError("vertretungsplan_classes contains too many or overly long values")
+        raise ValueError(
+            "vertretungsplan_classes contains too many or overly long values"
+        )
     if (
         preferences.get("vertretungsplan_enabled")
         and class_mode == "selected"
@@ -334,7 +349,9 @@ def _is_due(state: Dict[str, Any] | None, interval_minutes: int, now: datetime) 
         return True
     if checked_at.tzinfo is None:
         checked_at = checked_at.astimezone()
-    return now - checked_at.astimezone(now.tzinfo) >= timedelta(minutes=interval_minutes)
+    return now - checked_at.astimezone(now.tzinfo) >= timedelta(
+        minutes=interval_minutes
+    )
 
 
 def _as_bool(value: Any) -> bool:
@@ -371,7 +388,9 @@ def _get_pending_deliveries(
             queued = [queued]
         if not isinstance(queued, list):
             continue
-        valid_payloads = [payload.copy() for payload in queued if isinstance(payload, dict)]
+        valid_payloads = [
+            payload.copy() for payload in queued if isinstance(payload, dict)
+        ]
         if valid_payloads:
             # A notification is a hint; retain only the newest retry so an old
             # failing push cannot block newer activity for that device.
@@ -387,7 +406,9 @@ async def _record_failed_poll(
     try:
         await save_message_notification_state(user_id, state)
     except Exception as error:
-        logger.warning("Failed to record notification poll attempt for %s: %s", user_id, error)
+        logger.warning(
+            "Failed to record notification poll attempt for %s: %s", user_id, error
+        )
 
 
 def _is_permanent_push_failure(error: Exception) -> bool:
@@ -469,7 +490,9 @@ async def _send_push_payloads(
     trusted_deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
     for endpoint, delivery in deliveries.items():
         if not is_trusted_push_endpoint(endpoint):
-            logger.warning("Dropping untrusted stored push endpoint for %s: %s", user_id, endpoint)
+            logger.warning(
+                "Dropping untrusted stored push endpoint for %s: %s", user_id, endpoint
+            )
             await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
             continue
@@ -489,7 +512,9 @@ async def _send_push_payloads(
         ),
         return_exceptions=True,
     )
-    for (endpoint, (_subscription, _payload)), result in zip(trusted_deliveries.items(), results):
+    for (endpoint, (_subscription, _payload)), result in zip(
+        trusted_deliveries.items(), results
+    ):
         if isinstance(result, asyncio.CancelledError):
             raise result
         if not isinstance(result, Exception):
@@ -568,14 +593,18 @@ async def check_user_messages(
     try:
         timezone = ZoneInfo(str(user["timezone"]))
     except (KeyError, ZoneInfoNotFoundError):
-        logger.warning("Message notification poll skipped for %s: invalid timezone", user_id)
+        logger.warning(
+            "Message notification poll skipped for %s: invalid timezone", user_id
+        )
         return False
     local_now = datetime.now(timezone) if now is None else now.astimezone(timezone)
     previous_state = await get_message_notification_state(user_id)
     try:
         interval = int(user.get("poll_interval_minutes", 15))
     except (TypeError, ValueError):
-        logger.warning("Message notification poll skipped for %s: invalid interval", user_id)
+        logger.warning(
+            "Message notification poll skipped for %s: invalid interval", user_id
+        )
         return False
     if not _is_due(previous_state, interval, local_now):
         return False
@@ -607,7 +636,11 @@ async def check_user_messages(
         try:
             current_user = {**user, **(await get_preferences(user_id))}
         except Exception as error:
-            logger.warning("Message notification preferences read failed for %s: %s", user_id, error)
+            logger.warning(
+                "Message notification preferences read failed for %s: %s",
+                user_id,
+                error,
+            )
             await _record_failed_poll(user_id, previous_state, local_now)
             return False
         if (
@@ -620,7 +653,9 @@ async def check_user_messages(
 
     conversations = result.get("conversations") or []
     current_snapshot, details = build_message_snapshot(conversations)
-    has_baseline = isinstance(previous_state, dict) and "conversations" in previous_state
+    has_baseline = (
+        isinstance(previous_state, dict) and "conversations" in previous_state
+    )
     previous_snapshot = (previous_state or {}).get("conversations") or {}
     if not isinstance(previous_snapshot, dict):
         previous_snapshot = {}
@@ -673,7 +708,9 @@ async def check_user_messages(
         if len(changed_ids) > 1:
             body = f"{len(changed_ids)} neue Nachrichten"
         payload = {
-            "title": "Neue Nachricht in Lanis" if len(changed_ids) == 1 else "Neue Nachrichten in Lanis",
+            "title": "Neue Nachricht in Lanis"
+            if len(changed_ids) == 1
+            else "Neue Nachrichten in Lanis",
             "body": body,
             "url": f"/messages?conversation={quote(changed_ids[0])}",
             "tag": f"lanis-messages-{changed_ids[0]}",
@@ -736,14 +773,20 @@ async def check_user_vertretungsplan(
     try:
         timezone = ZoneInfo(str(user["timezone"]))
     except (KeyError, ZoneInfoNotFoundError):
-        logger.warning("Vertretungsplan notification poll skipped for %s: invalid timezone", user_id)
+        logger.warning(
+            "Vertretungsplan notification poll skipped for %s: invalid timezone",
+            user_id,
+        )
         return False
     local_now = datetime.now(timezone) if now is None else now.astimezone(timezone)
     previous_state = await get_vertretungsplan_notification_state(user_id)
     try:
         interval = int(user.get("poll_interval_minutes", 15))
     except (TypeError, ValueError):
-        logger.warning("Vertretungsplan notification poll skipped for %s: invalid interval", user_id)
+        logger.warning(
+            "Vertretungsplan notification poll skipped for %s: invalid interval",
+            user_id,
+        )
         return False
     if not _is_due(previous_state, interval, local_now):
         return False
@@ -757,7 +800,9 @@ async def check_user_vertretungsplan(
         client = getattr(session_data, "client", session_data)
         plan_result = await run_in_threadpool(client.vertretungsplan_get_plan, False)
     except Exception as error:
-        logger.warning("Vertretungsplan notification poll failed for %s: %s", user_id, error)
+        logger.warning(
+            "Vertretungsplan notification poll failed for %s: %s", user_id, error
+        )
         await _record_failed_vertretungsplan_poll(user_id, previous_state, local_now)
         return False
 
@@ -775,8 +820,12 @@ async def check_user_vertretungsplan(
         try:
             current_user = {**user, **(await get_preferences(user_id))}
         except Exception as error:
-            logger.warning("Vertretungsplan preferences read failed for %s: %s", user_id, error)
-            await _record_failed_vertretungsplan_poll(user_id, previous_state, local_now)
+            logger.warning(
+                "Vertretungsplan preferences read failed for %s: %s", user_id, error
+            )
+            await _record_failed_vertretungsplan_poll(
+                user_id, previous_state, local_now
+            )
             return False
         if (
             not current_user.get("enabled")
@@ -799,7 +848,9 @@ async def check_user_vertretungsplan(
             )
             return False
 
-    own_class = vertretungsplan_notification_options(profile_result, plan_result)["own_class"]
+    own_class = vertretungsplan_notification_options(profile_result, plan_result)[
+        "own_class"
+    ]
     if (
         str(current_user.get("vertretungsplan_class_mode") or "own") == "own"
         and not own_class
@@ -822,7 +873,11 @@ async def check_user_vertretungsplan(
     previous_snapshot = (previous_state or {}).get("entries") or {}
     if not isinstance(previous_snapshot, dict):
         previous_snapshot = {}
-    new_ids = [entry_id for entry_id in current_snapshot if has_baseline and entry_id not in previous_snapshot]
+    new_ids = [
+        entry_id
+        for entry_id in current_snapshot
+        if has_baseline and entry_id not in previous_snapshot
+    ]
 
     subscriptions_by_endpoint = {
         subscription["endpoint"]: subscription
@@ -839,7 +894,11 @@ async def check_user_vertretungsplan(
             try:
                 await invalidate_cache(user_id, "/vertretungsplan")
             except Exception as error:
-                logger.warning("Vertretungsplan cache invalidation failed for %s: %s", user_id, error)
+                logger.warning(
+                    "Vertretungsplan cache invalidation failed for %s: %s",
+                    user_id,
+                    error,
+                )
         first = details[new_ids[0]]
         summary_parts = [
             first[key]
@@ -926,6 +985,7 @@ async def run_message_notification_scheduler(
     get_preferences: Callable[[str], Awaitable[Dict[str, Any]]] | None = None,
 ) -> asyncio.Task:
     """Start the long-running daytime message polling task."""
+
     async def _loop() -> None:
         logger.info("Message notification scheduler started")
         while True:

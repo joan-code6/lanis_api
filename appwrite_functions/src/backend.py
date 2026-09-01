@@ -91,9 +91,7 @@ class BackendSettings:
             )
 
     @classmethod
-    def from_env(
-        cls, environment: Mapping[str, str] | None = None
-    ) -> BackendSettings:
+    def from_env(cls, environment: Mapping[str, str] | None = None) -> BackendSettings:
         env = os.environ if environment is None else environment
         endpoint = _env_value(
             env,
@@ -140,13 +138,9 @@ class BackendSettings:
                 env, "LANIS_APPWRITE_FILE_METADATA_TABLE_ID"
             )
             or "file_metadata",
-            storage_bucket_id=_env_value(
-                env, "LANIS_APPWRITE_STORAGE_BUCKET_ID"
-            )
+            storage_bucket_id=_env_value(env, "LANIS_APPWRITE_STORAGE_BUCKET_ID")
             or "lanis-files",
-            task_function_id=_env_value(
-                env, "LANIS_APPWRITE_TASK_FUNCTION_ID"
-            )
+            task_function_id=_env_value(env, "LANIS_APPWRITE_TASK_FUNCTION_ID")
             or "lanis-worker",
             encryption_key=encryption_key or "",
             api_key=_env_value(
@@ -220,7 +214,9 @@ class _SdkFactory:
             self._api_key = api_key.strip()
             client = self.services().client
             if not hasattr(client, "set_key"):
-                raise DependencyError("Configured Appwrite client cannot set an API key")
+                raise DependencyError(
+                    "Configured Appwrite client cannot set an API key"
+                )
             client.set_key(self._api_key)
 
 
@@ -297,9 +293,9 @@ def _json(value: Any) -> str:
 
 
 def _status(exc: BaseException, code: int) -> bool:
-    return getattr(exc, "code", None) == code or getattr(
-        exc, "status_code", None
-    ) == code
+    return (
+        getattr(exc, "code", None) == code or getattr(exc, "status_code", None) == code
+    )
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -488,9 +484,7 @@ class CredentialStore(_Table):
         )
         return self._credentials(rows[0]) if rows else None
 
-    async def get_refresh_token_by_user_id(
-        self, user_id: str
-    ) -> dict[str, Any] | None:
+    async def get_refresh_token_by_user_id(self, user_id: str) -> dict[str, Any] | None:
         credentials = await self.get_credentials(user_id)
         return None if credentials is None else credentials.as_dict()
 
@@ -498,9 +492,7 @@ class CredentialStore(_Table):
         await self._delete(_row_id("refresh-token", token))
 
     async def delete_user_tokens(self, user_id: str) -> None:
-        rows = await self._all(
-            [self._query("equal", "user_key", [_user_key(user_id)])]
-        )
+        rows = await self._all([self._query("equal", "user_key", [_user_key(user_id)])])
         await asyncio.gather(*(self._delete(row["$id"]) for row in rows))
 
 
@@ -540,9 +532,7 @@ class ResponseCache(_Table):
         stale = bool(row.get("is_long_term")) and _parse_time(row["stale_at"]) <= now
         return json.loads(row["data_json"]), stale
 
-    async def get(
-        self, user_id: str, endpoint: str, params: str = ""
-    ) -> Any | None:
+    async def get(self, user_id: str, endpoint: str, params: str = "") -> Any | None:
         entry = await self._entry(user_id, endpoint, params)
         return None if entry is None else entry[0]
 
@@ -577,8 +567,15 @@ class ResponseCache(_Table):
         )
 
     async def invalidate_user(self, user_id: str) -> None:
+        rows = await self._all([self._query("equal", "user_key", [_user_key(user_id)])])
+        await asyncio.gather(*(self._delete(row["$id"]) for row in rows))
+
+    async def invalidate_endpoint(self, user_id: str, endpoint: str) -> None:
         rows = await self._all(
-            [self._query("equal", "user_key", [_user_key(user_id)])]
+            [
+                self._query("equal", "user_key", [_user_key(user_id)]),
+                self._query("equal", "endpoint", [endpoint]),
+            ]
         )
         await asyncio.gather(*(self._delete(row["$id"]) for row in rows))
 
@@ -586,6 +583,71 @@ class ResponseCache(_Table):
     get_cached_with_revalidate = get_with_revalidate
     set_cache = set
     invalidate_user_cache = invalidate_user
+
+
+class UserStateStore(_Table):
+    """Generic durable storage for small pieces of user-owned application state."""
+
+    def __init__(self, tables_db: Any, query: Any, settings: BackendSettings):
+        super().__init__(tables_db, query, settings.database_id, "user_state")
+
+    @staticmethod
+    def _id(user_id: str, kind: str, item_key: str) -> str:
+        return _row_id("user-state", f"{user_id}:{kind}:{item_key}")
+
+    async def get(
+        self, user_id: str, kind: str, item_key: str = "default"
+    ) -> Any | None:
+        row = await self._get(self._id(user_id, kind, item_key))
+        return None if row is None else json.loads(row["data_json"])
+
+    async def set(
+        self,
+        user_id: str,
+        kind: str,
+        value: Any,
+        item_key: str = "default",
+        *,
+        enabled: bool = False,
+    ) -> None:
+        await self._upsert(
+            self._id(user_id, kind, item_key),
+            {
+                "user_key": _user_key(user_id),
+                "user_id": user_id,
+                "kind": kind,
+                "item_key": item_key,
+                "data_json": _json(value),
+                "enabled": enabled,
+                "updated_at": _iso(_now()),
+            },
+        )
+
+    async def delete(self, user_id: str, kind: str, item_key: str = "default") -> None:
+        await self._delete(self._id(user_id, kind, item_key))
+
+    async def list(self, user_id: str, kind: str) -> list[tuple[str, Any]]:
+        rows = await self._all(
+            [
+                self._query("equal", "user_key", [_user_key(user_id)]),
+                self._query("equal", "kind", [kind]),
+                self._query("order_asc", "item_key"),
+            ]
+        )
+        return [(str(row["item_key"]), json.loads(row["data_json"])) for row in rows]
+
+    async def list_enabled(self, kind: str) -> list[tuple[str, Any]]:
+        rows = await self._all(
+            [
+                self._query("equal", "kind", [kind]),
+                self._query("equal", "enabled", [True]),
+            ]
+        )
+        return [(str(row["user_id"]), json.loads(row["data_json"])) for row in rows]
+
+    async def delete_user(self, user_id: str) -> None:
+        rows = await self._all([self._query("equal", "user_key", [_user_key(user_id)])])
+        await asyncio.gather(*(self._delete(row["$id"]) for row in rows))
 
 
 class MetricsStore(_Table):
@@ -900,8 +962,14 @@ class IdentityToken:
 
 
 class IdentityService:
-    def __init__(self, users: Any, token_expire_seconds: int = 15 * 60):
+    def __init__(
+        self,
+        users: Any,
+        settings: BackendSettings,
+        token_expire_seconds: int = 15 * 60,
+    ):
         self._users = users
+        self._settings = settings
         self._token_expire_seconds = token_expire_seconds
 
     async def ensure_user_and_create_token(
@@ -932,6 +1000,28 @@ class IdentityService:
             raise RuntimeError("Appwrite returned an incomplete custom token")
         return IdentityToken(user_id, str(result["secret"]), str(result["expire"]))
 
+    async def verify_jwt(self, token: str) -> dict[str, Any]:
+        """Validate an Appwrite account JWT and return its authoritative user."""
+        if not token:
+            raise ValueError("Appwrite JWT cannot be empty")
+
+        def _get_account() -> dict[str, Any]:
+            from appwrite.client import Client
+            from appwrite.services.account import Account
+
+            client = (
+                Client()
+                .set_endpoint(self._settings.endpoint)
+                .set_project(self._settings.project_id)
+                .set_jwt(token)
+            )
+            return _mapping(Account(client).get())
+
+        account = await asyncio.to_thread(_get_account)
+        if not account.get("$id"):
+            raise RuntimeError("Appwrite returned an invalid account response")
+        return account
+
 
 class FunctionDispatcher:
     def __init__(self, functions: Any, settings: BackendSettings):
@@ -947,7 +1037,9 @@ class FunctionDispatcher:
     ) -> str:
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", task or ""):
             raise ValueError("task contains unsupported characters")
-        schedule = _iso(scheduled_at) if isinstance(scheduled_at, datetime) else scheduled_at
+        schedule = (
+            _iso(scheduled_at) if isinstance(scheduled_at, datetime) else scheduled_at
+        )
         result = _mapping(
             await asyncio.to_thread(
                 self._functions.create_execution,
@@ -969,6 +1061,7 @@ class AppwriteBackend:
     settings: BackendSettings
     credentials: CredentialStore
     cache: ResponseCache
+    state: UserStateStore
     metrics: MetricsStore
     snapshots: SnapshotStore
     files: FileStore
@@ -995,6 +1088,7 @@ def build_backend(
         settings=settings,
         credentials=CredentialStore(sdk.tables_db, sdk.query, settings, encryption),
         cache=ResponseCache(sdk.tables_db, sdk.query, settings),
+        state=UserStateStore(sdk.tables_db, sdk.query, settings),
         metrics=MetricsStore(sdk.tables_db, sdk.query, settings),
         snapshots=SnapshotStore(sdk.tables_db, sdk.query, settings),
         files=FileStore(
@@ -1005,7 +1099,7 @@ def build_backend(
             settings,
             encryption,
         ),
-        identity=IdentityService(sdk.users),
+        identity=IdentityService(sdk.users, settings),
         dispatcher=FunctionDispatcher(sdk.functions, settings),
         _factory=factory,
     )
