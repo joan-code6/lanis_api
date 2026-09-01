@@ -56,3 +56,20 @@ def test_cipher_round_trip_and_authentication():
     assert cipher.decrypt(encrypted) == "sph-password"
     with pytest.raises(CipherError):
         cipher.decrypt(encrypted[:-1] + ("A" if encrypted[-1] != "A" else "B"))
+
+
+def test_worker_treats_an_empty_scheduled_body_as_an_empty_payload():
+    from appwrite_functions.src.worker import _body
+
+    class EmptyRequest:
+        body_text = ""
+        body_binary = b""
+
+        @property
+        def body_json(self):
+            raise ValueError("empty body")
+
+    class ScheduledContext:
+        req = EmptyRequest()
+
+    assert _body(ScheduledContext()) == {}

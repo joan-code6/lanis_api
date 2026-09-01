@@ -40,7 +40,10 @@ logger = logging.getLogger("lanis.appwrite.worker")
 
 def _body(context: Any) -> dict[str, Any]:
     request = context.req
-    value = getattr(request, "body_json", None)
+    try:
+        value = getattr(request, "body_json", None)
+    except (TypeError, ValueError):
+        value = None
     if isinstance(value, dict):
         return value
     raw = getattr(request, "body_text", None)
