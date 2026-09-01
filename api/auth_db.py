@@ -47,7 +47,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
         "view_mode": "rolling",
     },
     "homework": {
-        "hide_completed_in_overview": True,
+        "completed_display": "green",
     },
     "vertretungsplan": {
         "class_override": "",
@@ -650,6 +650,16 @@ def _decode_user_preferences(serialized: object, user_id: str) -> Dict[str, Any]
         stored = {}
     if not isinstance(stored, dict):
         stored = {}
+    # Migrate the initial boolean preference introduced before the three-way display choice.
+    homework = stored.get("homework")
+    if isinstance(homework, dict) and "completed_display" not in homework:
+        legacy_visibility = homework.get("hide_completed_in_overview")
+        if isinstance(legacy_visibility, bool):
+            stored = dict(stored)
+            stored["homework"] = {
+                **homework,
+                "completed_display": "hidden" if legacy_visibility else "orange",
+            }
     return _merge_nested_preferences(DEFAULT_USER_PREFERENCES, stored)
 
 

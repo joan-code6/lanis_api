@@ -250,7 +250,7 @@ class TimetablePreferencesRequest(BaseModel):
 
 
 class HomeworkPreferencesRequest(BaseModel):
-    hide_completed_in_overview: Optional[bool] = None
+    completed_display: Optional[Literal["orange", "green", "hidden"]] = None
 
 
 class VertretungsplanPreferencesRequest(BaseModel):

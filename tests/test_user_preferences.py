@@ -36,7 +36,7 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "theme_color": "cyan",
     }
     assert defaults["dashboard"]["pinned_modules"] == []
-    assert defaults["homework"] == {"hide_completed_in_overview": True}
+    assert defaults["homework"] == {"completed_display": "green"}
     assert defaults["vertretungsplan"] == {"class_override": ""}
     assert defaults["onboarding"]["status"] == "not_started"
 
@@ -115,17 +115,19 @@ def test_vertretungsplan_preferences_limit_class_override() -> None:
         VertretungsplanPreferencesRequest(class_override="x" * 101)
 
 
-def test_homework_preferences_accept_overview_visibility_choice() -> None:
-    hidden = HomeworkPreferencesRequest(hide_completed_in_overview=True)
-    visible = HomeworkPreferencesRequest(hide_completed_in_overview=False)
+def test_homework_preferences_accept_overview_display_choices() -> None:
+    orange = HomeworkPreferencesRequest(completed_display="orange")
+    green = HomeworkPreferencesRequest(completed_display="green")
+    hidden = HomeworkPreferencesRequest(completed_display="hidden")
 
-    assert hidden.hide_completed_in_overview is True
-    assert visible.hide_completed_in_overview is False
+    assert orange.completed_display == "orange"
+    assert green.completed_display == "green"
+    assert hidden.completed_display == "hidden"
 
 
 def test_homework_preferences_are_included_in_updates() -> None:
     payload = UserPreferencesRequest(
-        homework={"hide_completed_in_overview": False},
+        homework={"completed_display": "hidden"},
         onboarding={"last_step": "homework"},
     )
     dumped = (
@@ -135,7 +137,7 @@ def test_homework_preferences_are_included_in_updates() -> None:
     )
 
     assert dumped == {
-        "homework": {"hide_completed_in_overview": False},
+        "homework": {"completed_display": "hidden"},
         "onboarding": {"last_step": "homework"},
     }
 
