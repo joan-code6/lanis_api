@@ -51,6 +51,7 @@ from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .documentation import router as documentation_router
 from .auth_db import (
+    DEFAULT_SIDEBAR_ORDER,
     initialize as auth_db_initialize,
     store_refresh_token,
     get_refresh_token,
@@ -245,6 +246,31 @@ class DashboardPreferencesRequest(BaseModel):
         return value
 
 
+SidebarItemId = Literal[
+    "dashboard",
+    "messages",
+    "dateispeicher",
+    "vertretungsplan",
+    "dsb",
+    "courses",
+    "timetable",
+    "study-groups",
+    "calendar",
+    "profile",
+    "settings",
+]
+
+
+class SidebarPreferencesRequest(BaseModel):
+    order: Optional[List[SidebarItemId]] = None
+
+    @field_validator("order")
+    def validate_order(cls, value):
+        if value is not None and len(value) > len(DEFAULT_SIDEBAR_ORDER):
+            raise ValueError("Sidebar order contains too many entries")
+        return value
+
+
 class TimetablePreferencesRequest(BaseModel):
     view_mode: Optional[Literal["rolling", "week"]] = None
 
@@ -281,6 +307,7 @@ class OnboardingPreferencesRequest(BaseModel):
 
 class UserPreferencesRequest(BaseModel):
     appearance: Optional[AppearancePreferencesRequest] = None
+    sidebar: Optional[SidebarPreferencesRequest] = None
     dashboard: Optional[DashboardPreferencesRequest] = None
     timetable: Optional[TimetablePreferencesRequest] = None
     homework: Optional[HomeworkPreferencesRequest] = None
@@ -1346,6 +1373,13 @@ async def update_account_preferences(
                 continue
             cleaned_modules.append(cleaned)
         dashboard["pinned_modules"] = cleaned_modules
+
+    sidebar = updates.get("sidebar")
+    if isinstance(sidebar, dict) and "order" in sidebar:
+        cleaned_order = list(dict.fromkeys(sidebar["order"]))
+        sidebar["order"] = cleaned_order + [
+            item for item in DEFAULT_SIDEBAR_ORDER if item not in cleaned_order
+        ]
 
     vertretungsplan = updates.get("vertretungsplan")
     if isinstance(vertretungsplan, dict) and "class_override" in vertretungsplan:
