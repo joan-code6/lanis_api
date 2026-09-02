@@ -10,6 +10,7 @@ from api import auth_db
 from api.api import (
     DashboardPreferencesRequest,
     HomeworkPreferencesRequest,
+    SidebarPreferencesRequest,
     UserPreferencesRequest,
     VertretungsplanPreferencesRequest,
     get_account_preferences,
@@ -35,6 +36,7 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "theme_mode": "system",
         "theme_color": "cyan",
     }
+    assert defaults["sidebar"] == {"order": auth_db.DEFAULT_SIDEBAR_ORDER}
     assert defaults["dashboard"]["pinned_modules"] == []
     assert defaults["homework"] == {"completed_display": "green"}
     assert defaults["vertretungsplan"] == {"class_override": ""}
@@ -113,6 +115,39 @@ def test_preferences_route_cleans_module_names(monkeypatch) -> None:
 def test_vertretungsplan_preferences_limit_class_override() -> None:
     with pytest.raises(ValidationError):
         VertretungsplanPreferencesRequest(class_override="x" * 101)
+
+
+def test_sidebar_preferences_reject_unknown_and_oversized_orders() -> None:
+    with pytest.raises(ValidationError):
+        SidebarPreferencesRequest(order=["unknown"])
+
+    with pytest.raises(ValidationError):
+        SidebarPreferencesRequest(order=["dashboard"] * 12)
+
+
+def test_sidebar_preferences_are_normalized_before_saving(monkeypatch) -> None:
+    captured = {}
+
+    async def save_preferences(user_id, updates):
+        captured["updates"] = updates
+        return updates
+
+    monkeypatch.setattr(api_module, "save_user_preferences", save_preferences)
+    payload = UserPreferencesRequest(
+        sidebar={"order": ["settings", "dashboard", "settings"]}
+    )
+
+    result = asyncio.run(
+        update_account_preferences(payload, SimpleNamespace(user_id="5201:student"))
+    )
+
+    expected = ["settings", "dashboard"] + [
+        item
+        for item in auth_db.DEFAULT_SIDEBAR_ORDER
+        if item not in {"settings", "dashboard"}
+    ]
+    assert captured["updates"]["sidebar"]["order"] == expected
+    assert result["preferences"]["sidebar"]["order"] == expected
 
 
 def test_homework_preferences_accept_overview_display_choices() -> None:

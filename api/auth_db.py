@@ -34,10 +34,26 @@ DEFAULT_NOTIFICATION_PREFERENCES: Dict[str, Any] = {
     "timezone": "Europe/Berlin",
     "show_preview": True,
 }
+DEFAULT_SIDEBAR_ORDER = [
+    "dashboard",
+    "messages",
+    "dateispeicher",
+    "vertretungsplan",
+    "dsb",
+    "courses",
+    "timetable",
+    "study-groups",
+    "calendar",
+    "profile",
+    "settings",
+]
 DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     "appearance": {
         "theme_mode": "system",
         "theme_color": "cyan",
+    },
+    "sidebar": {
+        "order": DEFAULT_SIDEBAR_ORDER,
     },
     "dashboard": {
         "pinned_modules": [],
