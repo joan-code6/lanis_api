@@ -10,11 +10,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 import jwt
+import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
@@ -359,11 +363,10 @@ async def _metric_row(school_id: str, username: str) -> Any:
     return await user_metrics_db.get_user(school_id, username)
 
 
-# The public SPH school directory currently provides a school ID, name, town,
-# and district, but not coordinates. Keep the small set of coordinates that we
-# can verify locally here and label them as town centroids in the response. A
-# future directory import can replace these with exact school coordinates
-# without changing the admin API contract.
+# The public SPH school directory currently provides a school ID, full name,
+# town, and district, but not coordinates. OpenStreetMap/Nominatim is used to
+# resolve the full school name plus town. These town centroids are only a
+# fallback for schools that OSM cannot resolve.
 _HESSEN_CITY_COORDINATES: dict[str, tuple[float, float]] = {
     "bad hersfeld": (50.87, 9.71),
     "bad homburg": (50.23, 8.62),
@@ -401,6 +404,12 @@ _HESSEN_CITY_COORDINATES: dict[str, tuple[float, float]] = {
     "zierenberg": (51.37, 9.30),
 }
 _school_directory_cache: dict[str, Any] = {"data": None, "created_at": None}
+_school_geocode_cache: dict[str, dict[str, Any]] = {}
+_school_geocode_lock = threading.Lock()
+_school_geocode_last_request = 0.0
+_SCHOOL_GEOCODE_CACHE_TTL = timedelta(days=30)
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_NOMINATIM_USER_AGENT = "LANIS Admin Portal map/1.0 (private admin tool)"
 
 
 async def _get_school_directory() -> dict[str, dict[str, Any]]:
@@ -437,6 +446,77 @@ def _city_coordinates(location: str) -> tuple[float, float] | None:
         if city in normalized:
             return coordinates
     return None
+
+
+def _geocode_school(
+    school_id: str,
+    name: str,
+    location: str,
+) -> tuple[float, float] | None:
+    """Resolve a full school name to an OSM coordinate with a small cache.
+
+    Nominatim asks clients to identify themselves and keep requests to roughly
+    one per second. The process-local cache avoids repeating lookups on every
+    dashboard refresh, while the lock keeps concurrent admin requests within
+    that limit. A failed lookup is cached too so an unknown school does not
+    repeatedly hit the geocoder.
+    """
+    global _school_geocode_last_request
+    now = datetime.now(timezone.utc)
+    cached = _school_geocode_cache.get(school_id)
+    if cached and now - cached["created_at"] < _SCHOOL_GEOCODE_CACHE_TTL:
+        return cached["coordinates"]
+
+    query = ", ".join(
+        part
+        for part in (str(name).strip(), str(location).strip(), "Hessen", "Deutschland")
+        if part
+    )
+    if not query:
+        _school_geocode_cache[school_id] = {"created_at": now, "coordinates": None}
+        return None
+
+    with _school_geocode_lock:
+        # Another request may have filled the cache while this one waited.
+        cached = _school_geocode_cache.get(school_id)
+        if cached and now - cached["created_at"] < _SCHOOL_GEOCODE_CACHE_TTL:
+            return cached["coordinates"]
+
+        wait_seconds = 1.0 - (time.monotonic() - _school_geocode_last_request)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+        try:
+            response = requests.get(
+                f"{_NOMINATIM_URL}?{urlencode({'q': query, 'format': 'jsonv2', 'limit': 1, 'countrycodes': 'de'})}",
+                headers={"User-Agent": _NOMINATIM_USER_AGENT},
+                timeout=8,
+            )
+            _school_geocode_last_request = time.monotonic()
+            response.raise_for_status()
+            results = response.json()
+            result = results[0] if isinstance(results, list) and results else None
+            latitude = float(result["lat"]) if result else None
+            longitude = float(result["lon"]) if result else None
+            # Keep an accidental fuzzy match outside Hessen from becoming a
+            # misleading school pin.
+            if (
+                latitude is None
+                or longitude is None
+                or not 49.2 <= latitude <= 51.8
+                or not 7.4 <= longitude <= 10.2
+            ):
+                coordinates = None
+            else:
+                coordinates = (latitude, longitude)
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            logger.warning("Could not geocode school %s with OpenStreetMap", school_id)
+            coordinates = None
+
+        _school_geocode_cache[school_id] = {
+            "created_at": datetime.now(timezone.utc),
+            "coordinates": coordinates,
+        }
+        return coordinates
 
 
 @router.get("/users", response_model=AdminUsersResponse)
@@ -642,6 +722,16 @@ async def admin_metrics_schools_map(
             entry["active_users_range"] += 1
 
     for entry in schools.values():
+        coordinates = await run_in_threadpool(
+            _geocode_school,
+            entry["school_id"],
+            entry["name"],
+            entry["location"],
+        )
+        if coordinates:
+            entry["latitude"], entry["longitude"] = coordinates
+            entry["coordinate_source"] = "openstreetmap"
+            continue
         coordinates = _city_coordinates(entry["location"])
         if coordinates:
             entry["latitude"], entry["longitude"] = coordinates
@@ -656,7 +746,7 @@ async def admin_metrics_schools_map(
         "success": True,
         "generated_at": now.isoformat() + "Z",
         "range_days": days,
-        "coordinate_note": "Coordinates are verified town centroids until exact school coordinates are imported.",
+        "coordinate_note": "School names are geocoded with OpenStreetMap. Town centroids are used only when a school cannot be found.",
         "summary": {
             "schools": len(schools),
             "mapped_schools": mapped,
