@@ -905,6 +905,7 @@ app.include_router(admin_router)
 
 @app.on_event("startup")
 async def _startup() -> None:
+    """Initialize stores and start the API's background schedulers."""
     global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task
     await auth_db_initialize()
     await user_metrics_db.initialize()
@@ -925,6 +926,7 @@ async def _startup() -> None:
 
 @app.on_event("shutdown")
 async def _cleanup_sessions() -> None:
+    """Cancel background schedulers and close active sessions cleanly."""
     global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task
     if _dsb_scheduler_task:
         _dsb_scheduler_task.cancel()

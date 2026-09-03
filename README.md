@@ -74,7 +74,6 @@ LANIS_ADMIN_ORIGIN=https://admin.lanis.arg-server.de
 LANIS_UPTIME_SCHOOL_ID=replace-with-monitor-school-id
 LANIS_UPTIME_USERNAME=replace-with-monitor-username
 LANIS_UPTIME_PASSWORD=replace-with-monitor-password
-LANIS_UPTIME_URL=https://login.schulportal.hessen.de/
 LANIS_UPTIME_INTERVAL_SECONDS=300
 LANIS_UPTIME_TIMEOUT_SECONDS=15
 ```

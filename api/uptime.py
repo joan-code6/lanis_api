@@ -11,7 +11,6 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlparse
 
 import requests
 from fastapi.concurrency import run_in_threadpool
@@ -34,18 +33,12 @@ def _utcnow() -> datetime:
 
 
 def get_uptime_url() -> str:
-    """Return the configured login URL, failing closed on malformed values."""
-    candidate = os.getenv("LANIS_UPTIME_URL", "").strip()
-    if not candidate:
-        return DEFAULT_UPTIME_URL
-    parsed = urlparse(candidate)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        logger.warning("Ignoring malformed LANIS_UPTIME_URL")
-        return DEFAULT_UPTIME_URL
-    return candidate
+    """Return the Schulportal login URL used by the authenticated client."""
+    return DEFAULT_UPTIME_URL
 
 
 def _positive_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    """Read and clamp a finite positive numeric environment setting."""
     try:
         value = float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
@@ -56,6 +49,7 @@ def _positive_env(name: str, default: float, minimum: float, maximum: float) -> 
 
 
 def get_uptime_interval_seconds() -> int:
+    """Return the scheduler interval in seconds."""
     return round(
         _positive_env(
             "LANIS_UPTIME_INTERVAL_SECONDS",
@@ -67,6 +61,7 @@ def get_uptime_interval_seconds() -> int:
 
 
 def get_uptime_timeout_seconds() -> float:
+    """Return the maximum request timeout in seconds."""
     return _positive_env(
         "LANIS_UPTIME_TIMEOUT_SECONDS",
         DEFAULT_UPTIME_TIMEOUT_SECONDS,
@@ -93,6 +88,7 @@ def _uptime_credentials() -> tuple[str, str, str] | None:
 
 
 def uptime_is_configured() -> bool:
+    """Return whether a complete monitor credential set is available."""
     return _uptime_credentials() is not None
 
 
@@ -116,6 +112,7 @@ def _feature(
     module_count: int | None = None,
     opened_count: int | None = None,
 ) -> dict[str, Any]:
+    """Build a normalized result for one synthetic feature check."""
     return {
         "name": name,
         "status": status,
@@ -140,6 +137,7 @@ def _install_request_timeout(client: SchulportalHessenAPI) -> None:
 
 
 def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
+    """Fetch the account's modules and verify that each module can open."""
     started = time.perf_counter()
     try:
         apps_result = client.get_apps()

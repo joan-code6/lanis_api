@@ -556,7 +556,10 @@ class UserMetricsDB:
             # At the default five-minute interval this keeps the local store
             # bounded without removing the recent history shown in the admin UI.
             await db.execute(
-                "DELETE FROM uptime_checks WHERE checked_at < datetime('now', '-90 day')"
+                """
+                DELETE FROM uptime_checks
+                WHERE julianday(checked_at) < julianday('now', '-90 day')
+                """
             )
             await db.commit()
 
