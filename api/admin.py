@@ -109,7 +109,14 @@ class AdminPrincipal:
 
 def _configured_accounts() -> set[str]:
     """Parse the comma-separated allowlist and fail closed on malformed values."""
-    raw = os.getenv("LANIS_ADMIN_ACCOUNTS", "")
+    raw = ",".join(
+        value
+        for value in (
+            os.getenv("LANIS_ADMIN_ACCOUNTS", ""),
+            os.getenv("LANIS_ADMIN_ACCOUNTS_EXTRA", ""),
+        )
+        if value.strip()
+    )
     accounts: set[str] = set()
     for item in raw.split(","):
         item = item.strip()
@@ -600,8 +607,14 @@ async def admin_user_detail(
 @router.post("/users/{user_id:path}/credentials/reveal")
 async def reveal_user_password(
     user_id: str,
-    _: AdminPrincipal = Depends(step_up_dependency),
+    principal: AdminPrincipal = Depends(admin_dependency),
+    step_up_principal: AdminPrincipal = Depends(step_up_dependency),
 ) -> dict[str, Any]:
+    if principal.user_id != step_up_principal.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Step-up session belongs to a different admin",
+        )
     school_id, separator, username = user_id.partition(":")
     if not separator or not school_id or not username:
         raise HTTPException(status_code=404, detail="User not found")
@@ -612,7 +625,7 @@ async def reveal_user_password(
             status_code=404, detail="No active stored credential for this user"
         )
     target_user_id = make_user_id(school_id, username)
-    await _record_admin_action(_.user_id, "credential_reveal", target_user_id)
+    await _record_admin_action(principal.user_id, "credential_reveal", target_user_id)
     logger.warning("Admin credential reveal for %s", target_user_id)
     return {
         "success": True,
@@ -620,6 +633,106 @@ async def reveal_user_password(
         "username": username,
         "password": credentials["password"],
         "expires_at": credentials.get("expires_at"),
+    }
+
+
+@router.get("/schools/{school_id:path}")
+async def admin_school_detail(
+    school_id: str,
+    _: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    """Return the public school directory record and every known LANIS user."""
+    normalized_school_id = normalize_school_id(school_id)
+    directory = await _get_school_directory()
+    directory_entry = directory.get(normalized_school_id, {})
+    rows = [
+        row
+        for row in await _metric_rows(limit=5000)
+        if normalize_school_id(
+            str(
+                row.school_id
+                if hasattr(row, "school_id")
+                else row.get("school_id", "")
+            )
+        )
+        == normalized_school_id
+    ]
+    if not rows and not directory_entry:
+        raise HTTPException(status_code=404, detail="School not found")
+
+    summaries = [_summary_from_row(row) for row in rows]
+    summaries.sort(key=lambda row: row.last_seen or row.first_seen or "", reverse=True)
+    now = _utcnow()
+    first_login = min(
+        (summary.first_seen for summary in summaries if summary.first_seen),
+        default=None,
+    )
+    last_activity = max(
+        (summary.last_seen for summary in summaries if summary.last_seen),
+        default=None,
+    )
+    coordinates = await run_in_threadpool(
+        _geocode_school,
+        normalized_school_id,
+        directory_entry.get("name") or normalized_school_id,
+        directory_entry.get("location") or "",
+    )
+    coordinate_source = "openstreetmap"
+    if not coordinates:
+        coordinates = _city_coordinates(directory_entry.get("location") or "")
+        coordinate_source = "town-centroid" if coordinates else None
+
+    def summary_dict(summary: AdminUserSummary) -> dict[str, Any]:
+        return (
+            summary.model_dump()
+            if hasattr(summary, "model_dump")
+            else summary.dict()
+        )
+
+    return {
+        "success": True,
+        "generated_at": now.isoformat() + "Z",
+        "school": {
+            "school_id": normalized_school_id,
+            "name": directory_entry.get("name") or normalized_school_id,
+            "location": directory_entry.get("location") or "",
+            "district": directory_entry.get("district") or "",
+            "latitude": coordinates[0] if coordinates else None,
+            "longitude": coordinates[1] if coordinates else None,
+            "coordinate_source": coordinate_source,
+        },
+        "stats": {
+            "known_users": len(summaries),
+            "active_users_24h": sum(
+                1
+                for summary in summaries
+                if summary.last_seen
+                and now - (_parse_iso(summary.last_seen) or now)
+                <= timedelta(days=1)
+            ),
+            "active_users_7d": sum(
+                1
+                for summary in summaries
+                if summary.last_seen
+                and now - (_parse_iso(summary.last_seen) or now)
+                <= timedelta(days=7)
+            ),
+            "logins": sum(summary.login_count for summary in summaries),
+            "sessions": sum(summary.session_count for summary in summaries),
+            "total_active_seconds": sum(
+                summary.total_active_seconds for summary in summaries
+            ),
+            "first_login": first_login,
+            "last_activity": last_activity,
+        },
+        "coordinate_note": (
+            "School location resolved with OpenStreetMap."
+            if coordinate_source == "openstreetmap"
+            else "Town centroid fallback; OpenStreetMap did not return a school match."
+            if coordinate_source == "town-centroid"
+            else "No map coordinate is available for this school."
+        ),
+        "users": [summary_dict(summary) for summary in summaries],
     }
 
 
