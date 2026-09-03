@@ -359,6 +359,86 @@ async def _metric_row(school_id: str, username: str) -> Any:
     return await user_metrics_db.get_user(school_id, username)
 
 
+# The public SPH school directory currently provides a school ID, name, town,
+# and district, but not coordinates. Keep the small set of coordinates that we
+# can verify locally here and label them as town centroids in the response. A
+# future directory import can replace these with exact school coordinates
+# without changing the admin API contract.
+_HESSEN_CITY_COORDINATES: dict[str, tuple[float, float]] = {
+    "bad hersfeld": (50.87, 9.71),
+    "bad homburg": (50.23, 8.62),
+    "bad nauheim": (50.36, 8.74),
+    "bad vilbel": (50.18, 8.74),
+    "bensheim": (49.68, 8.62),
+    "darmstadt": (49.87, 8.65),
+    "eschborn": (50.14, 8.57),
+    "fulda": (50.55, 9.68),
+    "gießen": (50.59, 8.67),
+    "giessen": (50.59, 8.67),
+    "frankfurt": (50.11, 8.68),
+    "friedberg": (50.34, 8.76),
+    "hanau": (50.13, 8.92),
+    "heppenheim": (49.64, 8.64),
+    "kassel": (51.31, 9.50),
+    "kelkheim": (50.14, 8.45),
+    "limburg": (50.38, 8.06),
+    "marburg": (50.81, 8.77),
+    "melsungen": (51.13, 9.55),
+    "maintal": (50.15, 8.83),
+    "michelstadt": (49.68, 9.00),
+    "mörfelden-walldorf": (49.99, 8.58),
+    "moerfelden-walldorf": (49.99, 8.58),
+    "neu-isenburg": (50.05, 8.69),
+    "neu isenburg": (50.05, 8.69),
+    "offenbach": (50.10, 8.77),
+    "petersberg": (50.56, 9.72),
+    "rüsselsheim": (49.99, 8.42),
+    "ruesselsheim": (49.99, 8.42),
+    "schwalmstadt": (50.91, 9.22),
+    "wetzlar": (50.56, 8.50),
+    "wiesbaden": (50.08, 8.24),
+    "willingen": (51.29, 8.61),
+    "zierenberg": (51.37, 9.30),
+}
+_school_directory_cache: dict[str, Any] = {"data": None, "created_at": None}
+
+
+async def _get_school_directory() -> dict[str, dict[str, Any]]:
+    now = _utcnow()
+    created_at = _school_directory_cache["created_at"]
+    if created_at and _school_directory_cache["data"] and now - created_at < timedelta(hours=12):
+        return _school_directory_cache["data"]
+    client = SchulportalHessenAPI()
+    try:
+        payload = await run_in_threadpool(client.school_list_get_all)
+    except Exception:
+        logger.warning("Could not load school directory for admin map", exc_info=True)
+        return _school_directory_cache["data"] or {}
+    finally:
+        client.close()
+    directory: dict[str, dict[str, Any]] = {}
+    for district in payload.get("districts", []) if isinstance(payload, dict) else []:
+        for school in district.get("schools", []) if isinstance(district, dict) else []:
+            school_id = normalize_school_id(str(school.get("id", "")))
+            if school_id:
+                directory[school_id] = {
+                    "name": school.get("name") or school_id,
+                    "location": school.get("location") or "",
+                    "district": district.get("name") or "",
+                }
+    _school_directory_cache["data"] = directory
+    _school_directory_cache["created_at"] = now
+    return directory
+
+
+def _city_coordinates(location: str) -> tuple[float, float] | None:
+    normalized = str(location or "").casefold().strip()
+    for city, coordinates in _HESSEN_CITY_COORDINATES.items():
+        if city in normalized:
+            return coordinates
+    return None
+
+
 @router.get("/users", response_model=AdminUsersResponse)
 async def admin_users(
     search: str = Query("", max_length=100),
@@ -515,4 +595,74 @@ async def admin_metrics_overview(
         },
         "login_series": series,
         "runtime": runtime,
+    }
+
+
+@router.get("/metrics/schools/map")
+async def admin_metrics_schools_map(
+    days: int = Query(30, ge=1, le=90),
+    _: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    """Return school-level usage aggregates for the private Hessen map.
+
+    A school is included only after an account from that school has completed a
+    successful login. Coordinates are deliberately school/town-level and are
+    never inferred from user activity or device data.
+    """
+    now = _utcnow()
+    directory = await _get_school_directory()
+    rows = await _metric_rows(limit=5000)
+    schools: dict[str, dict[str, Any]] = {}
+    since = now - timedelta(days=days)
+    for row in rows:
+        summary = _summary_from_row(row)
+        school_id = normalize_school_id(summary.school_id)
+        entry = schools.setdefault(
+            school_id,
+            {
+                "school_id": school_id,
+                "name": directory.get(school_id, {}).get("name") or school_id,
+                "location": directory.get(school_id, {}).get("location") or "",
+                "district": directory.get(school_id, {}).get("district") or "",
+                "known_users": 0,
+                "active_users_24h": 0,
+                "active_users_7d": 0,
+                "active_users_range": 0,
+                "logins": 0,
+            },
+        )
+        entry["known_users"] += 1
+        entry["logins"] += summary.login_count
+        last_seen = _parse_iso(summary.last_seen)
+        if last_seen and now - last_seen <= timedelta(days=1):
+            entry["active_users_24h"] += 1
+        if last_seen and now - last_seen <= timedelta(days=7):
+            entry["active_users_7d"] += 1
+        if last_seen and last_seen >= since:
+            entry["active_users_range"] += 1
+
+    for entry in schools.values():
+        coordinates = _city_coordinates(entry["location"])
+        if coordinates:
+            entry["latitude"], entry["longitude"] = coordinates
+            entry["coordinate_source"] = "town-centroid"
+        else:
+            entry["latitude"] = None
+            entry["longitude"] = None
+            entry["coordinate_source"] = None
+
+    mapped = sum(1 for entry in schools.values() if entry["latitude"] is not None)
+    return {
+        "success": True,
+        "generated_at": now.isoformat() + "Z",
+        "range_days": days,
+        "coordinate_note": "Coordinates are verified town centroids until exact school coordinates are imported.",
+        "summary": {
+            "schools": len(schools),
+            "mapped_schools": mapped,
+            "known_users": sum(entry["known_users"] for entry in schools.values()),
+            "active_users_24h": sum(entry["active_users_24h"] for entry in schools.values()),
+            "active_users_7d": sum(entry["active_users_7d"] for entry in schools.values()),
+        },
+        "schools": sorted(schools.values(), key=lambda entry: entry["known_users"], reverse=True),
     }
