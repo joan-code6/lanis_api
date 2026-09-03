@@ -69,6 +69,13 @@ JWT_SECRET=replace-this-with-a-long-random-value
 LANIS_ADMIN_ACCOUNTS=5201:admin.one,1234:admin.two
 LANIS_ADMIN_JWT_SECRET=replace-with-a-separate-random-value
 LANIS_ADMIN_ORIGIN=https://admin.lanis.arg-server.de
+
+# Optional authenticated Schulportal synthetic monitor. Keep these values secret.
+LANIS_UPTIME_SCHOOL_ID=replace-with-monitor-school-id
+LANIS_UPTIME_USERNAME=replace-with-monitor-username
+LANIS_UPTIME_PASSWORD=replace-with-monitor-password
+LANIS_UPTIME_INTERVAL_SECONDS=300
+LANIS_UPTIME_TIMEOUT_SECONDS=15
 ```
 
 Keep that value unchanged across deployments; changing it invalidates issued
@@ -79,6 +86,16 @@ Admin access is checked against `LANIS_ADMIN_ACCOUNTS` and then authenticated
 with the same Schulportal credentials. Admin credentials are not stored in the
 configuration file. The observability API is under `/admin/*`; the legacy
 `/metrics/stats` endpoint is retained only as a protected, deprecated alias.
+
+The backend also runs an authenticated Schulportal synthetic check every five
+minutes by default. It logs in with the monitor account, loads the available
+modules, and opens each module entry without exposing credentials. Configure
+the account with `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME`, and
+`LANIS_UPTIME_PASSWORD`; existing local deployments may use the corresponding
+`LANIS_API_*` variables as a fallback. Results are retained for 90 days in the
+metrics database and are available to the private admin portal at
+`GET /admin/uptime`. An immediate check can be triggered with
+`POST /admin/uptime/check`.
 
 ```bash
 uvicorn api.api:app

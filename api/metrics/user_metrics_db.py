@@ -214,6 +214,33 @@ class UserMetricsDB:
                 ON activity_events(event_type, occurred_at)
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS uptime_checks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    checked_at TIMESTAMP NOT NULL,
+                    url TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    is_available INTEGER NOT NULL,
+                    status_code INTEGER,
+                    latency_ms INTEGER,
+                    error TEXT,
+                    features_json TEXT NOT NULL DEFAULT '[]'
+                )
+                """
+            )
+            async with db.execute("PRAGMA table_info(uptime_checks)") as cursor:
+                uptime_columns = {row[1] for row in await cursor.fetchall()}
+            if "features_json" not in uptime_columns:
+                await db.execute(
+                    "ALTER TABLE uptime_checks ADD COLUMN features_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_uptime_checks_checked_at
+                ON uptime_checks(checked_at)
+                """
+            )
             
             await db.commit()
         
@@ -502,6 +529,81 @@ class UserMetricsDB:
                 (since.isoformat(),),
             )
             return [dict(row) for row in await cursor.fetchall()]
+
+    async def record_uptime_check(self, check: Dict[str, Any]) -> None:
+        """Persist one authenticated Schulportal synthetic check."""
+        await self.initialize()
+        checked_at = str(check.get("checked_at") or datetime.utcnow().isoformat())
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO uptime_checks (
+                    checked_at, url, status, is_available, status_code,
+                    latency_ms, error, features_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checked_at,
+                    str(check.get("url") or ""),
+                    str(check.get("status") or "down"),
+                    1 if check.get("is_available") else 0,
+                    check.get("status_code"),
+                    check.get("latency_ms"),
+                    check.get("error"),
+                    json.dumps(check.get("features") or [], ensure_ascii=False),
+                ),
+            )
+            # At the default five-minute interval this keeps the local store
+            # bounded without removing the recent history shown in the admin UI.
+            await db.execute(
+                """
+                DELETE FROM uptime_checks
+                WHERE julianday(checked_at) < julianday('now', '-90 day')
+                """
+            )
+            await db.commit()
+
+    async def get_uptime_checks(
+        self,
+        limit: int = 100,
+        since: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return recent portal checks, newest first."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if since is None:
+                cursor = await db.execute(
+                    """
+                    SELECT checked_at, url, status, is_available, status_code,
+                           latency_ms, error, features_json
+                    FROM uptime_checks
+                    ORDER BY checked_at DESC LIMIT ?
+                    """,
+                    (limit,),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT checked_at, url, status, is_available, status_code,
+                           latency_ms, error, features_json
+                    FROM uptime_checks
+                    WHERE checked_at >= ?
+                    ORDER BY checked_at DESC LIMIT ?
+                    """,
+                    (since.isoformat(), limit),
+                )
+            checks = []
+            for row in await cursor.fetchall():
+                check = dict(row)
+                check["is_available"] = bool(check["is_available"])
+                try:
+                    features = json.loads(check.pop("features_json") or "[]")
+                except (TypeError, ValueError):
+                    features = []
+                check["features"] = features if isinstance(features, list) else []
+                checks.append(check)
+            return checks
 
     async def record_admin_action(
         self, actor_user_id: str, action: str, target_user_id: str = ""

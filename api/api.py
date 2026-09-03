@@ -49,6 +49,7 @@ from .identity import (
 )
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
+from .uptime import run_uptime_scheduler
 from .documentation import router as documentation_router
 from .admin import AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
@@ -719,6 +720,7 @@ class AuthManager:
 sessions = AuthManager()
 _dsb_scheduler_task = None
 _message_notification_task = None
+_uptime_scheduler_task = None
 
 
 # --- Background Tasks ---
@@ -903,7 +905,8 @@ app.include_router(admin_router)
 
 @app.on_event("startup")
 async def _startup() -> None:
-    global _dsb_scheduler_task, _message_notification_task
+    """Initialize stores and start the API's background schedulers."""
+    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task
     await auth_db_initialize()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
@@ -914,19 +917,23 @@ async def _startup() -> None:
         sessions.invalidate_endpoint_cache,
         get_notification_preferences,
     )
+    _uptime_scheduler_task = await run_uptime_scheduler()
     logger.info(
         "API started with task queue, databases, DSB snapshot scheduler, "
-        "and message notification scheduler"
+        "message notification scheduler, and Schulportal uptime monitor"
     )
 
 
 @app.on_event("shutdown")
 async def _cleanup_sessions() -> None:
-    global _dsb_scheduler_task, _message_notification_task
+    """Cancel background schedulers and close active sessions cleanly."""
+    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task
     if _dsb_scheduler_task:
         _dsb_scheduler_task.cancel()
     if _message_notification_task:
         _message_notification_task.cancel()
+    if _uptime_scheduler_task:
+        _uptime_scheduler_task.cancel()
     await task_queue.stop(wait=True, timeout=10.0)
     await sessions.shutdown()
 
