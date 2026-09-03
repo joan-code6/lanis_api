@@ -111,3 +111,22 @@ def test_existing_case_variant_auth_rows_are_rekeyed(tmp_path, monkeypatch):
         assert token_data["user_id"] == "5201:bennet.wegener"
 
     asyncio.run(scenario())
+
+
+def test_refresh_passwords_are_encrypted_at_rest(tmp_path, monkeypatch):
+    database_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_db, "DB_PATH", str(database_path))
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "c" * 64)
+
+    async def scenario():
+        await auth_db.initialize()
+        token = await auth_db.store_refresh_token("user-a", "5201", "user", "secret")
+        async with aiosqlite.connect(database_path) as db:
+            row = await (await db.execute(
+                "SELECT password FROM refresh_tokens WHERE token = ?", (token,)
+            )).fetchone()
+        assert row[0].startswith("v1:")
+        credentials = await auth_db.get_refresh_token(token)
+        assert credentials["password"] == "secret"
+
+    asyncio.run(scenario())

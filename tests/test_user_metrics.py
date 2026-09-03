@@ -85,3 +85,25 @@ def test_case_variants_upsert_one_metrics_record(tmp_path):
         assert await database.get_user_count() == 1
 
     asyncio.run(scenario())
+
+
+def test_activity_heartbeats_and_admin_audit_are_persisted(tmp_path):
+    database = UserMetricsDB(tmp_path / "user_metrics.db")
+
+    async def scenario():
+        await database.record_login("5201", "Bennet.Wegener")
+        await database.record_admin_action(
+            "5201:admin", "credential_reveal", "5201:student"
+        )
+
+        record = await database.get_user("5201", "bennet.wegener")
+        assert record is not None
+        assert record.login_count == 1
+        assert record.session_count == 1
+        assert record.last_seen is not None
+
+        audit = await database.get_admin_audit()
+        assert audit[0]["action"] == "credential_reveal"
+        assert audit[0]["target_user_id"] == "5201:student"
+
+    asyncio.run(scenario())

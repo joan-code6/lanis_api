@@ -101,6 +101,11 @@ class UserRecord:
     first_seen: datetime
     last_updated: datetime
     update_count: int
+    last_login: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    login_count: int = 0
+    total_active_seconds: int = 0
+    session_count: int = 0
 
 
 class UserMetricsDB:
@@ -142,6 +147,11 @@ class UserMetricsDB:
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_count INTEGER DEFAULT 1,
+                    last_login TIMESTAMP,
+                    last_seen TIMESTAMP,
+                    login_count INTEGER NOT NULL DEFAULT 0,
+                    total_active_seconds INTEGER NOT NULL DEFAULT 0,
+                    session_count INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(school_id, login)
                 )
             """)
@@ -153,10 +163,55 @@ class UserMetricsDB:
             """)
 
             migrated = await _migrate_case_insensitive_logins(db)
+            async with db.execute("PRAGMA table_info(users)") as cursor:
+                columns = {row[1] for row in await cursor.fetchall()}
+            for column, definition in (
+                ("last_login", "TIMESTAMP"),
+                ("last_seen", "TIMESTAMP"),
+                ("login_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("total_active_seconds", "INTEGER NOT NULL DEFAULT 0"),
+                ("session_count", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in columns:
+                    await db.execute(
+                        f"ALTER TABLE users ADD COLUMN {column} {definition}"
+                    )
             await db.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_canonical_identity
                 ON users(school_id, login COLLATE NOCASE)
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS activity_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    school_id TEXT NOT NULL,
+                    login TEXT NOT NULL,
+                    occurred_at TIMESTAMP NOT NULL,
+                    duration_seconds INTEGER NOT NULL DEFAULT 0,
+                    actor_user_id TEXT,
+                    target_user_id TEXT,
+                    action TEXT
+                )
+                """
+            )
+            async with db.execute("PRAGMA table_info(activity_events)") as cursor:
+                event_columns = {row[1] for row in await cursor.fetchall()}
+            for column, definition in (
+                ("actor_user_id", "TEXT"),
+                ("target_user_id", "TEXT"),
+                ("action", "TEXT"),
+            ):
+                if column not in event_columns:
+                    await db.execute(
+                        f"ALTER TABLE activity_events ADD COLUMN {column} {definition}"
+                    )
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_activity_events_type_time
+                ON activity_events(event_type, occurred_at)
                 """
             )
             
@@ -269,7 +324,12 @@ class UserMetricsDB:
                 user_data=json.loads(row["user_data"]),
                 first_seen=datetime.fromisoformat(row["first_seen"]),
                 last_updated=datetime.fromisoformat(row["last_updated"]),
-                update_count=row["update_count"]
+                update_count=row["update_count"],
+                last_login=_parse_optional_datetime(row["last_login"]),
+                last_seen=_parse_optional_datetime(row["last_seen"]),
+                login_count=row["login_count"] or 0,
+                total_active_seconds=row["total_active_seconds"] or 0,
+                session_count=row["session_count"] or 0,
             )
     
     async def get_all_users(self, limit: int = 100, offset: int = 0) -> List[UserRecord]:
@@ -293,7 +353,12 @@ class UserMetricsDB:
                     user_data=json.loads(row["user_data"]),
                     first_seen=datetime.fromisoformat(row["first_seen"]),
                     last_updated=datetime.fromisoformat(row["last_updated"]),
-                    update_count=row["update_count"]
+                    update_count=row["update_count"],
+                    last_login=_parse_optional_datetime(row["last_login"]),
+                    last_seen=_parse_optional_datetime(row["last_seen"]),
+                    login_count=row["login_count"] or 0,
+                    total_active_seconds=row["total_active_seconds"] or 0,
+                    session_count=row["session_count"] or 0,
                 )
                 for row in rows
             ]
@@ -329,7 +394,12 @@ class UserMetricsDB:
                     user_data=json.loads(row["user_data"]),
                     first_seen=datetime.fromisoformat(row["first_seen"]),
                     last_updated=datetime.fromisoformat(row["last_updated"]),
-                    update_count=row["update_count"]
+                    update_count=row["update_count"],
+                    last_login=_parse_optional_datetime(row["last_login"]),
+                    last_seen=_parse_optional_datetime(row["last_seen"]),
+                    login_count=row["login_count"] or 0,
+                    total_active_seconds=row["total_active_seconds"] or 0,
+                    session_count=row["session_count"] or 0,
                 )
                 for row in rows
             ]
@@ -360,14 +430,173 @@ class UserMetricsDB:
                 WHERE datetime(first_seen) > datetime('now', '-1 day')
             """)
             new_today = (await cursor.fetchone())[0]
+
+            active_24h = await db.execute(
+                "SELECT COUNT(*) FROM users WHERE datetime(last_seen) > datetime('now', '-1 day')"
+            )
+            active_users_24h = (await active_24h.fetchone())[0]
+            active_7d = await db.execute(
+                "SELECT COUNT(*) FROM users WHERE datetime(last_seen) > datetime('now', '-7 day')"
+            )
+            active_users_7d = (await active_7d.fetchone())[0]
+            totals = await db.execute(
+                "SELECT COALESCE(SUM(login_count), 0), COALESCE(SUM(total_active_seconds), 0), "
+                "COALESCE(SUM(session_count), 0) FROM users"
+            )
+            login_count, active_seconds, session_count = await totals.fetchone()
             
             return {
                 "total_users": total_users,
                 "unique_schools": unique_schools,
                 "recent_updates_24h": recent_updates,
                 "new_users_today": new_today,
+                "active_users_24h": active_users_24h,
+                "active_users_7d": active_users_7d,
+                "login_count": login_count,
+                "total_active_seconds": active_seconds,
+                "session_count": session_count,
                 "db_path": str(self.db_path),
             }
+
+    async def record_login(self, school_id: str, login: str) -> None:
+        """Record a successful LANIS login without requiring profile fetch success."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        now = datetime.utcnow().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO users (
+                    school_id, login, data_hash, user_data, first_seen,
+                    last_updated, last_login, last_seen, login_count, session_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+                ON CONFLICT(school_id, login) DO UPDATE SET
+                    last_login = excluded.last_login,
+                    last_seen = excluded.last_seen,
+                    login_count = users.login_count + 1,
+                    session_count = users.session_count + 1
+                """,
+                (school_id, login, self._compute_hash({}), "{}", now, now, now, now),
+            )
+            await db.execute(
+                "INSERT INTO activity_events (event_type, school_id, login, occurred_at) VALUES (?, ?, ?, ?)",
+                ("login", school_id, login, now),
+            )
+            await db.commit()
+
+    async def get_login_series(self, since: datetime) -> List[Dict[str, Any]]:
+        """Return daily login totals and unique accounts for a time range."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT substr(occurred_at, 1, 10) AS day,
+                       COUNT(*) AS logins,
+                       COUNT(DISTINCT school_id || ':' || login) AS unique_users
+                FROM activity_events
+                WHERE event_type = 'login' AND occurred_at >= ?
+                GROUP BY day ORDER BY day
+                """,
+                (since.isoformat(),),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def record_admin_action(
+        self, actor_user_id: str, action: str, target_user_id: str = ""
+    ) -> None:
+        """Persist a minimal audit record for privileged admin operations."""
+        await self.initialize()
+        now = datetime.utcnow().isoformat()
+        actor_school, _, actor_login = actor_user_id.partition(":")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO activity_events (
+                    event_type, school_id, login, occurred_at,
+                    actor_user_id, target_user_id, action
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "admin_action",
+                    actor_school,
+                    actor_login,
+                    now,
+                    actor_user_id,
+                    target_user_id,
+                    action,
+                ),
+            )
+            await db.commit()
+
+    async def get_admin_audit(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return recent privileged-operation audit records."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT occurred_at, actor_user_id, target_user_id, action
+                FROM activity_events
+                WHERE event_type = 'admin_action'
+                ORDER BY occurred_at DESC LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def record_activity(self, school_id: str, login: str) -> None:
+        """Update an activity heartbeat, counting only bounded active intervals."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        now = datetime.utcnow()
+        now_value = now.isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT last_seen FROM users WHERE school_id = ? AND login = ?",
+                (school_id, login),
+            )
+            row = await cursor.fetchone()
+            delta = 0
+            if row and row[0]:
+                try:
+                    previous = datetime.fromisoformat(str(row[0]))
+                    gap = (now - previous).total_seconds()
+                    if 0 <= gap < 15:
+                        return
+                    if 0 <= gap <= 300:
+                        delta = int(gap)
+                except ValueError:
+                    pass
+            await db.execute(
+                """
+                INSERT INTO users (
+                    school_id, login, data_hash, user_data, first_seen,
+                    last_updated, last_seen, total_active_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(school_id, login) DO UPDATE SET
+                    last_seen = excluded.last_seen,
+                    total_active_seconds = users.total_active_seconds + excluded.total_active_seconds
+                """,
+                (school_id, login, self._compute_hash({}), "{}", now_value, now_value, now_value, delta),
+            )
+            if delta:
+                await db.execute(
+                    "INSERT INTO activity_events (event_type, school_id, login, occurred_at, duration_seconds) VALUES (?, ?, ?, ?, ?)",
+                    ("activity", school_id, login, now_value, delta),
+                )
+            await db.commit()
+
+
+def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 
 
 # Global database instance

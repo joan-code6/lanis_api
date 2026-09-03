@@ -50,6 +50,7 @@ from .identity import (
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .documentation import router as documentation_router
+from .admin import AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
     initialize as auth_db_initialize,
     store_refresh_token,
@@ -731,6 +732,12 @@ async def client_dependency(
     payload = sessions.decode_access_token(x_session_token)
     user_id = canonicalize_user_id(payload["sub"])
     session_data = await sessions._get_or_create_schulportal_client(user_id)
+    try:
+        await user_metrics_db.record_activity(
+            session_data.school_id, session_data.username
+        )
+    except Exception:
+        logger.warning("Could not record authenticated activity", exc_info=True)
     return AuthSession(
         client=session_data.client,
         user_id=user_id,
@@ -837,6 +844,11 @@ app.add_middleware(
         "http://localhost:4173",
         "http://localhost:5173",
         "https://lanis.arg-server.de",
+        *(
+            [os.getenv("LANIS_ADMIN_ORIGIN").rstrip("/")]
+            if os.getenv("LANIS_ADMIN_ORIGIN")
+            else []
+        ),
     ],
     allow_origin_regex=r"^https://.*\.surge\.sh$|^https://.*\.appwrite\.network$|^http://(?:localhost|127\.0\.0\.1):\d+$|^http://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$",
     allow_credentials=True,
@@ -846,6 +858,7 @@ app.add_middleware(
 )
 
 app.include_router(documentation_router)
+app.include_router(admin_router)
 
 
 @app.on_event("startup")
@@ -886,10 +899,13 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/metrics/stats")
-async def get_metrics_stats() -> Dict[str, Any]:
+@app.get("/metrics/stats", deprecated=True)
+async def get_metrics_stats(
+    _: AdminPrincipal = Depends(admin_dependency),
+) -> Dict[str, Any]:
     db_stats = await user_metrics_db.get_stats()
     queue_stats = task_queue.get_queue_stats()
+    db_stats.pop("db_path", None)
 
     return {
         "success": True,
@@ -933,7 +949,13 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
         and session_data.client.cryptor.authenticated
     )
 
-    # 5. Queue background metrics fetch
+    # 5. Record successful logins independently of profile collection.
+    try:
+        await user_metrics_db.record_login(school_id, username)
+    except Exception:
+        logger.warning("Could not record login metric", exc_info=True)
+
+    # 6. Queue background metrics fetch
     user_data_task = Task(
         name=f"fetch_user_data:{username}@{school_id}",
         func=fetch_and_store_user_data,

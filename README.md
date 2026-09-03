@@ -64,11 +64,21 @@ Create a `.env` file with a stable, private signing key before the first start:
 
 ```dotenv
 JWT_SECRET=replace-this-with-a-long-random-value
+
+# Optional admin observability portal. List normalized identities, never passwords.
+LANIS_ADMIN_ACCOUNTS=5201:admin.one,1234:admin.two
+LANIS_ADMIN_JWT_SECRET=replace-with-a-separate-random-value
+LANIS_ADMIN_ORIGIN=https://admin.lanis.arg-server.de
 ```
 
 Keep that value unchanged across deployments; changing it invalidates issued
 access tokens. The server refuses to start without it instead of silently using
 an ephemeral key.
+
+Admin access is checked against `LANIS_ADMIN_ACCOUNTS` and then authenticated
+with the same Schulportal credentials. Admin credentials are not stored in the
+configuration file. The observability API is under `/admin/*`; the legacy
+`/metrics/stats` endpoint is retained only as a protected, deprecated alias.
 
 ```bash
 uvicorn api.api:app

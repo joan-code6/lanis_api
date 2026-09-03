@@ -9,16 +9,53 @@ import asyncio
 import json
 import logging
 import os
+import base64
+import hashlib
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import aiosqlite
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
 from .identity import canonicalize_user_id
 
 logger = logging.getLogger("auth_db")
+
+_CREDENTIAL_PREFIX = "v1:"
+
+
+def _credential_key() -> bytes:
+    raw = os.getenv("LANIS_CREDENTIAL_ENCRYPTION_KEY") or os.getenv("JWT_SECRET")
+    if not raw or len(raw) < 32:
+        raise RuntimeError(
+            "LANIS_CREDENTIAL_ENCRYPTION_KEY (or a 32+ character JWT_SECRET) is required"
+        )
+    return hashlib.sha256(raw.encode()).digest()
+
+
+def _encrypt_password(password: str) -> str:
+    nonce = get_random_bytes(12)
+    cipher = AES.new(_credential_key(), AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(password.encode())
+    payload = nonce + tag + ciphertext
+    return _CREDENTIAL_PREFIX + base64.urlsafe_b64encode(payload).decode()
+
+
+def _decrypt_password(value: str) -> str:
+    if not value.startswith(_CREDENTIAL_PREFIX):
+        # Legacy rows are migrated during initialize(); this fallback keeps
+        # rolling upgrades readable if one is encountered before migration.
+        return value
+    try:
+        payload = base64.urlsafe_b64decode(value[len(_CREDENTIAL_PREFIX) :])
+        nonce, tag, ciphertext = payload[:12], payload[12:28], payload[28:]
+        cipher = AES.new(_credential_key(), AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(ciphertext, tag).decode()
+    except Exception as error:
+        raise RuntimeError("Stored credential failed authentication") from error
 
 DB_PATH = os.path.join("data", "auth.db")
 REFRESH_TOKEN_TTL_DAYS = 90
@@ -338,6 +375,23 @@ async def initialize() -> None:
         )
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS admin_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                actor_user_id TEXT NOT NULL,
+                target_user_id TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_time
+            ON admin_audit(occurred_at)
+            """
+        )
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS user_preferences (
                 user_id TEXT PRIMARY KEY,
                 preferences TEXT NOT NULL DEFAULT '{}',
@@ -345,6 +399,14 @@ async def initialize() -> None:
             )
             """
         )
+        async with db.execute("SELECT token, password FROM refresh_tokens") as cursor:
+            legacy_rows = await cursor.fetchall()
+        for token, stored_password in legacy_rows:
+            if stored_password and not str(stored_password).startswith(_CREDENTIAL_PREFIX):
+                await db.execute(
+                    "UPDATE refresh_tokens SET password = ? WHERE token = ?",
+                    (_encrypt_password(str(stored_password)), token),
+                )
         await _migrate_user_ids(db)
         await db.commit()
     logger.info("Auth DB initialized at %s", DB_PATH)
@@ -371,7 +433,7 @@ async def store_refresh_token(
             await db.execute(
                 "INSERT INTO refresh_tokens (token, user_id, school_id, username, password, expires_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (token, user_id, school_id, username, password, expires_at),
+                (token, user_id, school_id, username, _encrypt_password(password), expires_at),
             )
             await db.commit()
 
@@ -437,7 +499,7 @@ async def get_refresh_token(token: str) -> Optional[dict]:
         "user_id": row["user_id"],
         "school_id": row["school_id"],
         "username": row["username"],
-        "password": row["password"],
+        "password": _decrypt_password(row["password"]),
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
     }
@@ -467,10 +529,39 @@ async def get_refresh_token_by_user_id(user_id: str) -> Optional[dict]:
         "user_id": row["user_id"],
         "school_id": row["school_id"],
         "username": row["username"],
-        "password": row["password"],
+        "password": _decrypt_password(row["password"]),
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
     }
+
+
+async def record_admin_action(
+    actor_user_id: str, action: str, target_user_id: str = ""
+) -> None:
+    """Persist a minimal audit record for privileged admin operations."""
+    await initialize()
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO admin_audit (actor_user_id, target_user_id, action) VALUES (?, ?, ?)",
+                (actor_user_id, target_user_id, action),
+            )
+            await db.commit()
+
+
+async def get_admin_audit(limit: int = 100) -> List[Dict[str, Any]]:
+    """Return recent privileged-operation audit records."""
+    await initialize()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT occurred_at, actor_user_id, target_user_id, action
+            FROM admin_audit ORDER BY occurred_at DESC LIMIT ?
+            """,
+            (limit,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
 
 
 async def delete_refresh_token(token: str) -> None:
