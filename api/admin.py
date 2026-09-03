@@ -41,6 +41,7 @@ from .identity import (
     normalize_username,
 )
 from .metrics import user_metrics_db
+from .uptime import get_uptime_status, run_uptime_check
 
 logger = logging.getLogger("admin")
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -290,6 +291,25 @@ async def admin_me(
         "school_id": principal.school_id,
         "username": principal.username,
     }
+
+
+@router.get("/uptime")
+async def admin_uptime(
+    limit: int = Query(100, ge=1, le=500),
+    _: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    """Return the Schulportal availability state and recent checks."""
+    return await get_uptime_status(limit)
+
+
+@router.post("/uptime/check")
+async def admin_uptime_check(
+    principal: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    """Run an immediate authenticated Schulportal synthetic check."""
+    await run_uptime_check()
+    await _record_admin_action(principal.user_id, "uptime_check")
+    return await get_uptime_status()
 
 
 def _parse_iso(value: Any) -> datetime | None:
