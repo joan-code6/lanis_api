@@ -104,6 +104,25 @@ Notes
 If the user is not logged in or the app list cannot be loaded, an
 empty list is returned.
 
+#### wahlen_get_overview
+
+Fetch the authenticated user's available Oberstufenwahl campaigns.
+
+Returns campaign IDs, titles, participation windows, and links to the
+corresponding form. It does not submit or modify any election data.
+
+#### wahlen_get_form
+
+Fetch and normalize one dynamic election form. The result contains personal
+fields, selection blocks, options, and the constraints needed to validate the
+form before submission.
+
+#### wahlen_submit
+
+Submit one election after validating the answers. The caller must pass
+``confirmed=True``; without explicit confirmation this method performs no
+upstream POST.
+
 #### get_cookies
 
 Return the current session cookies as a plain dictionary.
