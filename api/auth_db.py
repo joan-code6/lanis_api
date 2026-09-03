@@ -94,6 +94,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     },
     "dashboard": {
         "pinned_modules": [],
+        "hidden_modules": [],
         "view_mode": "grid",
     },
     "timetable": {
@@ -131,6 +132,21 @@ def _merge_nested_preferences(
         else:
             merged[key] = value
     return merged
+
+
+def _normalize_user_preferences(preferences: Dict[str, Any]) -> Dict[str, Any]:
+    """Enforce invariants for persisted preference groups."""
+    dashboard = preferences.get("dashboard")
+    if isinstance(dashboard, dict):
+        hidden_modules = dashboard.get("hidden_modules", [])
+        pinned_modules = dashboard.get("pinned_modules", [])
+        if isinstance(hidden_modules, list) and isinstance(pinned_modules, list):
+            dashboard["pinned_modules"] = [
+                module_name
+                for module_name in pinned_modules
+                if module_name not in hidden_modules
+            ]
+    return preferences
 
 
 def _row_recency(row: Dict[str, Any]) -> tuple[str, int]:
@@ -767,7 +783,9 @@ def _decode_user_preferences(serialized: object, user_id: str) -> Dict[str, Any]
                 **homework,
                 "completed_display": "hidden" if legacy_visibility else "orange",
             }
-    return _merge_nested_preferences(DEFAULT_USER_PREFERENCES, stored)
+    return _normalize_user_preferences(
+        _merge_nested_preferences(DEFAULT_USER_PREFERENCES, stored)
+    )
 
 
 async def get_user_preferences(user_id: str) -> tuple[Dict[str, Any], bool]:
@@ -800,7 +818,9 @@ async def save_user_preferences(
             current = _decode_user_preferences(row[0], user_id) if row else (
                 _merge_nested_preferences(DEFAULT_USER_PREFERENCES, {})
             )
-            merged = _merge_nested_preferences(current, updates)
+            merged = _normalize_user_preferences(
+                _merge_nested_preferences(current, updates)
+            )
             serialized = json.dumps(merged, ensure_ascii=False, sort_keys=True)
             await db.execute(
                 """

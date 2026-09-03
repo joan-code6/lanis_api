@@ -18,12 +18,17 @@ from api.api import (
 )
 
 
-def test_dashboard_preferences_limit_pinned_modules() -> None:
+def test_dashboard_preferences_limit_module_lists() -> None:
     accepted = DashboardPreferencesRequest(pinned_modules=["module"] * 50)
     assert len(accepted.pinned_modules or []) == 50
+    accepted_hidden = DashboardPreferencesRequest(hidden_modules=["module"] * 50)
+    assert len(accepted_hidden.hidden_modules or []) == 50
 
     with pytest.raises(ValidationError):
         DashboardPreferencesRequest(pinned_modules=["module"] * 51)
+
+    with pytest.raises(ValidationError):
+        DashboardPreferencesRequest(hidden_modules=["module"] * 51)
 
 
 def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) -> None:
@@ -38,6 +43,7 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
     }
     assert defaults["sidebar"] == {"order": auth_db.DEFAULT_SIDEBAR_ORDER}
     assert defaults["dashboard"]["pinned_modules"] == []
+    assert defaults["dashboard"]["hidden_modules"] == []
     assert defaults["homework"] == {"completed_display": "green"}
     assert defaults["vertretungsplan"] == {"class_override": ""}
     assert defaults["onboarding"]["status"] == "not_started"
@@ -57,6 +63,7 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
     }
     assert saved["dashboard"] == {
         "pinned_modules": ["Nachrichten"],
+        "hidden_modules": [],
         "view_mode": "grid",
     }
 
@@ -96,6 +103,7 @@ def test_preferences_route_cleans_module_names(monkeypatch) -> None:
     payload = UserPreferencesRequest(
         dashboard={
             "pinned_modules": [" Nachrichten ", "Nachrichten", "", "Kalender"],
+            "hidden_modules": [" Kalender ", "Dateispeicher", "Dateispeicher"],
             "view_mode": "list",
         },
         vertretungsplan={"class_override": " 10 A "},
@@ -106,10 +114,34 @@ def test_preferences_route_cleans_module_names(monkeypatch) -> None:
 
     assert captured["updates"]["dashboard"]["pinned_modules"] == [
         "Nachrichten",
+    ]
+    assert captured["updates"]["dashboard"]["hidden_modules"] == [
         "Kalender",
+        "Dateispeicher",
     ]
     assert captured["updates"]["vertretungsplan"]["class_override"] == "10 A"
     assert result["stored"] is True
+
+
+def test_saving_hidden_modules_removes_them_from_pinned_modules(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    asyncio.run(auth_db.initialize())
+
+    asyncio.run(
+        auth_db.save_user_preferences(
+            "5201:Student",
+            {"dashboard": {"pinned_modules": ["Nachrichten", "Kalender"]}},
+        )
+    )
+    saved = asyncio.run(
+        auth_db.save_user_preferences(
+            "5201:Student",
+            {"dashboard": {"hidden_modules": ["Kalender"]}},
+        )
+    )
+
+    assert saved["dashboard"]["pinned_modules"] == ["Nachrichten"]
+    assert saved["dashboard"]["hidden_modules"] == ["Kalender"]
 
 
 def test_vertretungsplan_preferences_limit_class_override() -> None:
