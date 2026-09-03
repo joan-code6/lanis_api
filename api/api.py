@@ -247,12 +247,13 @@ class AppearancePreferencesRequest(BaseModel):
 
 class DashboardPreferencesRequest(BaseModel):
     pinned_modules: Optional[List[str]] = None
+    hidden_modules: Optional[List[str]] = None
     view_mode: Optional[Literal["grid", "list"]] = None
 
-    @field_validator("pinned_modules")
-    def validate_pinned_modules(cls, value):
+    @field_validator("pinned_modules", "hidden_modules")
+    def validate_module_preferences(cls, value):
         if value is not None and len(value) > 50:
-            raise ValueError("At most 50 pinned modules are allowed")
+            raise ValueError("At most 50 modules are allowed in a dashboard preference")
         return value
 
 
@@ -1480,14 +1481,24 @@ async def update_account_preferences(
         else payload.dict(exclude_none=True)
     )
     dashboard = updates.get("dashboard")
-    if isinstance(dashboard, dict) and "pinned_modules" in dashboard:
-        cleaned_modules: List[str] = []
-        for module_name in dashboard["pinned_modules"]:
-            cleaned = str(module_name).strip()
-            if not cleaned or len(cleaned) > 120 or cleaned in cleaned_modules:
+    if isinstance(dashboard, dict):
+        for field in ("pinned_modules", "hidden_modules"):
+            if field not in dashboard:
                 continue
-            cleaned_modules.append(cleaned)
-        dashboard["pinned_modules"] = cleaned_modules
+            cleaned_modules: List[str] = []
+            for module_name in dashboard[field]:
+                cleaned = str(module_name).strip()
+                if not cleaned or len(cleaned) > 120 or cleaned in cleaned_modules:
+                    continue
+                cleaned_modules.append(cleaned)
+            dashboard[field] = cleaned_modules
+        if "pinned_modules" in dashboard and "hidden_modules" in dashboard:
+            hidden_modules = set(dashboard["hidden_modules"])
+            dashboard["pinned_modules"] = [
+                module_name
+                for module_name in dashboard["pinned_modules"]
+                if module_name not in hidden_modules
+            ]
 
     sidebar = updates.get("sidebar")
     if isinstance(sidebar, dict) and "order" in sidebar:
