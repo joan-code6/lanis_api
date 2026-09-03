@@ -263,6 +263,7 @@ SidebarItemId = Literal[
     "vertretungsplan",
     "dsb",
     "courses",
+    "wahlen",
     "timetable",
     "study-groups",
     "calendar",
