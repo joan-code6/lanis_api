@@ -78,6 +78,7 @@ DEFAULT_SIDEBAR_ORDER = [
     "vertretungsplan",
     "dsb",
     "courses",
+    "wahlen",
     "timetable",
     "study-groups",
     "calendar",

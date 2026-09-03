@@ -118,11 +118,16 @@ def test_vertretungsplan_preferences_limit_class_override() -> None:
 
 
 def test_sidebar_preferences_reject_unknown_and_oversized_orders() -> None:
+    accepted = SidebarPreferencesRequest(order=["dashboard", "wahlen"])
+    assert accepted.order == ["dashboard", "wahlen"]
+
     with pytest.raises(ValidationError):
         SidebarPreferencesRequest(order=["unknown"])
 
     with pytest.raises(ValidationError):
-        SidebarPreferencesRequest(order=["dashboard"] * 12)
+        SidebarPreferencesRequest(
+            order=["dashboard"] * (len(auth_db.DEFAULT_SIDEBAR_ORDER) + 1)
+        )
 
 
 def test_sidebar_preferences_are_normalized_before_saving(monkeypatch) -> None:
