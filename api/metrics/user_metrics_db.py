@@ -241,6 +241,21 @@ class UserMetricsDB:
                 ON uptime_checks(checked_at)
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS uptime_alert_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    is_issue INTEGER,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO uptime_alert_state (id, is_issue, updated_at)
+                VALUES (1, NULL, NULL)
+                """
+            )
             
             await db.commit()
         
@@ -604,6 +619,91 @@ class UserMetricsDB:
                 check["features"] = features if isinstance(features, list) else []
                 checks.append(check)
             return checks
+
+    async def get_uptime_summary(self, since: datetime) -> Dict[str, int]:
+        """Return aggregate availability counts for an uptime period."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT COUNT(*) AS checks,
+                       COALESCE(SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END), 0)
+                           AS available_checks,
+                       COALESCE(SUM(CASE WHEN is_available = 0 THEN 1 ELSE 0 END), 0)
+                           AS failed_checks
+                FROM uptime_checks
+                WHERE checked_at >= ?
+                """,
+                (since.isoformat(),),
+            )
+            row = await cursor.fetchone()
+            return {
+                "checks": int(row[0] or 0),
+                "available_checks": int(row[1] or 0),
+                "failed_checks": int(row[2] or 0),
+            }
+
+    async def get_uptime_daily_series(self, since: datetime) -> List[Dict[str, Any]]:
+        """Return daily uptime aggregates for the requested period."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT substr(checked_at, 1, 10) AS day,
+                       COUNT(*) AS checks,
+                       COALESCE(SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END), 0)
+                           AS available_checks,
+                       COALESCE(SUM(CASE WHEN is_available = 0 THEN 1 ELSE 0 END), 0)
+                           AS failed_checks
+                FROM uptime_checks
+                WHERE checked_at >= ?
+                GROUP BY day
+                ORDER BY day
+                """,
+                (since.isoformat(),),
+            )
+            series = []
+            for row in await cursor.fetchall():
+                item = dict(row)
+                checks = int(item["checks"] or 0)
+                available = int(item["available_checks"] or 0)
+                failed = int(item["failed_checks"] or 0)
+                item["checks"] = checks
+                item["available_checks"] = available
+                item["failed_checks"] = failed
+                item["uptime_percent"] = round(available / checks * 100, 2) if checks else None
+                item["status"] = "up" if failed == 0 else "down" if available == 0 else "degraded"
+                series.append(item)
+            return series
+
+    async def get_uptime_alert_state(self) -> Optional[bool]:
+        """Return the last delivered alert state, or ``None`` before first use."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT is_issue FROM uptime_alert_state WHERE id = 1"
+            )
+            row = await cursor.fetchone()
+            if row is None or row[0] is None:
+                return None
+            return bool(row[0])
+
+    async def set_uptime_alert_state(self, is_issue: bool) -> None:
+        """Persist the last uptime alert state after a webhook is delivered."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO uptime_alert_state (id, is_issue, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    is_issue = excluded.is_issue,
+                    updated_at = excluded.updated_at
+                """,
+                (1 if is_issue else 0, datetime.utcnow().isoformat()),
+            )
+            await db.commit()
 
     async def record_admin_action(
         self, actor_user_id: str, action: str, target_user_id: str = ""
