@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 from api import uptime
@@ -139,5 +140,60 @@ def test_uptime_checks_are_persisted_and_returned_newest_first(tmp_path: Path):
         assert checks[0]["is_available"] is False
         assert checks[1]["is_available"] is True
         assert checks[1]["features"][0]["name"] == "login"
+
+        summary = await database.get_uptime_summary(datetime.fromisoformat("2026-09-03"))
+        assert summary == {"checks": 2, "available_checks": 1, "failed_checks": 1}
+        daily = await database.get_uptime_daily_series(datetime.fromisoformat("2026-09-03"))
+        assert daily == [
+            {
+                "day": "2026-09-03",
+                "checks": 2,
+                "available_checks": 1,
+                "failed_checks": 1,
+                "uptime_percent": 50.0,
+                "status": "degraded",
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_discord_alerts_only_on_issue_and_recovery_transitions(monkeypatch, tmp_path: Path):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    async def scenario():
+        database = UserMetricsDB(tmp_path / "metrics.db")
+        monkeypatch.setattr(uptime, "user_metrics_db", database)
+        monkeypatch.setenv(
+            "LANIS_UPTIME_DISCORD_WEBHOOK_URL",
+            "https://discord.com/api/webhooks/test/token",
+        )
+        monkeypatch.setattr(uptime.requests, "post", fake_post)
+
+        healthy = {"status": "up", "error": None, "features": []}
+        issue = {
+            "status": "down",
+            "error": "login_failed",
+            "features": [{"name": "login", "status": "down"}],
+        }
+
+        await uptime._notify_discord_on_transition(healthy)
+        await uptime._notify_discord_on_transition(issue)
+        await uptime._notify_discord_on_transition(issue)
+        await uptime._notify_discord_on_transition(healthy)
+        await uptime._notify_discord_on_transition(healthy)
+
+        assert len(calls) == 2
+        assert "beeinträchtigt" in calls[0][1]["json"]["content"]
+        assert "wieder erreichbar" in calls[1][1]["json"]["content"]
+        assert await database.get_uptime_alert_state() is False
 
     asyncio.run(scenario())

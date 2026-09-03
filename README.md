@@ -76,6 +76,8 @@ LANIS_UPTIME_USERNAME=replace-with-monitor-username
 LANIS_UPTIME_PASSWORD=replace-with-monitor-password
 LANIS_UPTIME_INTERVAL_SECONDS=300
 LANIS_UPTIME_TIMEOUT_SECONDS=15
+# Optional Discord transition alerts. Keep the webhook URL secret.
+LANIS_UPTIME_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
 ```
 
 Keep that value unchanged across deployments; changing it invalidates issued
@@ -93,9 +95,11 @@ modules, and opens each module entry without exposing credentials. Configure
 the account with `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME`, and
 `LANIS_UPTIME_PASSWORD`; existing local deployments may use the corresponding
 `LANIS_API_*` variables as a fallback. Results are retained for 90 days in the
-metrics database and are available to the private admin portal at
-`GET /admin/uptime`. An immediate check can be triggered with
-`POST /admin/uptime/check`.
+metrics database, with a daily 90-day overview available to the private admin
+portal at `GET /admin/uptime`. Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
+receive one alert when the service becomes unavailable and one recovery message
+when it becomes operational again; repeated checks during the same incident are
+suppressed. An immediate check can be triggered with `POST /admin/uptime/check`.
 
 ```bash
 uvicorn api.api:app

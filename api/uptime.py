@@ -11,6 +11,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from fastapi.concurrency import run_in_threadpool
@@ -26,6 +27,10 @@ DEFAULT_UPTIME_URL = "https://login.schulportal.hessen.de/"
 DEFAULT_UPTIME_INTERVAL_SECONDS = 5 * 60
 DEFAULT_UPTIME_TIMEOUT_SECONDS = 15
 UPTIME_HISTORY_LIMIT = 100
+UPTIME_SUMMARY_DAYS = 90
+DISCORD_WEBHOOK_ENV = "LANIS_UPTIME_DISCORD_WEBHOOK_URL"
+
+_uptime_alert_lock = asyncio.Lock()
 
 
 def _utcnow() -> datetime:
@@ -90,6 +95,19 @@ def _uptime_credentials() -> tuple[str, str, str] | None:
 def uptime_is_configured() -> bool:
     """Return whether a complete monitor credential set is available."""
     return _uptime_credentials() is not None
+
+
+def _discord_webhook_url() -> str | None:
+    """Return a validated Discord webhook URL from the server environment."""
+    value = os.getenv(DISCORD_WEBHOOK_ENV, "").strip()
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "discord.com"
+        or not parsed.path.startswith("/api/webhooks/")
+    ):
+        return None
+    return value
 
 
 def _error_code(error: Any, default: str) -> str:
@@ -211,6 +229,65 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
         )
 
 
+def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool) -> None:
+    """Send one uptime transition notification to the configured webhook."""
+    features = check.get("features") or []
+    feature_status = ", ".join(
+        f"{feature.get('name', 'feature')}: {feature.get('status', 'unknown')}"
+        for feature in features
+    )
+    if recovered:
+        content = (
+            f"✅ **{UPTIME_SERVICE_NAME} ist wieder erreichbar.**\n"
+            f"Alle synthetischen Checks sind wieder erfolgreich ({feature_status or 'keine Details'})."
+        )
+    else:
+        error_text = f" · Fehler: `{check['error']}`" if check.get("error") else ""
+        content = (
+            f"🚨 **{UPTIME_SERVICE_NAME} ist beeinträchtigt.**\n"
+            f"Status: `{check.get('status', 'unknown')}`"
+            f"{error_text}\n"
+            f"Checks: {feature_status or 'keine Details'}"
+        )
+    response = requests.post(
+        webhook_url,
+        json={"content": content, "allowed_mentions": {"parse": []}},
+        timeout=get_uptime_timeout_seconds(),
+    )
+    response.raise_for_status()
+
+
+async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
+    """Notify Discord only when uptime changes between healthy and unhealthy."""
+    webhook_url = _discord_webhook_url()
+    if not webhook_url:
+        return
+
+    is_issue = check.get("status") != "up"
+    async with _uptime_alert_lock:
+        previous_issue = await user_metrics_db.get_uptime_alert_state()
+        if previous_issue is None and not is_issue:
+            await user_metrics_db.set_uptime_alert_state(False)
+            return
+        if previous_issue is not None and previous_issue == is_issue:
+            return
+
+        try:
+            await run_in_threadpool(
+                _send_discord_alert,
+                webhook_url,
+                check,
+                not is_issue,
+            )
+        except Exception:
+            logger.warning(
+                "Could not deliver Schulportal uptime transition to Discord",
+                exc_info=True,
+            )
+            return
+        await user_metrics_db.set_uptime_alert_state(is_issue)
+
+
 def _probe_portal() -> dict[str, Any]:
     """Log in and open the configured account's available modules."""
     checked_at = _utcnow().isoformat()
@@ -293,6 +370,7 @@ async def run_uptime_check() -> dict[str, Any]:
     check = await run_in_threadpool(_probe_portal)
     if check["status"] != "not_configured":
         await user_metrics_db.record_uptime_check(check)
+        await _notify_discord_on_transition(check)
     logger.info(
         "Schulportal synthetic check: %s (%sms)",
         check["status"],
@@ -304,10 +382,11 @@ async def run_uptime_check() -> dict[str, Any]:
 async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]:
     """Return current feature state and a rolling availability summary."""
     history = await user_metrics_db.get_uptime_checks(limit=limit)
-    since = _utcnow() - timedelta(hours=24)
-    recent = await user_metrics_db.get_uptime_checks(limit=10_000, since=since)
-    available = sum(1 for check in recent if check["is_available"] is True)
-    failed = sum(1 for check in recent if check["is_available"] is False)
+    since = _utcnow() - timedelta(days=UPTIME_SUMMARY_DAYS)
+    summary_counts = await user_metrics_db.get_uptime_summary(since)
+    daily = await user_metrics_db.get_uptime_daily_series(since)
+    available = summary_counts["available_checks"]
+    failed = summary_counts["failed_checks"]
     current = history[0] if history else None
     configured = uptime_is_configured()
     if not configured:
@@ -331,6 +410,7 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             "interval_seconds": get_uptime_interval_seconds(),
             "timeout_seconds": get_uptime_timeout_seconds(),
         },
+        "daily": daily,
         "current": current
         or {
             "status": "unknown",
@@ -342,8 +422,9 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             "features": [],
         },
         "summary": {
-            "period_hours": 24,
-            "checks": len(recent),
+            "period_days": UPTIME_SUMMARY_DAYS,
+            "period_hours": UPTIME_SUMMARY_DAYS * 24,
+            "checks": summary_counts["checks"],
             "available_checks": available,
             "failed_checks": failed,
             "uptime_percent": round(available / observed * 100, 2) if observed else None,
