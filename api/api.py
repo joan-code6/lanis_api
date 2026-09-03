@@ -230,6 +230,14 @@ class ClassLinkRequest(BaseModel):
     url: str = Field("", max_length=2000)
 
 
+class WahlenSubmissionRequest(BaseModel):
+    """Answers for one election; ``confirm`` is an intentional write gate."""
+
+    fields: Dict[str, str] = Field(default_factory=dict)
+    selections: Dict[str, Any] = Field(default_factory=dict)
+    confirm: bool = Field(False, description="Required to perform the irreversible portal submission")
+
+
 class AppearancePreferencesRequest(BaseModel):
     theme_mode: Optional[Literal["system", "light", "dark", "oled"]] = None
     theme_color: Optional[
@@ -1178,6 +1186,83 @@ async def get_modules(
     result = await run_in_threadpool(_fetch_modules, auth.client)
     if result.get("success"):
         await sessions.set_cache(auth.user_id, "/modules", result, is_long_term=True)
+    return result
+
+
+# --- Wahlen / Oberstufenwahl ---
+
+
+@app.get("/wahlen")
+async def get_wahlen(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    cached = await sessions.get_cached(auth.user_id, "/wahlen")
+    if cached is not None:
+        return cached
+
+    result = await run_in_threadpool(auth.client.wahlen_get_overview)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/wahlen", result)
+    return result
+
+
+@app.get("/wahlen/{election_id}")
+async def get_wahlen_form(
+    election_id: str,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    election_id = election_id.strip()
+    if not election_id:
+        raise HTTPException(status_code=422, detail="Election ID is required")
+
+    params = _make_param_key({"election_id": election_id})
+    cached = await sessions.get_cached(auth.user_id, "/wahlen/form", params)
+    if cached is not None:
+        return cached
+
+    result = await run_in_threadpool(auth.client.wahlen_get_form, election_id)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/wahlen/form", result, params)
+    return result
+
+
+@app.post("/wahlen/{election_id}/submit")
+async def submit_wahlen(
+    election_id: str,
+    payload: WahlenSubmissionRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not payload.confirm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Explicit confirmation is required before submitting election data",
+        )
+
+    submission = (
+        payload.model_dump()
+        if hasattr(payload, "model_dump")
+        else payload.dict()
+    )
+    result = await run_in_threadpool(
+        auth.client.wahlen_submit,
+        election_id,
+        submission,
+        True,
+    )
+    if not result.get("success"):
+        if result.get("validation_errors"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=result["validation_errors"],
+            )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=result.get("error", "Election submission failed"),
+        )
+    await asyncio.gather(
+        sessions.invalidate_endpoint_cache(auth.user_id, "/wahlen"),
+        sessions.invalidate_endpoint_cache(auth.user_id, "/wahlen/form"),
+    )
     return result
 
 

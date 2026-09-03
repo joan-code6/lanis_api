@@ -290,6 +290,11 @@ class SchulportalHessenAPI:
             ],
             "lerngruppen.php": ["lerngruppen_get_overview"],
             "benutzerverwaltung.php": ["benutzer_get_data"],
+            "oberstufenwahl.php": [
+                "wahlen_get_overview",
+                "wahlen_get_form",
+                "wahlen_submit",
+            ],
         }
 
         for entry in entries:
@@ -769,6 +774,17 @@ SchulportalHessenAPI.meinunterricht_get_submissions = meinunterricht_get_submiss
 SchulportalHessenAPI.meinunterricht_set_homework_done = meinunterricht_set_homework_done
 SchulportalHessenAPI.meinunterricht_download_file = meinunterricht_download_file
 SchulportalHessenAPI.meinunterricht_get_attendance_overview = meinunterricht_get_attendance_overview
+
+# Import and attach the Oberstufenwahl methods
+from .applets.oberstufenwahl.api import (
+    wahlen_get_form,
+    wahlen_get_overview,
+    wahlen_submit,
+)
+
+SchulportalHessenAPI.wahlen_get_overview = wahlen_get_overview
+SchulportalHessenAPI.wahlen_get_form = wahlen_get_form
+SchulportalHessenAPI.wahlen_submit = wahlen_submit
 
 # Import and attach the kalender methods
 from .applets.kalender.api import (

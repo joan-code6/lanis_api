@@ -38,6 +38,7 @@ The portal modules are referred to as applets because SPH is built on top of Moo
 - `nachrichten` — conversations, recipients, sending, and replies
 - `stundenplan` — timetable data
 - `lerngruppen` — study groups
+- `oberstufenwahl` — student-facing elections and course choices
 - `school_list` — school names and IDs for login and school selection
 
 
