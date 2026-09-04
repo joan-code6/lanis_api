@@ -79,6 +79,8 @@ LANIS_UPTIME_INTERVAL_SECONDS=300
 LANIS_UPTIME_TIMEOUT_SECONDS=15
 # Optional Discord transition alerts. Keep the webhook URL secret.
 LANIS_UPTIME_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
+# Optional new-user notifications. Falls back to the uptime webhook above.
+LANIS_NEW_USER_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
 ```
 
 Keep that value unchanged across deployments; changing it invalidates issued
@@ -100,7 +102,10 @@ metrics database, with a daily 90-day overview available to the private admin
 portal at `GET /admin/uptime`. Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
 receive one alert when the service becomes unavailable and one recovery message
 when it becomes operational again; repeated checks during the same incident are
-suppressed. An immediate check can be triggered with `POST /admin/uptime/check`.
+suppressed. The new-user webhook receives one message after a first successful
+login; it can be separate from the uptime webhook with
+`LANIS_NEW_USER_DISCORD_WEBHOOK_URL`. An immediate check can be triggered with
+`POST /admin/uptime/check`.
 
 ```bash
 uvicorn api.api:app

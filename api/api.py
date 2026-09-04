@@ -47,6 +47,7 @@ from .identity import (
     normalize_school_id,
     normalize_username,
 )
+from .discord import notify_new_user
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .uptime import run_uptime_scheduler
@@ -1008,7 +1009,17 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
 
     # 5. Record successful logins independently of profile collection.
     try:
-        await user_metrics_db.record_login(school_id, username)
+        is_new_user = await user_metrics_db.record_login(school_id, username)
+        if is_new_user:
+            await task_queue.add_task(
+                Task(
+                    name=f"notify_new_user:{username}@{school_id}",
+                    func=notify_new_user,
+                    args=(school_id, normalize_username(username)),
+                    priority=TaskPriority.LOW,
+                    max_retries=2,
+                )
+            )
     except Exception:
         logger.warning("Could not record login metric", exc_info=True)
 

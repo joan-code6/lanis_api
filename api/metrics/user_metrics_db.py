@@ -500,8 +500,8 @@ class UserMetricsDB:
                 "db_path": str(self.db_path),
             }
 
-    async def record_login(self, school_id: str, login: str) -> None:
-        """Record a successful LANIS login without requiring profile fetch success."""
+    async def record_login(self, school_id: str, login: str) -> bool:
+        """Record a successful LANIS login and return whether it created a user."""
         school_id = normalize_school_id(school_id)
         login = normalize_username(login)
         await self.initialize()
@@ -513,19 +513,29 @@ class UserMetricsDB:
                     school_id, login, data_hash, user_data, first_seen,
                     last_updated, last_login, last_seen, login_count, session_count
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
-                ON CONFLICT(school_id, login) DO UPDATE SET
-                    last_login = excluded.last_login,
-                    last_seen = excluded.last_seen,
-                    login_count = users.login_count + 1,
-                    session_count = users.session_count + 1
+                ON CONFLICT(school_id, login) DO NOTHING
                 """,
                 (school_id, login, self._compute_hash({}), "{}", now, now, now, now),
             )
+            cursor = await db.execute("SELECT changes()")
+            inserted = (await cursor.fetchone())[0] == 1
+            if not inserted:
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET last_login = ?, last_seen = ?,
+                        login_count = login_count + 1,
+                        session_count = session_count + 1
+                    WHERE school_id = ? AND login = ?
+                    """,
+                    (now, now, school_id, login),
+                )
             await db.execute(
                 "INSERT INTO activity_events (event_type, school_id, login, occurred_at) VALUES (?, ?, ?, ?)",
                 ("login", school_id, login, now),
             )
             await db.commit()
+            return inserted
 
     async def get_login_series(self, since: datetime) -> List[Dict[str, Any]]:
         """Return daily login totals and unique accounts for a time range."""
