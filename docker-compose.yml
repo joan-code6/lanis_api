@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "${LANIS_DOCKER_BIND_ADDRESS:-0.0.0.0}:${LANIS_DOCKER_PORT:-9898}:8000"
+      - "9898:8000"
     env_file:
       - .env
     environment:

@@ -14,8 +14,6 @@ CRON_SCHEDULE="0 3 * * *"  # every night at 3:00 AM
 CRON_LOG="/var/log/lanis-api-deploy.log"
 VENV_DIR="${PROJECT_DIR}/venv"
 SERVICE_NAME="lanis-api"
-HOST="${LANIS_API_HOST:-0.0.0.0}"
-PORT="${LANIS_API_PORT:-8000}"
 
 run_as_root() {
     if [ "${EUID}" -eq 0 ]; then
@@ -65,8 +63,11 @@ echo ">>> pip install -r requirements.txt"
 # ── 3. Resolve python binary ─────────────────────────────────────────────────
 PYTHON_BIN="${VENV_DIR}/bin/python3"
 [ -f "${PYTHON_BIN}" ] || PYTHON_BIN="python3"
+SERVER_HOST="$("${PYTHON_BIN}" -c 'from api.server_config import load_server_config; print(load_server_config().host)')"
+SERVER_PORT="$("${PYTHON_BIN}" -c 'from api.server_config import load_server_config; print(load_server_config().port)')"
 echo ""
 echo "  Python:  ${PYTHON_BIN}"
+echo "  Server:  ${SERVER_HOST}:${SERVER_PORT} (config.json)"
 
 # ── 4. Install systemd service (auto-generate from template) ─────────────────
 SERVICE_SRC="${PROJECT_DIR}/lanis-api.service"
@@ -114,16 +115,13 @@ else
         sleep 1
     fi
 
-    echo ">>> Starting uvicorn (host=${HOST}, port=${PORT})"
-    nohup "${PYTHON_BIN}" -m uvicorn api.api:app \
-        --host "${HOST}" \
-        --port "${PORT}" \
-        --no-access-log \
+    echo ">>> Starting API from config.json (host=${SERVER_HOST}, port=${SERVER_PORT})"
+    nohup "${PYTHON_BIN}" -m api \
         > /tmp/lanis-api.log 2>&1 &
 
     sleep 1
-    if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then
-        echo "=== Server running on ${HOST}:${PORT} ==="
+    if lsof -ti "tcp:${SERVER_PORT}" >/dev/null 2>&1; then
+        echo "=== Server running on ${SERVER_HOST}:${SERVER_PORT} ==="
     else
         echo "!!! Server may have failed to start — check /tmp/lanis-api.log"
     fi

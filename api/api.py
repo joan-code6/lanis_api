@@ -9,7 +9,7 @@ Features:
 - In-memory Schulportal client cache minimises DB reads.
 
 Run locally:
-        uvicorn api.api:app --reload
+        python -m api
 """
 
 import asyncio
@@ -101,6 +101,7 @@ from .message_notifications import (
     validate_notification_preferences,
     vertretungsplan_notification_options,
 )
+from .server_config import load_server_config
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -110,7 +111,8 @@ logger = logging.getLogger("api")
 
 SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive Schulportal sessions after 1 hour
 CACHE_TTL_SECONDS = 10 * 60  # cache responses for 10 minutes
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+SERVER_CONFIG = load_server_config()
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", SERVER_CONFIG.public_url).rstrip("/")
 LONG_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60  # cache for 30 days (1 month)
 LONG_CACHE_ENDPOINTS = {
     "/modules",

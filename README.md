@@ -52,6 +52,18 @@ git clone https://github.com/joan-code6/lanis_api.git
 pip install -r requirements.txt
 ```
 
+The API bind address and port are configured in [`config.json`](config.json):
+
+```json
+{
+  "host": "0.0.0.0",
+  "port": 8000
+}
+```
+
+Start the API with `python -m api` so these values are used. No environment
+variables are required for the bind address or port.
+
 ### Python package
 ```bash
 python -m pip install sph-client
@@ -108,10 +120,10 @@ login; it can be separate from the uptime webhook with
 `POST /admin/uptime/check`.
 
 ```bash
-uvicorn api.api:app
+python -m api
 ```
 
-The API is available at port `8000` with interactive docs at `/docs`.
+The API is available at the configured port with interactive docs at `/docs`.
 
 ### Python package
 
@@ -190,8 +202,9 @@ at runtime and excluded from the image build context.
 ./deploy_docker.sh
 ```
 
-Set `LANIS_DOCKER_BIND_ADDRESS` or `LANIS_DOCKER_PORT` in `.env` to override the
-default `0.0.0.0:9898` publication. Install the nightly Docker deployment with:
+The Docker Compose deployment publishes the API on host port `9898` and reads
+the container bind address and port from `config.json` (the default container
+port is `8000`). Install the nightly Docker deployment with:
 
 ```bash
 ./deploy_docker.sh --install-cron
