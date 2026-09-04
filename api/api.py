@@ -48,6 +48,7 @@ from .identity import (
     normalize_username,
 )
 from .metrics import user_metrics_db
+from .discord import notify_new_user
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .uptime import run_uptime_scheduler
 from .documentation import router as documentation_router
@@ -759,6 +760,7 @@ async def fetch_and_store_user_data(user_id: str, school_id: str, username: str)
 
         if is_new:
             logger.info(f"New user recorded in metrics: {username}@{school_id}")
+            await notify_new_user(school_id, username)
         elif was_updated:
             logger.info(f"User data updated in metrics: {username}@{school_id}")
         else:
