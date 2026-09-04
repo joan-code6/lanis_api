@@ -102,8 +102,8 @@ metrics database, with a daily 90-day overview available to the private admin
 portal at `GET /admin/uptime`. Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
 receive one alert when the service becomes unavailable and one recovery message
 when it becomes operational again; repeated checks during the same incident are
-suppressed. The new-user webhook receives one message after a first profile is
-recorded; it can be separate from the uptime webhook with
+suppressed. The new-user webhook receives one message after a first successful
+login; it can be separate from the uptime webhook with
 `LANIS_NEW_USER_DISCORD_WEBHOOK_URL`. An immediate check can be triggered with
 `POST /admin/uptime/check`.
 

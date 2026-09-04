@@ -91,15 +91,16 @@ def test_activity_heartbeats_and_admin_audit_are_persisted(tmp_path):
     database = UserMetricsDB(tmp_path / "user_metrics.db")
 
     async def scenario():
-        await database.record_login("5201", "Bennet.Wegener")
+        assert await database.record_login("5201", "Bennet.Wegener") is True
+        assert await database.record_login("5201", "Bennet.Wegener") is False
         await database.record_admin_action(
             "5201:admin", "credential_reveal", "5201:student"
         )
 
         record = await database.get_user("5201", "bennet.wegener")
         assert record is not None
-        assert record.login_count == 1
-        assert record.session_count == 1
+        assert record.login_count == 2
+        assert record.session_count == 2
         assert record.last_seen is not None
 
         audit = await database.get_admin_audit()
