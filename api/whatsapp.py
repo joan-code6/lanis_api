@@ -80,12 +80,112 @@ class WhatsAppCloudClient:
         self.config = config
 
     async def send_text(self, recipient: str, body: str) -> None:
+        await self._send(
+            recipient,
+            {
+                "type": "text",
+                "text": {"preview_url": False, "body": truncate_message(body)},
+            },
+        )
+
+    async def send_menu(self, recipient: str, body: str) -> None:
+        """Send the assistant's primary navigation as a native WhatsApp list."""
+        await self._send(
+            recipient,
+            {
+                "type": "interactive",
+                "interactive": {
+                    "type": "list",
+                    "body": {"text": body[:1024]},
+                    "footer": {"text": "Nur lesender Zugriff · STOP trennt die Verbindung"},
+                    "action": {
+                        "button": "Funktion auswählen",
+                        "sections": [
+                            {
+                                "title": "Schultag",
+                                "rows": [
+                                    {
+                                        "id": "today",
+                                        "title": "Heute",
+                                        "description": "Dein heutiger Stundenplan",
+                                    },
+                                    {
+                                        "id": "tomorrow",
+                                        "title": "Morgen",
+                                        "description": "Dein morgiger Stundenplan",
+                                    },
+                                    {
+                                        "id": "substitutions",
+                                        "title": "Vertretungen",
+                                        "description": "Ausfälle und Änderungen",
+                                    },
+                                ],
+                            },
+                            {
+                                "title": "Organisieren",
+                                "rows": [
+                                    {
+                                        "id": "homework",
+                                        "title": "Hausaufgaben",
+                                        "description": "Noch offene Aufgaben",
+                                    },
+                                    {
+                                        "id": "exams",
+                                        "title": "Klausuren",
+                                        "description": "Anstehende Prüfungen",
+                                    },
+                                    {
+                                        "id": "calendar",
+                                        "title": "Termine",
+                                        "description": "Die nächsten Kalendereinträge",
+                                    },
+                                    {
+                                        "id": "messages",
+                                        "title": "Nachrichten",
+                                        "description": "Ungelesene Unterhaltungen",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        )
+
+    async def send_quick_actions(self, recipient: str, body: str) -> None:
+        await self._send(
+            recipient,
+            {
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {"text": body[:1024]},
+                    "action": {
+                        "buttons": [
+                            {
+                                "type": "reply",
+                                "reply": {"id": "today", "title": "Heute"},
+                            },
+                            {
+                                "type": "reply",
+                                "reply": {"id": "tomorrow", "title": "Morgen"},
+                            },
+                            {
+                                "type": "reply",
+                                "reply": {"id": "help", "title": "Menü"},
+                            },
+                        ]
+                    },
+                },
+            },
+        )
+
+    async def _send(self, recipient: str, message: Dict[str, Any]) -> None:
         if not self.config.configured:
             raise RuntimeError("WhatsApp Cloud API is not configured")
         if not re.fullmatch(r"\d{7,20}", recipient):
             raise ValueError("Invalid WhatsApp recipient")
-        body = truncate_message(body)
-        if not body:
+        if message.get("type") == "text" and not message.get("text", {}).get("body"):
             raise ValueError("WhatsApp message body cannot be empty")
         url = (
             "https://graph.facebook.com/"
@@ -103,8 +203,7 @@ class WhatsAppCloudClient:
                     "messaging_product": "whatsapp",
                     "recipient_type": "individual",
                     "to": recipient,
-                    "type": "text",
-                    "text": {"preview_url": False, "body": body},
+                    **message,
                 },
                 timeout=15,
             )
@@ -189,39 +288,69 @@ def normalize_command(text: str) -> str:
 def command_intent(text: str) -> str:
     command = normalize_command(text)
     words = set(command.split())
-    if words & {"stop", "unlink", "trennen", "abmelden"}:
+    if words & {"stop", "unlink", "trennen", "abmelden", "entkoppeln"}:
         return "unlink"
-    if words & {"hilfe", "help", "start", "menu", "menue"}:
-        return "help"
-    if words & {"nachricht", "nachrichten", "postfach", "ungelesen"}:
+    if words & {
+        "nachricht",
+        "nachrichten",
+        "postfach",
+        "ungelesen",
+        "mails",
+        "messages",
+    }:
         return "messages"
-    if words & {"vertretung", "vertretungsplan", "ausfall", "entfall"}:
+    if words & {
+        "vertretung",
+        "vertretungen",
+        "vertretungsplan",
+        "ausfall",
+        "ausfalle",
+        "entfall",
+        "substitutions",
+    }:
         return "substitutions"
-    if words & {"hausaufgabe", "hausaufgaben", "aufgaben", "homework"}:
+    if words & {
+        "hausaufgabe",
+        "hausaufgaben",
+        "aufgabe",
+        "aufgaben",
+        "homework",
+        "todos",
+    }:
         return "homework"
-    if words & {"klausur", "klausuren", "prufung", "prufungen", "test"}:
+    if words & {"klausur", "klausuren", "prufung", "prufungen", "test", "exams"}:
         return "exams"
     if words & {"termin", "termine", "kalender", "event", "events"}:
         return "calendar"
-    if "morgen" in words:
+    if words & {"morgen", "tomorrow"}:
         return "tomorrow"
-    if words & {"heute", "stundenplan", "unterricht", "schule"}:
+    if words & {"heute", "today", "stundenplan", "unterricht", "schule"}:
         return "today"
-    return "help"
+    if words & {
+        "hilfe",
+        "help",
+        "start",
+        "menu",
+        "menue",
+        "ubersicht",
+        "kannst",
+    }:
+        return "help"
+    return "unknown"
 
 
 def help_message(ui_base_url: str) -> str:
     return (
-        "👋 *LANIS-Assistent*\n\n"
-        "Schreib mir zum Beispiel:\n"
-        "• *Heute* oder *Morgen* – dein Stundenplan\n"
-        "• *Vertretung* – aktuelle Änderungen\n"
-        "• *Hausaufgaben* – offene Aufgaben\n"
-        "• *Klausuren* – anstehende Prüfungen\n"
-        "• *Termine* – nächste Kalendereinträge\n"
-        "• *Nachrichten* – ungelesene Unterhaltungen\n\n"
-        f"Einstellungen: {ui_base_url}/settings/whatsapp\n"
-        "Mit *STOP* trennst du die Verbindung sofort."
+        "👋 *Was möchtest du wissen?*\n\n"
+        "Wähle unten eine Funktion aus oder schreib einfach eine Frage wie "
+        "„Was habe ich morgen?“"
+    )
+
+
+def unknown_message() -> str:
+    return (
+        "Das habe ich noch nicht verstanden. Versuch zum Beispiel "
+        "„Hausaufgaben“, „Vertretungen“ oder „Was habe ich morgen?“."
     )
 
 
@@ -266,7 +395,7 @@ def format_timetable(result: Dict[str, Any], target: date) -> str:
     )
     if not lessons:
         return f"📅 *{days[day_index]} · {title}*\nKein Unterricht eingetragen."
-    lines = [f"📅 *{days[day_index]} · {title}*"]
+    lines = [f"📅 *{days[day_index]} · {title}*", ""]
     for lesson in sorted(lessons, key=lambda item: _number(item.get("stunde"))):
         period = _period_label(lesson)
         subject = _plain(lesson.get("name") or "Unterricht")
@@ -289,7 +418,7 @@ def format_substitutions(result: Dict[str, Any], own_class: str = "") -> str:
     if not selected:
         scope = f" für {own_class}" if own_class else ""
         return f"✅ Keine aktuellen Vertretungsänderungen{scope}."
-    lines = ["🔄 *Aktuelle Vertretungsänderungen*"]
+    lines = ["🔄 *Deine Vertretungen*", ""]
     for day, entry in selected[:12]:
         when = _plain(entry.get("tag") or entry.get("tag_en") or day.get("date"))
         period = _plain(entry.get("stunde"))
@@ -297,8 +426,8 @@ def format_substitutions(result: Dict[str, Any], own_class: str = "") -> str:
         kind = _plain(entry.get("art") or entry.get("hinweis") or "Änderung")
         room = _plain(entry.get("raum"))
         lines.append(
-            f"• {when} · {period}. Std. · {subject}: {kind}"
-            + (f" · {room}" if room else "")
+            f"*{when} · {period}. Std.*\n{subject}: {kind}"
+            + (f" · Raum {room}" if room else "")
         )
     if len(selected) > 12:
         lines.append(f"… und {len(selected) - 12} weitere")
@@ -317,14 +446,14 @@ def format_homework(result: Dict[str, Any]) -> str:
     ]
     if not open_entries:
         return "✅ Keine offenen Hausaufgaben gefunden."
-    lines = ["📝 *Offene Hausaufgaben*"]
+    lines = [f"📝 *{len(open_entries)} offene Hausaufgaben*", ""]
     for item in open_entries[:10]:
         course = _plain(
             item.get("name") or item.get("course_name") or item.get("subject") or "Kurs"
         )
         task = _plain(item.get("homework") or item.get("task") or item.get("text"))
         due = _plain(item.get("datum") or item.get("date") or item.get("due_date"))
-        lines.append(f"• {course}" + (f" · {due}" if due else "") + f": {task}")
+        lines.append(f"*{course}*" + (f" · {due}" if due else "") + f"\n{task}")
     if len(open_entries) > 10:
         lines.append(f"… und {len(open_entries) - 10} weitere")
     return "\n".join(lines)
@@ -349,7 +478,7 @@ def format_exams(result: Dict[str, Any], today: Optional[date] = None) -> str:
     )
     if not upcoming:
         return "✅ Keine anstehenden Klausuren gefunden."
-    lines = ["🧪 *Anstehende Klausuren*"]
+    lines = [f"🧪 *{len(upcoming)} anstehende Klausuren*", ""]
     for exam in upcoming[:10]:
         name = _plain(
             exam.get("course_name") or exam.get("name") or exam.get("type") or "Klausur"
@@ -357,7 +486,7 @@ def format_exams(result: Dict[str, Any], today: Optional[date] = None) -> str:
         exam_date = _plain(exam.get("date") or exam.get("datum"))
         detail = _plain(exam.get("type") if exam.get("course_name") else "")
         lines.append(
-            f"• {exam_date + ' · ' if exam_date else ''}{name}"
+            f"{exam_date + ' · ' if exam_date else ''}*{name}*"
             + (f" ({detail})" if detail else "")
         )
     return "\n".join(lines)
@@ -374,13 +503,13 @@ def format_calendar(result: Dict[str, Any], today: date) -> str:
     upcoming.sort(key=lambda pair: pair[0])
     if not upcoming:
         return "✅ Keine kommenden Termine gefunden."
-    lines = ["🗓️ *Nächste Termine*"]
+    lines = ["🗓️ *Deine nächsten Termine*", ""]
     for event_date, event in upcoming[:10]:
         title = _plain(event.get("title") or event.get("name") or "Termin")
         date_label = (
             event_date.strftime("%d.%m.%Y") if event_date != date.max else "Ohne Datum"
         )
-        lines.append(f"• {date_label} · {title}")
+        lines.append(f"*{date_label}*\n{title}")
     return "\n".join(lines)
 
 

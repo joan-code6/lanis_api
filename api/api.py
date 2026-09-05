@@ -126,6 +126,7 @@ from .whatsapp import (
     format_timetable,
     help_message,
     not_linked_message,
+    unknown_message,
     pairing_code,
     verify_webhook_signature,
 )
@@ -2811,11 +2812,11 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
     if code:
         user_id = await consume_whatsapp_pairing_code(code, incoming.sender_id)
         if user_id:
-            await client.send_text(
+            await client.send_menu(
                 incoming.sender_id,
-                "✅ *WhatsApp erfolgreich mit LANIS verbunden.*\n\n"
-                "Schreib *Hilfe*, um alle verfügbaren Befehle zu sehen. "
-                "Nachrichtenvorschauen sind zunächst deaktiviert.",
+                "✅ *Du bist verbunden!*\n\n"
+                "Ab jetzt bekommst du deine Schuldaten direkt hier. "
+                "Nachrichtenvorschauen bleiben zum Schutz deiner Privatsphäre aus.",
             )
         else:
             await client.send_text(
@@ -2830,6 +2831,13 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
         await client.send_text(
             incoming.sender_id, not_linked_message(config.ui_base_url)
         )
+        return
+
+    if intent == "help":
+        await client.send_menu(incoming.sender_id, help_message(config.ui_base_url))
+        return
+    if intent == "unknown":
+        await client.send_quick_actions(incoming.sender_id, unknown_message())
         return
 
     try:
@@ -2879,8 +2887,6 @@ async def _whatsapp_command_response(
         "calendar": "/calendar",
         "messages": "/messages",
     }
-    if intent == "help":
-        return help_message(config.ui_base_url)
     if intent in {"today", "tomorrow"}:
         result = await get_stundenplan(auth=auth)
         response = format_timetable(
