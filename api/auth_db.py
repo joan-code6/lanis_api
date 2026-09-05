@@ -11,6 +11,9 @@ import logging
 import os
 import base64
 import hashlib
+import hmac
+import secrets
+import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -25,6 +28,8 @@ from .identity import canonicalize_user_id
 logger = logging.getLogger("auth_db")
 
 _CREDENTIAL_PREFIX = "v1:"
+WHATSAPP_PAIRING_TTL_MINUTES = 10
+_PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def _credential_key() -> bytes:
@@ -56,6 +61,17 @@ def _decrypt_password(value: str) -> str:
         return cipher.decrypt_and_verify(ciphertext, tag).decode()
     except Exception as error:
         raise RuntimeError("Stored credential failed authentication") from error
+
+
+def _whatsapp_id_hash(whatsapp_id: str) -> str:
+    """Create a keyed lookup value without storing a searchable phone number."""
+    return hmac.new(
+        _credential_key(), whatsapp_id.strip().encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def _pairing_code_hash(code: str) -> str:
+    return hashlib.sha256(code.strip().upper().encode()).hexdigest()
 
 DB_PATH = os.path.join("data", "auth.db")
 REFRESH_TOKEN_TTL_DAYS = 90
@@ -268,6 +284,7 @@ async def _migrate_user_ids(db: aiosqlite.Connection) -> None:
         ("message_notification_state", ("user_id",)),
         ("vertretungsplan_notification_state", ("user_id",)),
         ("user_preferences", ("user_id",)),
+        ("whatsapp_links", ("user_id",)),
     ):
         migrated += await _merge_user_id_table(db, table, conflict_columns)
     migrated += await _canonicalize_push_subscription_user_ids(db)
@@ -435,6 +452,58 @@ async def initialize() -> None:
             )
             """
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whatsapp_pairing_codes (
+                code_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_whatsapp_pairing_user_id
+            ON whatsapp_pairing_codes(user_id)
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whatsapp_links (
+                user_id TEXT PRIMARY KEY,
+                whatsapp_id_hash TEXT NOT NULL UNIQUE,
+                phone_suffix TEXT NOT NULL DEFAULT '',
+                show_message_previews INTEGER NOT NULL DEFAULT 0,
+                linked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_inbound_at TIMESTAMP
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_whatsapp_links_id_hash
+            ON whatsapp_links(whatsapp_id_hash)
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whatsapp_inbound_messages (
+                message_id TEXT PRIMARY KEY,
+                received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whatsapp_rate_limits (
+                whatsapp_id_hash TEXT PRIMARY KEY,
+                window_started INTEGER NOT NULL,
+                message_count INTEGER NOT NULL
+            )
+            """
+        )
         async with db.execute("SELECT token, password FROM refresh_tokens") as cursor:
             legacy_rows = await cursor.fetchall()
         for token, stored_password in legacy_rows:
@@ -446,6 +515,210 @@ async def initialize() -> None:
         await _migrate_user_ids(db)
         await db.commit()
     logger.info("Auth DB initialized at %s", DB_PATH)
+
+
+async def create_whatsapp_pairing_code(user_id: str) -> tuple[str, datetime]:
+    """Create a short-lived, single-use code for an authenticated account."""
+    user_id = _canonical_user_id(user_id)
+    expires_at = datetime.utcnow() + timedelta(minutes=WHATSAPP_PAIRING_TTL_MINUTES)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM whatsapp_pairing_codes WHERE expires_at <= ? OR user_id = ?",
+                (datetime.utcnow(), user_id),
+            )
+            while True:
+                raw = "".join(secrets.choice(_PAIRING_ALPHABET) for _ in range(8))
+                code = f"{raw[:4]}-{raw[4:]}"
+                try:
+                    await db.execute(
+                        "INSERT INTO whatsapp_pairing_codes "
+                        "(code_hash, user_id, expires_at) VALUES (?, ?, ?)",
+                        (_pairing_code_hash(code), user_id, expires_at),
+                    )
+                    break
+                except aiosqlite.IntegrityError:
+                    continue
+            await db.commit()
+    return code, expires_at
+
+
+async def consume_whatsapp_pairing_code(
+    code: str, whatsapp_id: str
+) -> Optional[str]:
+    """Atomically consume a pairing code and bind its account to the sender."""
+    now = datetime.utcnow()
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                "DELETE FROM whatsapp_pairing_codes WHERE expires_at <= ?", (now,)
+            )
+            async with db.execute(
+                "SELECT user_id FROM whatsapp_pairing_codes "
+                "WHERE code_hash = ? AND expires_at > ?",
+                (_pairing_code_hash(code), now),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                await db.commit()
+                return None
+
+            user_id = _canonical_user_id(row["user_id"])
+            whatsapp_hash = _whatsapp_id_hash(whatsapp_id)
+            await db.execute(
+                "DELETE FROM whatsapp_links "
+                "WHERE user_id = ? OR whatsapp_id_hash = ?",
+                (user_id, whatsapp_hash),
+            )
+            await db.execute(
+                "INSERT INTO whatsapp_links "
+                "(user_id, whatsapp_id_hash, phone_suffix, last_inbound_at) "
+                "VALUES (?, ?, ?, ?)",
+                (user_id, whatsapp_hash, whatsapp_id[-4:], now),
+            )
+            await db.execute(
+                "DELETE FROM whatsapp_pairing_codes WHERE code_hash = ?",
+                (_pairing_code_hash(code),),
+            )
+            await db.commit()
+            return user_id
+
+
+async def get_whatsapp_link_for_sender(
+    whatsapp_id: str,
+) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT user_id, phone_suffix, show_message_previews, linked_at "
+            "FROM whatsapp_links WHERE whatsapp_id_hash = ?",
+            (_whatsapp_id_hash(whatsapp_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if row is None:
+        return None
+    return {
+        "user_id": _canonical_user_id(row["user_id"]),
+        "phone_suffix": row["phone_suffix"],
+        "show_message_previews": bool(row["show_message_previews"]),
+        "linked_at": row["linked_at"],
+    }
+
+
+async def get_whatsapp_link_for_user(user_id: str) -> Optional[Dict[str, Any]]:
+    user_id = _canonical_user_id(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT phone_suffix, show_message_previews, linked_at "
+            "FROM whatsapp_links WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if row is None:
+        return None
+    return {
+        "phone_suffix": row["phone_suffix"],
+        "show_message_previews": bool(row["show_message_previews"]),
+        "linked_at": row["linked_at"],
+    }
+
+
+async def save_whatsapp_preferences(
+    user_id: str, *, show_message_previews: bool
+) -> None:
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "UPDATE whatsapp_links SET show_message_previews = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                (int(show_message_previews), user_id),
+            )
+            await db.commit()
+            if cursor.rowcount == 0:
+                raise LookupError("WhatsApp account is not linked")
+
+
+async def delete_whatsapp_link(user_id: str) -> None:
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM whatsapp_links WHERE user_id = ?", (user_id,))
+            await db.execute(
+                "DELETE FROM whatsapp_pairing_codes WHERE user_id = ?", (user_id,)
+            )
+            await db.commit()
+
+
+async def delete_whatsapp_link_for_sender(whatsapp_id: str) -> None:
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM whatsapp_links WHERE whatsapp_id_hash = ?",
+                (_whatsapp_id_hash(whatsapp_id),),
+            )
+            await db.commit()
+
+
+async def reserve_whatsapp_message(message_id: str) -> bool:
+    """Return false for a webhook delivery that has already been processed."""
+    cutoff = datetime.utcnow() - timedelta(days=7)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM whatsapp_inbound_messages WHERE received_at < ?", (cutoff,)
+            )
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO whatsapp_inbound_messages (message_id) VALUES (?)",
+                (message_id,),
+            )
+            await db.commit()
+            return cursor.rowcount == 1
+
+
+async def allow_whatsapp_message(
+    whatsapp_id: str, *, limit: int = 20, window_seconds: int = 60
+) -> bool:
+    """Apply a small persistent per-sender rate limit before portal work."""
+    now = int(time.time())
+    sender_hash = _whatsapp_id_hash(whatsapp_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT window_started, message_count FROM whatsapp_rate_limits "
+                "WHERE whatsapp_id_hash = ?",
+                (sender_hash,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None or now - int(row["window_started"]) >= window_seconds:
+                await db.execute(
+                    "INSERT INTO whatsapp_rate_limits "
+                    "(whatsapp_id_hash, window_started, message_count) VALUES (?, ?, 1) "
+                    "ON CONFLICT(whatsapp_id_hash) DO UPDATE SET "
+                    "window_started = excluded.window_started, message_count = 1",
+                    (sender_hash, now),
+                )
+                allowed = True
+            elif int(row["message_count"]) >= limit:
+                allowed = False
+            else:
+                await db.execute(
+                    "UPDATE whatsapp_rate_limits SET message_count = message_count + 1 "
+                    "WHERE whatsapp_id_hash = ?",
+                    (sender_hash,),
+                )
+                allowed = True
+            await db.execute(
+                "DELETE FROM whatsapp_rate_limits WHERE window_started < ?",
+                (now - max(window_seconds * 2, 300),),
+            )
+            await db.commit()
+            return allowed
 
 
 async def store_refresh_token(

@@ -15,6 +15,7 @@ Run locally:
 import asyncio
 import copy
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import quote, urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import requests as http_requests
 from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
@@ -55,6 +57,7 @@ from .documentation import router as documentation_router
 from .admin import AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
     DEFAULT_SIDEBAR_ORDER,
+    allow_whatsapp_message,
     initialize as auth_db_initialize,
     store_refresh_token,
     get_refresh_token,
@@ -74,6 +77,14 @@ from .auth_db import (
     get_custom_lessons,
     save_custom_lesson,
     delete_custom_lesson,
+    consume_whatsapp_pairing_code,
+    create_whatsapp_pairing_code,
+    delete_whatsapp_link,
+    delete_whatsapp_link_for_sender,
+    get_whatsapp_link_for_sender,
+    get_whatsapp_link_for_user,
+    reserve_whatsapp_message,
+    save_whatsapp_preferences,
 )
 from .file_cache import (
     get_file_hash,
@@ -100,6 +111,23 @@ from .message_notifications import (
     is_trusted_push_endpoint,
     validate_notification_preferences,
     vertretungsplan_notification_options,
+)
+from .whatsapp import (
+    IncomingWhatsAppMessage,
+    WhatsAppCloudClient,
+    WhatsAppConfig,
+    command_intent,
+    extract_incoming_messages,
+    format_calendar,
+    format_exams,
+    format_homework,
+    format_messages,
+    format_substitutions,
+    format_timetable,
+    help_message,
+    not_linked_message,
+    pairing_code,
+    verify_webhook_signature,
 )
 
 from dotenv import load_dotenv
@@ -208,6 +236,14 @@ class PushSubscriptionRequest(BaseModel):
 
 class PushUnsubscribeRequest(BaseModel):
     endpoint: str
+
+
+class WhatsAppPreferencesRequest(BaseModel):
+    show_message_previews: bool = False
+
+
+class WhatsAppPairingRequest(BaseModel):
+    consent: Literal[True]
 
 
 class CustomLessonRequest(BaseModel):
@@ -1070,6 +1106,7 @@ async def logout_endpoint(
 ) -> Dict[str, str]:
     await delete_user_tokens(auth.user_id)
     await delete_user_push_subscriptions(auth.user_id)
+    await delete_whatsapp_link(auth.user_id)
     await sessions.drop_schulportal_session(auth.user_id)
     return {"status": "logged_out"}
 
@@ -2612,3 +2649,267 @@ async def semantic_search(
         "results": results,
         "count": len(results),
     }
+
+
+# --- WhatsApp assistant ---
+
+
+def _whatsapp_config() -> WhatsAppConfig:
+    # Read at request time so secret rotation does not require importing the app again.
+    return WhatsAppConfig.from_env()
+
+
+@app.get("/whatsapp/status")
+async def whatsapp_status(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    config = _whatsapp_config()
+    link = await get_whatsapp_link_for_user(auth.user_id)
+    return {
+        "success": True,
+        "configured": config.configured,
+        "linked": link is not None,
+        "phone_suffix": link["phone_suffix"] if link else "",
+        "linked_at": link["linked_at"] if link else None,
+        "show_message_previews": bool(
+            link and link.get("show_message_previews", False)
+        ),
+    }
+
+
+@app.post("/whatsapp/pairing")
+async def create_whatsapp_pairing(
+    _: WhatsAppPairingRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    config = _whatsapp_config()
+    if not config.configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="WhatsApp assistant is not configured on this server",
+        )
+    code, expires_at = await create_whatsapp_pairing_code(auth.user_id)
+    return {
+        "success": True,
+        "code": code,
+        "expires_at": expires_at.isoformat() + "Z",
+        "link_url": config.pairing_url(code),
+    }
+
+
+@app.put("/whatsapp/preferences")
+async def update_whatsapp_preferences(
+    payload: WhatsAppPreferencesRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    try:
+        await save_whatsapp_preferences(
+            auth.user_id,
+            show_message_previews=payload.show_message_previews,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {
+        "success": True,
+        "show_message_previews": payload.show_message_previews,
+    }
+
+
+@app.delete("/whatsapp/link")
+async def unlink_whatsapp(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, bool]:
+    await delete_whatsapp_link(auth.user_id)
+    return {"success": True}
+
+
+@app.get("/whatsapp/webhook", include_in_schema=False)
+async def verify_whatsapp_webhook(request: Request) -> Response:
+    config = _whatsapp_config()
+    query = request.query_params
+    if (
+        not config.verify_token
+        or query.get("hub.mode") != "subscribe"
+        or not hmac.compare_digest(
+            query.get("hub.verify_token", ""), config.verify_token
+        )
+    ):
+        return Response(status_code=403)
+    challenge = query.get("hub.challenge", "")
+    if not challenge:
+        return Response(status_code=400)
+    return Response(content=challenge, media_type="text/plain")
+
+
+@app.post("/whatsapp/webhook", include_in_schema=False)
+async def receive_whatsapp_webhook(request: Request) -> Dict[str, str]:
+    config = _whatsapp_config()
+    if not config.configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="WhatsApp webhook is not configured",
+        )
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > 1_000_000:
+        raise HTTPException(status_code=413, detail="Webhook payload too large")
+    body = await request.body()
+    if len(body) > 1_000_000:
+        raise HTTPException(status_code=413, detail="Webhook payload too large")
+    if not verify_webhook_signature(
+        body, request.headers.get("X-Hub-Signature-256", ""), config.app_secret
+    ):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload") from error
+
+    for incoming in extract_incoming_messages(payload, config.phone_number_id):
+        task = Task(
+            name=f"whatsapp_inbound:{hashlib.sha256(incoming.message_id.encode()).hexdigest()[:12]}",
+            func=_process_whatsapp_message,
+            args=(incoming,),
+            priority=TaskPriority.NORMAL,
+            # Pairing and unlinking are state transitions. Retrying the entire
+            # handler after an outbound failure could produce a misleading reply.
+            max_retries=0,
+        )
+        try:
+            await task_queue.add_task(task)
+        except asyncio.QueueFull as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Message queue is temporarily full",
+            ) from error
+    return {"status": "accepted"}
+
+
+async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
+    if not await reserve_whatsapp_message(incoming.message_id):
+        return
+    if not await allow_whatsapp_message(incoming.sender_id):
+        logger.warning("Dropped rate-limited WhatsApp message")
+        return
+    config = _whatsapp_config()
+    client = WhatsAppCloudClient(config)
+
+    code = pairing_code(incoming.text)
+    if code:
+        user_id = await consume_whatsapp_pairing_code(code, incoming.sender_id)
+        if user_id:
+            await client.send_text(
+                incoming.sender_id,
+                "✅ *WhatsApp erfolgreich mit LANIS verbunden.*\n\n"
+                "Schreib *Hilfe*, um alle verfügbaren Befehle zu sehen. "
+                "Nachrichtenvorschauen sind zunächst deaktiviert.",
+            )
+        else:
+            await client.send_text(
+                incoming.sender_id,
+                "⚠️ Dieser Verbindungscode ist ungültig oder abgelaufen. "
+                "Erzeuge in den LANIS-Einstellungen einen neuen Code.",
+            )
+        return
+
+    link = await get_whatsapp_link_for_sender(incoming.sender_id)
+    if link is None:
+        await client.send_text(
+            incoming.sender_id, not_linked_message(config.ui_base_url)
+        )
+        return
+
+    intent = command_intent(incoming.text)
+    if intent == "unlink":
+        await delete_whatsapp_link_for_sender(incoming.sender_id)
+        await client.send_text(
+            incoming.sender_id,
+            "✅ Die WhatsApp-Verbindung wurde getrennt. LANIS sendet über diesen "
+            "Chat keine persönlichen Daten mehr.",
+        )
+        return
+
+    try:
+        session_data = await sessions._get_or_create_schulportal_client(
+            link["user_id"]
+        )
+        auth = AuthSession(
+            client=session_data.client,
+            user_id=link["user_id"],
+            school_id=session_data.school_id,
+            username=session_data.username,
+        )
+        response = await _whatsapp_command_response(intent, auth, link)
+    except Exception:
+        logger.warning(
+            "WhatsApp command failed for linked account",
+            exc_info=True,
+        )
+        response = (
+            "⚠️ LANIS konnte deine Daten gerade nicht laden. Öffne die App und "
+            "melde dich gegebenenfalls erneut an:\n"
+            f"{config.ui_base_url}"
+        )
+    await client.send_text(incoming.sender_id, response)
+
+
+async def _whatsapp_command_response(
+    intent: str, auth: AuthSession, link: Dict[str, Any]
+) -> str:
+    config = _whatsapp_config()
+    today = datetime.now(ZoneInfo("Europe/Berlin")).date()
+    deep_links = {
+        "today": "/timetable",
+        "tomorrow": "/timetable",
+        "substitutions": "/vertretungsplan",
+        "homework": "/courses",
+        "exams": "/study-groups",
+        "calendar": "/calendar",
+        "messages": "/messages",
+    }
+    if intent == "help":
+        return help_message(config.ui_base_url)
+    if intent in {"today", "tomorrow"}:
+        result = await get_stundenplan(auth=auth)
+        response = format_timetable(
+            result, today + timedelta(days=1 if intent == "tomorrow" else 0)
+        )
+    elif intent == "substitutions":
+        profile, plan = await asyncio.gather(
+            get_user_data(auth=auth),
+            get_vertretungsplan(include_raw=False, refresh=False, auth=auth),
+        )
+        profile_data = profile.get("data") if profile.get("success") else {}
+        profile_data = profile_data if isinstance(profile_data, dict) else {}
+        own_class = str(
+            profile_data.get("klasse")
+            or profile_data.get("class")
+            or profile_data.get("Klasse")
+            or ""
+        ).strip()
+        preferences, _ = await get_user_preferences(auth.user_id)
+        class_override = str(
+            (preferences.get("vertretungsplan") or {}).get("class_override") or ""
+        ).strip()
+        own_class = class_override or own_class
+        response = (
+            format_substitutions(plan, own_class)
+            if own_class
+            else "⚠️ Deine Klasse konnte nicht sicher bestimmt werden. Lege sie "
+            "zuerst in den LANIS-Einstellungen unter Vertretungsplan fest."
+        )
+    elif intent == "homework":
+        response = format_homework(await meinunterricht_overview(auth=auth))
+    elif intent == "exams":
+        response = format_exams(await get_lerngruppen(auth=auth), today)
+    elif intent == "calendar":
+        response = format_calendar(
+            await get_calendar_events(start="year", auth=auth), today
+        )
+    elif intent == "messages":
+        response = format_messages(
+            await get_message_headers(auth=auth),
+            show_preview=bool(link.get("show_message_previews")),
+        )
+    else:
+        return help_message(config.ui_base_url)
+    return f"{response}\n\nIn LANIS öffnen: {config.ui_base_url}{deep_links[intent]}"

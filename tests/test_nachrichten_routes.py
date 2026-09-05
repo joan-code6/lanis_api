@@ -253,11 +253,15 @@ def test_logout_removes_user_push_subscriptions(monkeypatch):
     async def delete_subscriptions(user_id):
         calls.append(("subscriptions", user_id))
 
+    async def delete_whatsapp(user_id):
+        calls.append(("whatsapp", user_id))
+
     async def drop_session(user_id):
         calls.append(("session", user_id))
 
     monkeypatch.setattr(api_module, "delete_user_tokens", delete_tokens)
     monkeypatch.setattr(api_module, "delete_user_push_subscriptions", delete_subscriptions)
+    monkeypatch.setattr(api_module, "delete_whatsapp_link", delete_whatsapp)
     monkeypatch.setattr(api_module.sessions, "drop_schulportal_session", drop_session)
 
     assert asyncio.run(logout_endpoint(SimpleNamespace(user_id="user-a"))) == {
@@ -266,5 +270,6 @@ def test_logout_removes_user_push_subscriptions(monkeypatch):
     assert calls == [
         ("tokens", "user-a"),
         ("subscriptions", "user-a"),
+        ("whatsapp", "user-a"),
         ("session", "user-a"),
     ]
