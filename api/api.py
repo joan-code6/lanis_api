@@ -2731,7 +2731,8 @@ async def verify_whatsapp_webhook(request: Request) -> Response:
         not config.verify_token
         or query.get("hub.mode") != "subscribe"
         or not hmac.compare_digest(
-            query.get("hub.verify_token", ""), config.verify_token
+            query.get("hub.verify_token", "").encode(),
+            config.verify_token.encode(),
         )
     ):
         return Response(status_code=403)
@@ -2787,11 +2788,24 @@ async def receive_whatsapp_webhook(request: Request) -> Dict[str, str]:
 async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
     if not await reserve_whatsapp_message(incoming.message_id):
         return
+    config = _whatsapp_config()
+    client = WhatsAppCloudClient(config)
+
+    # STOP is a privacy control, so it must remain available even when ordinary
+    # commands from this sender are currently rate-limited.
+    intent = command_intent(incoming.text)
+    if intent == "unlink":
+        await delete_whatsapp_link_for_sender(incoming.sender_id)
+        await client.send_text(
+            incoming.sender_id,
+            "✅ Die WhatsApp-Verbindung wurde getrennt. LANIS sendet über diesen "
+            "Chat keine persönlichen Daten mehr.",
+        )
+        return
+
     if not await allow_whatsapp_message(incoming.sender_id):
         logger.warning("Dropped rate-limited WhatsApp message")
         return
-    config = _whatsapp_config()
-    client = WhatsAppCloudClient(config)
 
     code = pairing_code(incoming.text)
     if code:
@@ -2818,16 +2832,6 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
         )
         return
 
-    intent = command_intent(incoming.text)
-    if intent == "unlink":
-        await delete_whatsapp_link_for_sender(incoming.sender_id)
-        await client.send_text(
-            incoming.sender_id,
-            "✅ Die WhatsApp-Verbindung wurde getrennt. LANIS sendet über diesen "
-            "Chat keine persönlichen Daten mehr.",
-        )
-        return
-
     try:
         session_data = await sessions._get_or_create_schulportal_client(
             link["user_id"]
@@ -2849,6 +2853,15 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
             "melde dich gegebenenfalls erneut an:\n"
             f"{config.ui_base_url}"
         )
+    # A STOP command or settings-page unlink can run while portal data is being
+    # fetched. Never send that result unless the exact link is still active.
+    current_link = await get_whatsapp_link_for_sender(incoming.sender_id)
+    if current_link is None or any(
+        current_link.get(field) != link.get(field)
+        for field in ("user_id", "linked_at")
+    ):
+        logger.info("Suppressed WhatsApp response after account unlink/relink")
+        return
     await client.send_text(incoming.sender_id, response)
 
 
@@ -2874,9 +2887,10 @@ async def _whatsapp_command_response(
             result, today + timedelta(days=1 if intent == "tomorrow" else 0)
         )
     elif intent == "substitutions":
-        profile, plan = await asyncio.gather(
-            get_user_data(auth=auth),
-            get_vertretungsplan(include_raw=False, refresh=False, auth=auth),
+        # Both calls share the cached client's requests.Session.
+        profile = await get_user_data(auth=auth)
+        plan = await get_vertretungsplan(
+            include_raw=False, refresh=False, auth=auth
         )
         profile_data = profile.get("data") if profile.get("success") else {}
         profile_data = profile_data if isinstance(profile_data, dict) else {}

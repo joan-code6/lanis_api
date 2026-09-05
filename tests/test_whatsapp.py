@@ -4,6 +4,7 @@ import hmac
 import json
 import sqlite3
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -12,6 +13,7 @@ from starlette.requests import Request
 from api import api as api_module
 from api import auth_db
 from api.whatsapp import (
+    IncomingWhatsAppMessage,
     command_intent,
     extract_incoming_messages,
     format_exams,
@@ -73,6 +75,18 @@ def test_webhook_verification_uses_constant_time_token_check(monkeypatch) -> Non
 
     assert response.status_code == 200
     assert response.body == b"12345"
+
+
+def test_webhook_verification_accepts_non_ascii_tokens(monkeypatch) -> None:
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "prüf-token")
+    request = _request(
+        query="hub.mode=subscribe&hub.verify_token=pr%C3%BCf-token&hub.challenge=ok"
+    )
+
+    response = asyncio.run(api_module.verify_whatsapp_webhook(request))
+
+    assert response.status_code == 200
+    assert response.body == b"ok"
 
 
 def test_signed_webhook_is_queued_and_invalid_signature_is_rejected(
@@ -268,6 +282,106 @@ def test_timetable_summary_prefers_personal_plan() -> None:
     assert "Montag · 07.09.2026" in summary
     assert "1–2. Mathematik · A 12 · MW" in summary
     assert "Allgemein" not in summary
+
+
+def test_timetable_summary_uses_recurring_template_for_another_week() -> None:
+    result = {
+        "success": True,
+        "week_start": "2026-09-07",
+        "days": ["Montag"],
+        "plan_for_own": [[{"stunde": 1, "name": "Einmalige Änderung"}]],
+        "template_plan_for_own": [[{"stunde": 1, "name": "Mathematik"}]],
+        "plan_for_all": [],
+        "template_plan_for_all": [],
+    }
+
+    summary = format_timetable(result, date(2026, 9, 14))
+
+    assert "Mathematik" in summary
+    assert "Einmalige Änderung" not in summary
+
+
+def test_stop_bypasses_rate_limit(monkeypatch) -> None:
+    sent = []
+    deleted = []
+
+    async def reserve(_message_id):
+        return True
+
+    async def rate_limit(_sender_id):
+        raise AssertionError("STOP must not consult the ordinary rate limit")
+
+    async def delete(sender_id):
+        deleted.append(sender_id)
+
+    class Client:
+        def __init__(self, _config):
+            pass
+
+        async def send_text(self, sender_id, body):
+            sent.append((sender_id, body))
+
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", reserve)
+    monkeypatch.setattr(api_module, "allow_whatsapp_message", rate_limit)
+    monkeypatch.setattr(api_module, "delete_whatsapp_link_for_sender", delete)
+    monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
+    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
+
+    asyncio.run(
+        api_module._process_whatsapp_message(
+            IncomingWhatsAppMessage("wamid.stop", "49123456789", "STOP")
+        )
+    )
+
+    assert deleted == ["49123456789"]
+    assert sent and "getrennt" in sent[0][1]
+
+
+def test_personal_response_is_suppressed_after_unlink(monkeypatch) -> None:
+    sent = []
+    links = [
+        {
+            "user_id": "5201:student",
+            "linked_at": "2026-09-05 12:00:00",
+            "show_message_previews": False,
+        },
+        None,
+    ]
+
+    async def true_result(*_args, **_kwargs):
+        return True
+
+    async def get_link(_sender_id):
+        return links.pop(0)
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=object(), school_id="5201", username="Student")
+
+    async def response(*_args, **_kwargs):
+        return "persönliche Schuldaten"
+
+    class Client:
+        def __init__(self, _config):
+            pass
+
+        async def send_text(self, sender_id, body):
+            sent.append((sender_id, body))
+
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", true_result)
+    monkeypatch.setattr(api_module, "allow_whatsapp_message", true_result)
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", get_link)
+    monkeypatch.setattr(api_module.sessions, "_get_or_create_schulportal_client", get_client)
+    monkeypatch.setattr(api_module, "_whatsapp_command_response", response)
+    monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
+    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
+
+    asyncio.run(
+        api_module._process_whatsapp_message(
+            IncomingWhatsAppMessage("wamid.today", "49123456789", "Heute")
+        )
+    )
+
+    assert sent == []
 
 
 def test_sensitive_previews_default_to_counts_only() -> None:

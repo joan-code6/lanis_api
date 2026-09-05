@@ -8,7 +8,7 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -242,8 +242,22 @@ def format_timetable(result: Dict[str, Any], target: date) -> str:
     day_index = target.weekday()
     if day_index >= len(days):
         return f"📅 *{title}*\nKein Unterricht im Stundenplan."
-    own_plan = result.get("plan_for_own") or []
-    all_plan = result.get("plan_for_all") or []
+    target_week = target - timedelta(days=target.weekday())
+    try:
+        result_week = date.fromisoformat(str(result.get("week_start")))
+    except (TypeError, ValueError):
+        result_week = target_week
+    outside_result_week = result_week != target_week
+    own_plan = (
+        result.get("template_plan_for_own")
+        if outside_result_week
+        else result.get("plan_for_own")
+    ) or []
+    all_plan = (
+        result.get("template_plan_for_all")
+        if outside_result_week
+        else result.get("plan_for_all")
+    ) or []
     plan = own_plan if any(own_plan) else all_plan
     lessons = (
         plan[day_index]
