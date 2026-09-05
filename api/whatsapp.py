@@ -291,16 +291,6 @@ def command_intent(text: str) -> str:
     if words & {"stop", "unlink", "trennen", "abmelden", "entkoppeln"}:
         return "unlink"
     if words & {
-        "hilfe",
-        "help",
-        "start",
-        "menu",
-        "menue",
-        "ubersicht",
-        "kannst",
-    }:
-        return "help"
-    if words & {
         "nachricht",
         "nachrichten",
         "postfach",
@@ -336,6 +326,16 @@ def command_intent(text: str) -> str:
         return "tomorrow"
     if words & {"heute", "today", "stundenplan", "unterricht", "schule"}:
         return "today"
+    if words & {
+        "hilfe",
+        "help",
+        "start",
+        "menu",
+        "menue",
+        "ubersicht",
+        "kannst",
+    }:
+        return "help"
     return "unknown"
 
 
