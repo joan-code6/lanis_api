@@ -162,6 +162,41 @@ Web Push requires these environment variables on the API server:
 
 The `pywebpush` dependency is included in `requirements.txt`. Users can configure notification categories, Vertretungsplan class scope, the active window, interval, timezone, and whether message previews contain the sender and subject in **Settings → Benachrichtigungen**.
 
+## WhatsApp assistant
+
+The hosted API can optionally expose a read-only WhatsApp assistant. Users link
+their WhatsApp account from **Settings → WhatsApp-Assistent** with a ten-minute,
+single-use code. The code is sent through WhatsApp, so Schulportal credentials
+never pass through Meta. Message previews are disabled by default, `STOP`
+immediately removes the link, and duplicate webhook deliveries are ignored.
+
+The assistant supports German queries for today's or tomorrow's timetable,
+substitution-plan entries, homework, exams, calendar events, and unread-message
+counts. It does not send Schulportal messages or mutate school data.
+
+Configure a Meta WhatsApp Business Platform / Cloud API application with:
+
+```dotenv
+WHATSAPP_ACCESS_TOKEN=replace-with-a-permanent-system-user-token
+WHATSAPP_PHONE_NUMBER_ID=replace-with-the-cloud-api-phone-number-id
+WHATSAPP_VERIFY_TOKEN=replace-with-a-random-webhook-verification-token
+WHATSAPP_APP_SECRET=replace-with-the-meta-app-secret
+# Keep this explicit so Graph API upgrades are intentional.
+WHATSAPP_GRAPH_API_VERSION=vXX.X
+# Digits only or international notation; formatting characters are removed.
+WHATSAPP_PUBLIC_NUMBER=491234567890
+LANIS_UI_BASE_URL=https://lanis.arg-server.de
+```
+
+In the Meta application, set the callback URL to
+`https://<api-host>/whatsapp/webhook` and subscribe the WhatsApp Business Account
+to `messages`. The endpoint validates Meta's `X-Hub-Signature-256` against the
+raw request body and ignores events addressed to another phone-number ID.
+
+All six `WHATSAPP_*` values above are required before account pairing is exposed.
+The public number is returned only as a `wa.me` link; the API never exposes the
+access token, app secret, or verification token.
+
 
 ## Deployment
 
