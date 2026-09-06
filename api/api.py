@@ -13,6 +13,7 @@ Run locally:
 """
 
 import asyncio
+from collections import deque
 import copy
 import hashlib
 import hmac
@@ -20,9 +21,9 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Deque, Dict, List, Literal, Optional
 from urllib.parse import quote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
@@ -144,7 +145,18 @@ load_dotenv()
 logger = logging.getLogger("api")
 
 whatsapp_task_queue = TaskQueue(max_concurrent=4, max_queue_size=100)
-_whatsapp_sender_locks: Dict[str, asyncio.Lock] = {}
+WHATSAPP_MAX_PENDING_MESSAGES = 100
+WHATSAPP_MAX_PENDING_PER_SENDER = 10
+
+
+@dataclass
+class _WhatsAppSenderQueue:
+    messages: Deque[IncomingWhatsAppMessage] = field(default_factory=deque)
+
+
+_whatsapp_sender_queues: Dict[str, _WhatsAppSenderQueue] = {}
+_whatsapp_dispatch_lock = asyncio.Lock()
+_whatsapp_pending_messages = 0
 
 
 SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive Schulportal sessions after 1 hour
@@ -1018,6 +1030,7 @@ async def get_metrics_stats(
         "success": True,
         "database": db_stats,
         "task_queue": queue_stats,
+        "whatsapp_queue": _whatsapp_queue_stats(),
     }
 
 
@@ -2785,6 +2798,7 @@ def _whatsapp_agent_tools(
     pending_confirmations: List[Dict[str, str]],
 ) -> List[AgentTool]:
     """Build the account-scoped read tools and confirmation-gated actions."""
+    prepare_action_lock = asyncio.Lock()
 
     async def profile(_: Dict[str, Any]) -> Any:
         return await get_user_data(auth=auth)
@@ -2937,54 +2951,70 @@ def _whatsapp_agent_tools(
         }
 
     async def search(arguments: Dict[str, Any]) -> Any:
-        return await semantic_search(
-            q=_agent_string(arguments, "query", required=True, maximum=500),
-            top_k=_agent_integer(arguments, "limit", default=20, minimum=1, maximum=50),
-            auth=auth,
+        query = _agent_string(arguments, "query", required=True, maximum=500)
+        top_k = _agent_integer(
+            arguments, "limit", default=20, minimum=1, maximum=50
         )
-
-    async def prepare_action(arguments: Dict[str, Any]) -> Any:
-        if pending_confirmations:
-            return {
-                "success": False,
-                "error": "Only one change can be prepared per conversation turn",
-            }
-        action = _agent_string(arguments, "action", required=True, maximum=80)
-        allowed = {
-            "mark_homework_done",
-            "mark_message_read",
-            "send_message",
-            "reply_message",
-            "submit_election",
-            "update_preferences",
-        }
-        if action not in allowed:
-            return {"success": False, "error": "This action is not available"}
-        payload = arguments.get("payload")
-        if not isinstance(payload, dict):
-            return {"success": False, "error": "payload must be an object"}
-        try:
-            payload = _normalize_whatsapp_action_payload(action, payload)
-        except Exception as error:
-            return {"success": False, "error": f"Invalid action proposal: {error}"}
-        encoded = json.dumps(payload, ensure_ascii=False, default=str)
-        if len(encoded) > 20_000:
-            return {"success": False, "error": "Action payload is too large"}
-        code = await create_whatsapp_pending_action(
-            auth.user_id, sender_id, action, payload
-        )
-        preview = _whatsapp_action_preview(action, payload)
-        pending_confirmations.append(
-            {"code": code, "action": action, "preview": preview}
+        results = await semantic_engine.search(
+            user_id=auth.user_id,
+            query=query,
+            auth_client=auth.client,
+            top_k=top_k,
+            include_messages=bool(link.get("show_message_previews")),
         )
         return {
             "success": True,
-            "confirmation_required": True,
-            "action": action,
-            "authoritative_preview": preview,
-            "instruction": f"Ask the user to reply exactly: BESTÄTIGEN {code}",
-            "expires_in_minutes": 10,
+            "query": query,
+            "results": results,
+            "count": len(results),
         }
+
+    async def prepare_action(arguments: Dict[str, Any]) -> Any:
+        async with prepare_action_lock:
+            if pending_confirmations:
+                return {
+                    "success": False,
+                    "error": "Only one change can be prepared per conversation turn",
+                }
+            action = _agent_string(arguments, "action", required=True, maximum=80)
+            allowed = {
+                "mark_homework_done",
+                "mark_message_read",
+                "send_message",
+                "reply_message",
+                "submit_election",
+                "update_preferences",
+            }
+            if action not in allowed:
+                return {"success": False, "error": "This action is not available"}
+            payload = arguments.get("payload")
+            if not isinstance(payload, dict):
+                return {"success": False, "error": "payload must be an object"}
+            try:
+                payload = _normalize_whatsapp_action_payload(action, payload)
+            except Exception as error:
+                return {
+                    "success": False,
+                    "error": f"Invalid action proposal: {error}",
+                }
+            encoded = json.dumps(payload, ensure_ascii=False, default=str)
+            if len(encoded) > 20_000:
+                return {"success": False, "error": "Action payload is too large"}
+            code = await create_whatsapp_pending_action(
+                auth.user_id, sender_id, action, payload
+            )
+            preview = _whatsapp_action_preview(action, payload)
+            pending_confirmations.append(
+                {"code": code, "action": action, "preview": preview}
+            )
+            return {
+                "success": True,
+                "confirmation_required": True,
+                "action": action,
+                "authoritative_preview": preview,
+                "instruction": f"Ask the user to reply exactly: BESTÄTIGEN {code}",
+                "expires_in_minutes": 10,
+            }
 
     empty = _agent_object_schema()
     string = lambda description, maximum=200: {"type": "string", "description": description, "maxLength": maximum}
@@ -3064,21 +3094,24 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
         recipients = ", ".join(str(value) for value in payload.get("recipients") or [])
         return (
             f"Neue Nachricht an: {recipients}\n"
-            f"Betreff: {str(payload.get('subject') or '')[:200]}\n"
-            f"Text: {str(payload.get('body') or '')[:1200]}"
+            f"Betreff: {str(payload.get('subject') or '')}\n"
+            f"Text: {str(payload.get('body') or '')}"
         )
     if action == "reply_message":
         return (
-            f"Antwort in Unterhaltung {str(payload.get('conversation_id') or '')[:200]}:\n"
-            f"{str(payload.get('body') or '')[:1200]}"
+            f"Antwort in Unterhaltung {str(payload.get('conversation_id') or '')}:\n"
+            f"{str(payload.get('body') or '')}"
         )
     if action == "mark_message_read":
-        return f"Unterhaltung {str(payload.get('conversation_id') or '')[:200]} als gelesen markieren"
+        return (
+            f"Unterhaltung {str(payload.get('conversation_id') or '')} "
+            "als gelesen markieren"
+        )
     if action == "mark_homework_done":
         state = "erledigt" if payload.get("done", True) is True else "offen"
         return (
-            f"Hausaufgabe {str(payload.get('entry_id') or '')[:200]} im Kurs "
-            f"{str(payload.get('course_id') or '')[:200]} als {state} markieren"
+            f"Hausaufgabe {str(payload.get('entry_id') or '')} im Kurs "
+            f"{str(payload.get('course_id') or '')} als {state} markieren"
         )
     if action == "submit_election":
         details = json.dumps(
@@ -3089,10 +3122,10 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
             ensure_ascii=False,
             sort_keys=True,
         )
-        return f"Wahl {str(payload.get('election_id') or '')[:200]} verbindlich absenden:\n{details[:1400]}"
+        return f"Wahl {str(payload.get('election_id') or '')} verbindlich absenden:\n{details}"
     if action == "update_preferences":
         details = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        return f"LANIS-Einstellungen ändern:\n{details[:1500]}"
+        return f"LANIS-Einstellungen ändern:\n{details}"
     return "Unbekannte Änderung"
 
 
@@ -3336,17 +3369,8 @@ async def receive_whatsapp_webhook(request: Request) -> Dict[str, str]:
         raise HTTPException(status_code=400, detail="Invalid webhook payload") from error
 
     for incoming in extract_incoming_messages(payload, config.phone_number_id):
-        task = Task(
-            name=f"whatsapp_inbound:{hashlib.sha256(incoming.message_id.encode()).hexdigest()[:12]}",
-            func=_process_whatsapp_message_serialized,
-            args=(incoming,),
-            priority=TaskPriority.NORMAL,
-            # Pairing and unlinking are state transitions. Retrying the entire
-            # handler after an outbound failure could produce a misleading reply.
-            max_retries=0,
-        )
         try:
-            await whatsapp_task_queue.add_task(task)
+            await _enqueue_whatsapp_message(incoming)
         except asyncio.QueueFull as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -3355,18 +3379,82 @@ async def receive_whatsapp_webhook(request: Request) -> Dict[str, str]:
     return {"status": "accepted"}
 
 
-async def _process_whatsapp_message_serialized(
-    incoming: IncomingWhatsAppMessage,
-) -> None:
-    """Keep each sender's conversational turns ordered while allowing concurrency."""
+def _whatsapp_queue_stats() -> Dict[str, Any]:
+    worker_stats = whatsapp_task_queue.get_queue_stats()
+    depths = [len(queue.messages) for queue in _whatsapp_sender_queues.values()]
+    active_workers = int(worker_stats["active_tasks"])
+    max_workers = int(worker_stats["max_concurrent"])
+    return {
+        "pending_messages": _whatsapp_pending_messages,
+        "active_senders": len(_whatsapp_sender_queues),
+        "max_sender_queue_depth": max(depths, default=0),
+        "active_workers": active_workers,
+        "max_workers": max_workers,
+        "worker_saturation": round(active_workers / max_workers, 3),
+    }
+
+
+async def _enqueue_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
+    """Schedule at most one worker per sender and bound pending memory use."""
+    global _whatsapp_pending_messages
     sender_key = hashlib.sha256(incoming.sender_id.encode()).hexdigest()
-    lock = _whatsapp_sender_locks.setdefault(sender_key, asyncio.Lock())
+    async with _whatsapp_dispatch_lock:
+        sender_queue = _whatsapp_sender_queues.get(sender_key)
+        if (
+            _whatsapp_pending_messages >= WHATSAPP_MAX_PENDING_MESSAGES
+            or (
+                sender_queue is not None
+                and len(sender_queue.messages) >= WHATSAPP_MAX_PENDING_PER_SENDER
+            )
+        ):
+            raise asyncio.QueueFull("WhatsApp inbound queue is full")
+        if sender_queue is not None:
+            sender_queue.messages.append(incoming)
+            _whatsapp_pending_messages += 1
+            return
+
+        sender_queue = _WhatsAppSenderQueue(deque([incoming]))
+        _whatsapp_sender_queues[sender_key] = sender_queue
+        _whatsapp_pending_messages += 1
+        task = Task(
+            name=f"whatsapp_sender:{sender_key[:12]}",
+            func=_drain_whatsapp_sender_queue,
+            args=(sender_key,),
+            priority=TaskPriority.NORMAL,
+            # Pairing and unlinking are state transitions. Retrying the entire
+            # handler after an outbound failure could produce a misleading reply.
+            max_retries=0,
+        )
+        try:
+            await whatsapp_task_queue.add_task(task)
+        except Exception:
+            _whatsapp_pending_messages -= len(sender_queue.messages)
+            _whatsapp_sender_queues.pop(sender_key, None)
+            raise
+
+
+async def _drain_whatsapp_sender_queue(sender_key: str) -> None:
+    """Process one sender serially without tying up workers waiting on locks."""
+    global _whatsapp_pending_messages
     try:
-        async with lock:
-            await _process_whatsapp_message(incoming)
-    finally:
-        if not lock.locked():
-            _whatsapp_sender_locks.pop(sender_key, None)
+        while True:
+            async with _whatsapp_dispatch_lock:
+                sender_queue = _whatsapp_sender_queues.get(sender_key)
+                if sender_queue is None or not sender_queue.messages:
+                    _whatsapp_sender_queues.pop(sender_key, None)
+                    return
+                incoming = sender_queue.messages.popleft()
+                _whatsapp_pending_messages -= 1
+            try:
+                await _process_whatsapp_message(incoming)
+            except Exception:
+                logger.exception("Unhandled WhatsApp message processing failure")
+    except asyncio.CancelledError:
+        async with _whatsapp_dispatch_lock:
+            sender_queue = _whatsapp_sender_queues.pop(sender_key, None)
+            if sender_queue is not None:
+                _whatsapp_pending_messages -= len(sender_queue.messages)
+        raise
 
 
 async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
@@ -3387,13 +3475,13 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
         )
         return
 
+    if not await allow_whatsapp_message(incoming.sender_id):
+        logger.warning("Dropped rate-limited WhatsApp message")
+        return
+
     action_code = confirmation_code(incoming.text)
     if action_code:
         await _confirm_whatsapp_action(incoming, action_code, client)
-        return
-
-    if not await allow_whatsapp_message(incoming.sender_id):
-        logger.warning("Dropped rate-limited WhatsApp message")
         return
 
     code = pairing_code(incoming.text)

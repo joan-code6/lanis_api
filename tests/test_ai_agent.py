@@ -3,6 +3,7 @@ import copy
 import json
 
 import pytest
+import requests
 
 from api.ai_agent import (
     AIConfig,
@@ -165,6 +166,54 @@ def test_agent_does_not_execute_unknown_tools(monkeypatch):
     assert tool_result["error"] == "Unknown or unauthorized tool"
 
 
+def test_agent_filters_tool_calls_without_ids(monkeypatch):
+    responses = [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"function": {"name": "get_value", "arguments": "{}"}},
+                            {
+                                "id": "valid-call",
+                                "function": {
+                                    "name": "get_value",
+                                    "arguments": "{}",
+                                },
+                            },
+                        ],
+                    }
+                }
+            ]
+        },
+        {"choices": [{"message": {"role": "assistant", "content": "Fertig."}}]},
+    ]
+    requests_sent = []
+
+    def post(_url, **kwargs):
+        requests_sent.append(copy.deepcopy(kwargs))
+        return _Response(responses.pop(0))
+
+    async def value(_arguments):
+        return {"success": True}
+
+    monkeypatch.setattr("api.ai_agent.requests.post", post)
+    result = asyncio.run(
+        run_agent(
+            config=_config(),
+            system_prompt="system",
+            user_message="test",
+            tools=[AgentTool("get_value", "Get value", {}, value)],
+        )
+    )
+
+    assert result == "Fertig."
+    continued = requests_sent[1]["json"]["messages"]
+    assert [call["id"] for call in continued[-2]["tool_calls"]] == ["valid-call"]
+    assert continued[-1]["tool_call_id"] == "valid-call"
+
+
 def test_client_rejects_error_envelope_even_with_http_200(monkeypatch):
     monkeypatch.setattr(
         "api.ai_agent.requests.post",
@@ -173,4 +222,14 @@ def test_client_rejects_error_envelope_even_with_http_200(monkeypatch):
         ),
     )
     with pytest.raises(AIProviderError, match="error 429"):
+        asyncio.run(OpenRouterClient(_config()).complete([], []))
+
+
+def test_client_wraps_transport_errors(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise requests.Timeout("upstream timed out")
+
+    monkeypatch.setattr("api.ai_agent.requests.post", fail)
+
+    with pytest.raises(AIProviderError, match="request failed"):
         asyncio.run(OpenRouterClient(_config()).complete([], []))

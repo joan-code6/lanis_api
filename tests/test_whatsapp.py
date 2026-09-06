@@ -22,6 +22,7 @@ from api.whatsapp import (
     format_substitutions,
     format_timetable,
     pairing_code,
+    split_message,
     verify_webhook_signature,
 )
 
@@ -125,10 +126,10 @@ def test_signed_webhook_is_queued_and_invalid_signature_is_rejected(
     signature = "sha256=" + hmac.new(b"app-secret", body, hashlib.sha256).hexdigest()
     queued = []
 
-    async def add_task(task):
-        queued.append(task)
+    async def enqueue(incoming):
+        queued.append(incoming)
 
-    monkeypatch.setattr(api_module.whatsapp_task_queue, "add_task", add_task)
+    monkeypatch.setattr(api_module, "_enqueue_whatsapp_message", enqueue)
 
     accepted = asyncio.run(
         api_module.receive_whatsapp_webhook(
@@ -137,7 +138,7 @@ def test_signed_webhook_is_queued_and_invalid_signature_is_rejected(
     )
     assert accepted == {"status": "accepted"}
     assert len(queued) == 1
-    assert queued[0].args[0].text == "Heute"
+    assert queued[0].text == "Heute"
 
     with pytest.raises(HTTPException) as rejected:
         asyncio.run(
@@ -463,6 +464,136 @@ def test_sensitive_previews_default_to_counts_only() -> None:
     assert "Teacher" not in private
     assert "Private" not in private
     assert "Teacher: Private" in preview
+
+
+def test_write_confirmation_preserves_the_complete_message_body() -> None:
+    body = "Anfang " + ("x" * 5000) + " Ende"
+    preview = api_module._whatsapp_action_preview(
+        "send_message",
+        {"recipients": ["teacher-1"], "subject": "Betreff", "body": body},
+    )
+    confirmation = (
+        "🔐 *Verbindliche Bestätigung*\n"
+        f"{preview}\n\nBESTÄTIGEN ABC123"
+    )
+    chunks = split_message(confirmation)
+
+    assert body in preview
+    assert " Ende" in preview
+    assert "".join(chunks) == confirmation
+    assert all(len(chunk) <= 3900 for chunk in chunks)
+    assert chunks[-1].endswith("BESTÄTIGEN ABC123")
+
+
+def test_whatsapp_client_sends_every_confirmation_chunk() -> None:
+    body = "payload:" + ("x" * 5000) + "\nBESTÄTIGEN ABC123"
+    client = api_module.WhatsAppCloudClient(SimpleNamespace())
+    sent = []
+
+    async def send(_recipient, payload):
+        sent.append(payload["text"]["body"])
+
+    client._send = send
+    asyncio.run(client.send_text("49123456789", body))
+
+    assert "".join(sent) == body
+    assert sent[-1].endswith("BESTÄTIGEN ABC123")
+
+
+def test_sender_queue_uses_one_worker_and_preserves_turn_order(monkeypatch) -> None:
+    sender = "49123456789"
+    sender_key = hashlib.sha256(sender.encode()).hexdigest()
+    scheduled = []
+    started = []
+
+    async def add_task(task):
+        scheduled.append(task)
+
+    async def process(incoming):
+        started.append(incoming.message_id)
+
+    async def scenario():
+        api_module._whatsapp_sender_queues.clear()
+        api_module._whatsapp_pending_messages = 0
+        await api_module._enqueue_whatsapp_message(
+            IncomingWhatsAppMessage("first", sender, "one")
+        )
+        await api_module._enqueue_whatsapp_message(
+            IncomingWhatsAppMessage("second", sender, "two")
+        )
+        assert len(scheduled) == 1
+        assert api_module._whatsapp_queue_stats()["max_sender_queue_depth"] == 2
+
+        await scheduled[0].func(*scheduled[0].args)
+        assert started == ["first", "second"]
+        assert sender_key not in api_module._whatsapp_sender_queues
+        assert api_module._whatsapp_pending_messages == 0
+
+    monkeypatch.setattr(api_module.whatsapp_task_queue, "add_task", add_task)
+    monkeypatch.setattr(api_module, "_process_whatsapp_message", process)
+    asyncio.run(scenario())
+
+
+def test_parallel_prepare_action_keeps_one_valid_confirmation(monkeypatch) -> None:
+    created = []
+    confirmations = []
+
+    async def create(*args):
+        created.append(args)
+        await asyncio.sleep(0)
+        return "ABC123"
+
+    async def scenario():
+        tools = api_module._whatsapp_agent_tools(
+            SimpleNamespace(user_id="5201:student"),
+            {"show_message_previews": False},
+            "49123456789",
+            confirmations,
+        )
+        prepare = next(tool for tool in tools if tool.name == "prepare_action")
+        arguments = {
+            "action": "mark_message_read",
+            "payload": {"conversation_id": "conversation-1"},
+        }
+        return await asyncio.gather(
+            prepare.handler(arguments), prepare.handler(arguments)
+        )
+
+    monkeypatch.setattr(api_module, "create_whatsapp_pending_action", create)
+    results = asyncio.run(scenario())
+
+    assert len(created) == 1
+    assert len(confirmations) == 1
+    assert sum(result["success"] is True for result in results) == 1
+    assert any("Only one change" in result.get("error", "") for result in results)
+
+
+def test_confirmation_attempts_are_rate_limited(monkeypatch) -> None:
+    confirmed = []
+
+    async def reserve(_message_id):
+        return True
+
+    async def rate_limit(_sender_id):
+        return False
+
+    async def confirm(*args):
+        confirmed.append(args)
+
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", reserve)
+    monkeypatch.setattr(api_module, "allow_whatsapp_message", rate_limit)
+    monkeypatch.setattr(api_module, "_confirm_whatsapp_action", confirm)
+    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
+
+    asyncio.run(
+        api_module._process_whatsapp_message(
+            IncomingWhatsAppMessage(
+                "wamid.confirm", "49123456789", "BESTÄTIGEN ABC123"
+            )
+        )
+    )
+
+    assert confirmed == []
 
 
 def test_exam_summary_filters_past_dates_and_sorts_upcoming() -> None:

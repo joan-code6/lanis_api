@@ -101,18 +101,21 @@ class OpenRouterClient:
         }
 
         def _request() -> Dict[str, Any]:
-            response = requests.post(
-                self.config.endpoint,
-                headers={
-                    "Authorization": f"Bearer {self.config.api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://lanis.arg-server.de",
-                    "X-OpenRouter-Title": "LANIS WhatsApp Assistant",
-                },
-                json=payload,
-                timeout=(5, 75),
-                allow_redirects=False,
-            )
+            try:
+                response = requests.post(
+                    self.config.endpoint,
+                    headers={
+                        "Authorization": f"Bearer {self.config.api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://lanis.arg-server.de",
+                        "X-OpenRouter-Title": "LANIS WhatsApp Assistant",
+                    },
+                    json=payload,
+                    timeout=(5, 75),
+                    allow_redirects=False,
+                )
+            except requests.RequestException as error:
+                raise AIProviderError("AI endpoint request failed") from error
             if response.is_redirect:
                 raise AIProviderError("AI endpoint attempted a redirect")
             if response.status_code >= 400:
@@ -208,10 +211,22 @@ async def run_agent(
 
     for _round in range(MAX_AGENT_ROUNDS):
         message = await client.complete(messages, tools)
-        messages.append(_assistant_message(message))
-        calls = message.get("tool_calls") or []
-        if not isinstance(calls, list):
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
             raise AIProviderError("AI response contained invalid tool calls")
+        calls = [
+            call
+            for call in raw_calls
+            if isinstance(call, dict)
+            and isinstance(call.get("id"), str)
+            and call["id"].strip()
+        ]
+        if raw_calls and not calls:
+            raise AIProviderError("AI response contained invalid tool calls")
+        assistant_message = _assistant_message(message)
+        if raw_calls:
+            assistant_message["tool_calls"] = calls
+        messages.append(assistant_message)
         if not calls:
             text = _text_content(message.get("content"))
             if text:
@@ -258,9 +273,7 @@ async def run_agent(
                 "content": _tool_result(result),
             }
 
-        tool_messages = await asyncio.gather(
-            *(execute(call) for call in calls if isinstance(call, dict))
-        )
+        tool_messages = await asyncio.gather(*(execute(call) for call in calls))
         messages.extend(tool_messages)
         if (
             sum(len(str(message.get("content") or "")) for message in messages)
