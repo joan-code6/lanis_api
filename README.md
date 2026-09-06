@@ -164,7 +164,7 @@ The `pywebpush` dependency is included in `requirements.txt`. Users can configur
 
 ## WhatsApp assistant
 
-The hosted API can optionally expose a read-only WhatsApp assistant. Users link
+The hosted API can optionally expose a WhatsApp assistant. Users link
 their WhatsApp account from **Settings → WhatsApp-Assistent** with a ten-minute,
 single-use code. The code is sent through WhatsApp, so Schulportal credentials
 never pass through Meta. Message previews are disabled by default, `STOP`
