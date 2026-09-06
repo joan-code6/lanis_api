@@ -2820,6 +2820,7 @@ def _whatsapp_agent_tools(
 ) -> List[AgentTool]:
     """Build the account-scoped read tools and confirmation-gated actions."""
     prepare_action_lock = asyncio.Lock()
+    enforce_turn_target_verification = turn_state is not None
     turn_state = turn_state if turn_state is not None else {}
     allowed_course_entry_urls: set[str] = set()
     recipient_labels: Dict[str, str] = {}
@@ -2839,9 +2840,10 @@ def _whatsapp_agent_tools(
             course_labels[str(course_id)] = str(value.get("name") or value.get("title"))
         entry_id = value.get("entry_id")
         if entry_id:
-            label = value.get("name") or value.get("title") or value.get("subject") or value.get("text")
+            label = value.get("homework") or value.get("topic") or value.get("subject") or value.get("text") or value.get("name") or value.get("title")
             if label:
-                homework_labels[str(entry_id)] = str(label)
+                course_key = value.get("book_id") or value.get("course_id")
+                homework_labels[str(entry_id)] = f"{course_key}: {label}" if course_key else str(label)
         for item in value.values():
             if isinstance(item, (dict, list)):
                 remember_course_labels(item)
@@ -3141,9 +3143,14 @@ def _whatsapp_agent_tools(
                 ]
             if action == "reply_message":
                 conversation_id = payload.get("conversation_id")
-                if conversation_id not in conversation_labels:
+                if enforce_turn_target_verification and conversation_id not in conversation_labels:
                     return {"success": False, "error": "Load the conversation first so the reply thread can be verified"}
-                payload["_preview_conversation"] = conversation_labels[conversation_id]
+                payload["_preview_conversation"] = conversation_labels.get(conversation_id, conversation_id)
+            if action == "mark_message_read":
+                conversation_id = payload.get("conversation_id")
+                if enforce_turn_target_verification and conversation_id not in conversation_labels:
+                    return {"success": False, "error": "Load the conversation first so the thread can be verified"}
+                payload["_preview_conversation"] = conversation_labels.get(conversation_id, conversation_id)
             if action == "mark_homework_done":
                 entry_id = payload["entry_id"]
                 if entry_id not in homework_labels:
@@ -3287,8 +3294,9 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
             f"{str(payload.get('body') or '')}"
         )
     if action == "mark_message_read":
+        label = payload.get("_preview_conversation") or payload.get("conversation_id") or "Unterhaltung"
         return (
-            f"Unterhaltung {str(payload.get('conversation_id') or '')} "
+            f"Unterhaltung {str(label)} "
             "als gelesen markieren"
         )
     if action == "mark_homework_done":
@@ -3359,6 +3367,15 @@ def _election_preview_labels(
 
 
 def _validate_election_option_values(form: Dict[str, Any], payload: Dict[str, Any]) -> bool:
+    fields = payload.get("fields") or {}
+    for field in form.get("personal_fields") or []:
+        if not isinstance(field, dict) or field.get("id") not in fields:
+            continue
+        options = field.get("options") or []
+        if options:
+            allowed = {str(option.get("value")) for option in options if isinstance(option, dict) and not option.get("disabled")}
+            if str(fields[field["id"]]) not in allowed:
+                return False
     selections = payload.get("selections") or {}
     for block in form.get("blocks") or []:
         for control in (block or {}).get("controls") or []:
