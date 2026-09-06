@@ -141,6 +141,10 @@ def test_uptime_checks_are_persisted_and_returned_newest_first(tmp_path: Path):
         assert checks[1]["is_available"] is True
         assert checks[1]["features"][0]["name"] == "login"
 
+        incidents = await database.get_uptime_incidents()
+        assert [check["checked_at"] for check in incidents] == ["2026-09-03T10:05:00"]
+        assert incidents[0]["error"] == "timeout"
+
         summary = await database.get_uptime_summary(datetime.fromisoformat("2026-09-03"))
         assert summary == {"checks": 2, "available_checks": 1, "failed_checks": 1}
         daily = await database.get_uptime_daily_series(datetime.fromisoformat("2026-09-03"))

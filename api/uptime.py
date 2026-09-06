@@ -27,6 +27,7 @@ DEFAULT_UPTIME_URL = "https://login.schulportal.hessen.de/"
 DEFAULT_UPTIME_INTERVAL_SECONDS = 5 * 60
 DEFAULT_UPTIME_TIMEOUT_SECONDS = 15
 UPTIME_HISTORY_LIMIT = 100
+UPTIME_INCIDENT_LIMIT = 100
 UPTIME_SUMMARY_DAYS = 90
 DISCORD_WEBHOOK_ENV = "LANIS_UPTIME_DISCORD_WEBHOOK_URL"
 
@@ -382,6 +383,7 @@ async def run_uptime_check() -> dict[str, Any]:
 async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]:
     """Return current feature state and a rolling availability summary."""
     history = await user_metrics_db.get_uptime_checks(limit=limit)
+    incidents = await user_metrics_db.get_uptime_incidents(limit=UPTIME_INCIDENT_LIMIT)
     since = _utcnow() - timedelta(days=UPTIME_SUMMARY_DAYS)
     summary_counts = await user_metrics_db.get_uptime_summary(since)
     daily = await user_metrics_db.get_uptime_daily_series(since)
@@ -430,6 +432,7 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             "uptime_percent": round(available / observed * 100, 2) if observed else None,
         },
         "history": history,
+        "incidents": incidents,
     }
 
 

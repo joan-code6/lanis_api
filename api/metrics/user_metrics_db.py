@@ -630,6 +630,36 @@ class UserMetricsDB:
                 checks.append(check)
             return checks
 
+    async def get_uptime_incidents(
+        self,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return the most recent failed portal checks, newest first."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT checked_at, url, status, is_available, status_code,
+                       latency_ms, error, features_json
+                FROM uptime_checks
+                WHERE status != 'up'
+                ORDER BY checked_at DESC LIMIT ?
+                """,
+                (limit,),
+            )
+            checks = []
+            for row in await cursor.fetchall():
+                check = dict(row)
+                check["is_available"] = bool(check["is_available"])
+                try:
+                    features = json.loads(check.pop("features_json") or "[]")
+                except (TypeError, ValueError):
+                    features = []
+                check["features"] = features if isinstance(features, list) else []
+                checks.append(check)
+            return checks
+
     async def get_uptime_summary(self, since: datetime) -> Dict[str, int]:
         """Return aggregate availability counts for an uptime period."""
         await self.initialize()
