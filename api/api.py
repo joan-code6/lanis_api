@@ -3153,6 +3153,8 @@ def _whatsapp_agent_tools(
                 conversation_id = payload.get("conversation_id")
                 if enforce_turn_target_verification and conversation_id not in conversation_labels:
                     return {"success": False, "error": "Load the conversation first so the reply thread can be verified"}
+                if str(payload.get("to") or "all") != "all":
+                    return {"success": False, "error": "Reply recipient must be all participants"}
                 payload["_preview_conversation"] = conversation_labels.get(conversation_id, conversation_id)
             if action == "mark_message_read":
                 conversation_id = payload.get("conversation_id")
@@ -3253,7 +3255,7 @@ def _whatsapp_agent_tools(
                 if "no such table" in str(error).lower():
                     return True
                 raise
-            return bool(current and current.get("user_id") == auth.user_id)
+            return bool(current and current.get("user_id") == auth.user_id and current.get("linked_at") == link.get("linked_at"))
 
         async def guarded(arguments: Dict[str, Any]) -> Any:
             if not await link_is_active():
@@ -3563,7 +3565,7 @@ async def _confirm_whatsapp_action(
             username=session_data.username,
         )
         latest_link = await get_whatsapp_link_for_sender(incoming.sender_id)
-        if latest_link is None or latest_link.get("user_id") != pending.get("user_id"):
+        if latest_link is None or latest_link.get("user_id") != pending.get("user_id") or (expected_generation and latest_link.get("linked_at") != expected_generation):
             await client.send_text(incoming.sender_id, "⚠️ Die Aktion konnte nicht bestätigt werden.")
             return
         result = await _execute_whatsapp_pending_action(pending, auth)
@@ -3573,10 +3575,13 @@ async def _confirm_whatsapp_action(
         logger.warning("Confirmed WhatsApp action failed", exc_info=True)
         try:
             failure_history = await get_whatsapp_ai_history(str(pending.get("user_id") or ""))
+            latest_for_history = await get_whatsapp_link_for_sender(incoming.sender_id)
+            if not (latest_for_history or {}).get("show_message_previews"):
+                failure_history = []
             await save_whatsapp_ai_history(
                 str(pending.get("user_id") or ""),
                 [*failure_history, {"role": "user", "content": f"BESTÄTIGEN {code}"}, {"role": "assistant", "content": "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden."}],
-                require_message_previews=True,
+                require_message_previews=False,
             )
         except Exception:
             logger.warning("Could not persist WhatsApp confirmation failure", exc_info=True)
