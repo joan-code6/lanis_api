@@ -2823,6 +2823,7 @@ def _whatsapp_agent_tools(
     turn_state = turn_state if turn_state is not None else {}
     allowed_course_entry_urls: set[str] = set()
     recipient_labels: Dict[str, str] = {}
+    conversation_labels: Dict[str, str] = {}
     course_labels: Dict[str, str] = {}
     homework_labels: Dict[str, str] = {}
 
@@ -2977,6 +2978,12 @@ def _whatsapp_agent_tools(
         )
         if await previews_enabled():
             turn_state["preview_data_used"] = True
+            for item in result.get("conversations") or result.get("messages") or []:
+                if isinstance(item, dict):
+                    conversation_id = item.get("conversation_id") or item.get("id")
+                    if conversation_id:
+                        label = item.get("subject") or item.get("title") or item.get("from") or item.get("sender") or "Unterhaltung"
+                        conversation_labels[str(conversation_id)] = str(label)
             return result
         # The model may count unread rows but must not see sender/subject previews.
         conversations: List[Dict[str, Any]] = []
@@ -3008,6 +3015,10 @@ def _whatsapp_agent_tools(
         if not await previews_enabled():
             return {"success": False, "error": "Message previews were disabled during the request"}
         turn_state["preview_data_used"] = True
+        conversation_id = _agent_string(arguments, "conversation_id", required=True, maximum=300)
+        label = result.get("subject") or result.get("title") or result.get("from") or result.get("sender")
+        if label:
+            conversation_labels[conversation_id] = str(label)
         return result
 
     async def recipient_search(arguments: Dict[str, Any]) -> Any:
@@ -3128,6 +3139,11 @@ def _whatsapp_agent_tools(
                     }
                     for recipient in payload.get("recipients") or []
                 ]
+            if action == "reply_message":
+                conversation_id = payload.get("conversation_id")
+                if conversation_id not in conversation_labels:
+                    return {"success": False, "error": "Load the conversation first so the reply thread can be verified"}
+                payload["_preview_conversation"] = conversation_labels[conversation_id]
             if action == "mark_homework_done":
                 entry_id = payload["entry_id"]
                 if entry_id not in homework_labels:
@@ -3265,9 +3281,9 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
             f"Text: {str(payload.get('body') or '')}"
         )
     if action == "reply_message":
+        label = payload.get("_preview_conversation") or payload.get("conversation_id") or "Unterhaltung"
         return (
-            f"Antwort an {str(payload.get('to') or 'all')} in Unterhaltung "
-            f"{str(payload.get('conversation_id') or '')}:\n"
+            f"Antwort an {str(payload.get('to') or 'all')} in Unterhaltung {str(label)}:\n"
             f"{str(payload.get('body') or '')}"
         )
     if action == "mark_message_read":
@@ -3346,14 +3362,25 @@ def _validate_election_option_values(form: Dict[str, Any], payload: Dict[str, An
     selections = payload.get("selections") or {}
     for block in form.get("blocks") or []:
         for control in (block or {}).get("controls") or []:
-            if control.get("kind") != "select" or control.get("id") not in selections:
+            if control.get("id") not in selections:
+                continue
+            selected = selections[control["id"]]
+            if control.get("kind") == "checkbox":
+                if not selected:
+                    continue
+                teacher = selected.get("teacher") if isinstance(selected, dict) else selected
+                options = control.get("teacher_options") or []
+                allowed = {str(item.get("value") if isinstance(item, dict) else item) for item in options if not isinstance(item, dict) or not item.get("disabled")}
+                if options and str(teacher) not in allowed:
+                    return False
+                continue
+            if control.get("kind") != "select":
                 continue
             allowed = {
                 str(option.get("value"))
                 for option in control.get("options") or []
                 if not option.get("disabled")
             }
-            selected = selections[control["id"]]
             values = selected if isinstance(selected, list) else [selected]
             if any(str(value) not in allowed for value in values):
                 return False
@@ -3512,16 +3539,19 @@ async def _confirm_whatsapp_action(
             "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden. Bitte prüfe deine Daten und versuche es erneut.",
         )
         return
-    history = await get_whatsapp_ai_history(auth.user_id)
-    await save_whatsapp_ai_history(
-        auth.user_id,
-        [
-            *history,
-            {"role": "user", "content": f"BESTÄTIGEN {code}"},
-            {"role": "assistant", "content": "✅ Die bestätigte Änderung wurde ausgeführt."},
-        ],
-        require_message_previews=bool(link.get("show_message_previews")),
-    )
+    try:
+        history = await get_whatsapp_ai_history(auth.user_id)
+        await save_whatsapp_ai_history(
+            auth.user_id,
+            [
+                *history,
+                {"role": "user", "content": f"BESTÄTIGEN {code}"},
+                {"role": "assistant", "content": "✅ Die bestätigte Änderung wurde ausgeführt."},
+            ],
+            require_message_previews=bool(link.get("show_message_previews")),
+        )
+    except Exception:
+        logger.warning("Could not persist WhatsApp confirmation outcome", exc_info=True)
     await client.send_text(incoming.sender_id, "✅ Die bestätigte Änderung wurde ausgeführt.")
 
 
