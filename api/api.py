@@ -3429,6 +3429,11 @@ async def _whatsapp_ai_response(
         history = []
     pending_confirmations: List[Dict[str, str]] = []
     turn_state = {"preview_data_used": started_with_previews}
+    async def continuation_allowed() -> bool:
+        if not turn_state["preview_data_used"]:
+            return True
+        current = await get_whatsapp_link_for_sender(incoming.sender_id)
+        return bool(current and current.get("user_id") == auth.user_id and current.get("show_message_previews"))
     response = await asyncio.wait_for(
         run_agent(
             config=_ai_config(),
@@ -3438,6 +3443,7 @@ async def _whatsapp_ai_response(
                 auth, link, incoming.sender_id, pending_confirmations, turn_state
             ),
             history=history,
+            continuation_check=continuation_allowed,
         ),
         timeout=180,
     )
@@ -3567,11 +3573,10 @@ async def _confirm_whatsapp_action(
         logger.warning("Confirmed WhatsApp action failed", exc_info=True)
         try:
             failure_history = await get_whatsapp_ai_history(str(pending.get("user_id") or ""))
-            latest_for_history = await get_whatsapp_link_for_sender(incoming.sender_id)
             await save_whatsapp_ai_history(
                 str(pending.get("user_id") or ""),
                 [*failure_history, {"role": "user", "content": f"BESTÄTIGEN {code}"}, {"role": "assistant", "content": "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden."}],
-                require_message_previews=bool((latest_for_history or {}).get("show_message_previews")),
+                require_message_previews=True,
             )
         except Exception:
             logger.warning("Could not persist WhatsApp confirmation failure", exc_info=True)

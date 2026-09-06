@@ -202,6 +202,7 @@ async def run_agent(
     user_message: str,
     tools: List[AgentTool],
     history: Optional[List[Dict[str, Any]]] = None,
+    continuation_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> str:
     """Run an interleaved reasoning/tool loop until the model returns text."""
     client = OpenRouterClient(config)
@@ -284,6 +285,8 @@ async def run_agent(
 
         tool_messages = await asyncio.gather(*(execute(call) for call in calls))
         messages.extend(tool_messages)
+        if continuation_check is not None and not await continuation_check():
+            raise AIProviderError("AI turn stopped because access was revoked")
         serialized_context = json.dumps(
             messages, ensure_ascii=False, default=str, separators=(",", ":")
         )
