@@ -782,6 +782,9 @@ async def purge_expired_whatsapp_ai_history() -> int:
                 "DELETE FROM whatsapp_ai_conversations WHERE updated_at < ?", (cutoff,)
             )
             deleted = cursor.rowcount
+            await db.execute(
+                "DELETE FROM whatsapp_pending_actions WHERE expires_at <= ?", (datetime.utcnow(),)
+            )
             await db.commit()
     return max(deleted, 0)
 

@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Deque, Dict, List, Literal, Optional
@@ -3110,15 +3111,8 @@ def _whatsapp_agent_tools(
                 form = await get_wahlen_form(payload["election_id"], auth)
                 if not form.get("success"):
                     return {"success": False, "error": "Election form could not be loaded; nothing was prepared"}
-                for block in form.get("blocks") or []:
-                    for control in (block or {}).get("controls") or []:
-                        if control.get("kind") != "select" or control.get("id") not in payload["selections"]:
-                            continue
-                        allowed_values = {str(option.get("value")) for option in control.get("options") or []}
-                        selected = payload["selections"][control["id"]]
-                        selected_values = selected if isinstance(selected, list) else [selected]
-                        if any(str(value) not in allowed_values for value in selected_values):
-                            return {"success": False, "error": "Election selection is not one of the loaded options"}
+                if not _validate_election_option_values(form, payload):
+                    return {"success": False, "error": "Election selection is not one of the enabled loaded options"}
                 payload["_preview_labels"] = _election_preview_labels(form, payload)
             if action == "send_message":
                 recipients = payload.get("recipients") or []
@@ -3166,7 +3160,7 @@ def _whatsapp_agent_tools(
     integer = lambda description, minimum=0, maximum=10000: {
         "type": "integer", "description": description, "minimum": minimum, "maximum": maximum
     }
-    return [
+    tools = [
         AgentTool("get_profile", "Get the user's own Schulportal profile and class.", empty, profile),
         AgentTool("get_apps_and_modules", "Get the Schulportal apps and modules available to this account.", empty, apps_and_modules),
         AgentTool("get_timetable", "Get the personal weekly timetable. Use its week_start and recurring template fields for requested dates.", empty, timetable),
@@ -3217,6 +3211,28 @@ def _whatsapp_agent_tools(
             prepare_action,
         ),
     ]
+
+    def guard_tool(tool: AgentTool) -> AgentTool:
+        async def link_is_active() -> bool:
+            try:
+                current = await get_whatsapp_link_for_sender(sender_id)
+            except sqlite3.OperationalError as error:
+                if "no such table" in str(error).lower():
+                    return True
+                raise
+            return bool(current and current.get("user_id") == auth.user_id)
+
+        async def guarded(arguments: Dict[str, Any]) -> Any:
+            if not await link_is_active():
+                return {"success": False, "error": "WhatsApp connection is no longer active"}
+            result = await tool.handler(arguments)
+            if not await link_is_active():
+                return {"success": False, "error": "WhatsApp connection is no longer active"}
+            return result
+
+        return AgentTool(tool.name, tool.description, tool.parameters, guarded)
+
+    return [guard_tool(tool) for tool in tools]
 
 
 def _whatsapp_agent_prompt() -> str:
@@ -3326,6 +3342,24 @@ def _election_preview_labels(
     return labels
 
 
+def _validate_election_option_values(form: Dict[str, Any], payload: Dict[str, Any]) -> bool:
+    selections = payload.get("selections") or {}
+    for block in form.get("blocks") or []:
+        for control in (block or {}).get("controls") or []:
+            if control.get("kind") != "select" or control.get("id") not in selections:
+                continue
+            allowed = {
+                str(option.get("value"))
+                for option in control.get("options") or []
+                if not option.get("disabled")
+            }
+            selected = selections[control["id"]]
+            values = selected if isinstance(selected, list) else [selected]
+            if any(str(value) not in allowed for value in values):
+                return False
+    return True
+
+
 async def _whatsapp_ai_response(
     incoming: IncomingWhatsAppMessage, auth: AuthSession, link: Dict[str, Any]
 ) -> str:
@@ -3427,6 +3461,9 @@ async def _execute_whatsapp_pending_action(
         election_id = _agent_string(
             payload, "election_id", required=True, maximum=200
         )
+        form = await get_wahlen_form(election_id, auth)
+        if not form.get("success") or not _validate_election_option_values(form, payload):
+            raise ValueError("Election form or selected option is no longer valid")
         request = WahlenSubmissionRequest(
             fields=payload.get("fields") or {},
             selections=payload.get("selections") or {},
