@@ -593,14 +593,29 @@ async def consume_whatsapp_pairing_code(
 
             user_id = _canonical_user_id(row["user_id"])
             whatsapp_hash = _whatsapp_id_hash(whatsapp_id)
+            async with db.execute(
+                "SELECT user_id FROM whatsapp_links WHERE whatsapp_id_hash = ?",
+                (whatsapp_hash,),
+            ) as cursor:
+                displaced_row = await cursor.fetchone()
+            displaced_user_id = (
+                _canonical_user_id(displaced_row["user_id"])
+                if displaced_row is not None
+                else None
+            )
             await db.execute(
                 "DELETE FROM whatsapp_links "
                 "WHERE user_id = ? OR whatsapp_id_hash = ?",
                 (user_id, whatsapp_hash),
             )
-            await db.execute(
-                "DELETE FROM whatsapp_ai_conversations WHERE user_id = ?", (user_id,)
-            )
+            users_to_purge = {user_id}
+            if displaced_user_id:
+                users_to_purge.add(displaced_user_id)
+            for purge_user_id in users_to_purge:
+                await db.execute(
+                    "DELETE FROM whatsapp_ai_conversations WHERE user_id = ?",
+                    (purge_user_id,),
+                )
             await db.execute(
                 "DELETE FROM whatsapp_pending_actions "
                 "WHERE user_id = ? OR whatsapp_id_hash = ?",
