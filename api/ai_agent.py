@@ -275,10 +275,10 @@ async def run_agent(
 
         tool_messages = await asyncio.gather(*(execute(call) for call in calls))
         messages.extend(tool_messages)
-        if (
-            sum(len(str(message.get("content") or "")) for message in messages)
-            > MAX_AGENT_CONTEXT_CHARS
-        ):
+        serialized_context = json.dumps(
+            messages, ensure_ascii=False, default=str, separators=(",", ":")
+        )
+        if len(serialized_context) > MAX_AGENT_CONTEXT_CHARS:
             raise AIProviderError("AI conversation exceeded the context safety limit")
 
     raise AIProviderError("AI exceeded the reasoning-round limit")

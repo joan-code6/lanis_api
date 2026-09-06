@@ -3193,8 +3193,6 @@ async def _whatsapp_ai_response(
         and current_link.get("user_id") == auth.user_id
         and current_link.get("show_message_previews")
     )
-    if not previews_allowed:
-        history = []
     pending_confirmations: List[Dict[str, str]] = []
     response = await asyncio.wait_for(
         run_agent(
@@ -3224,11 +3222,7 @@ async def _whatsapp_ai_response(
             {"role": "user", "content": incoming.text},
             {"role": "assistant", "content": response},
         ],
-        require_message_previews=bool(
-            (
-                await get_whatsapp_link_for_sender(incoming.sender_id) or {}
-            ).get("show_message_previews")
-        ),
+        require_message_previews=previews_allowed,
     )
     return response
 

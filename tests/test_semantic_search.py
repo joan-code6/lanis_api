@@ -82,4 +82,4 @@ def test_embedding_client_uses_documented_ai_settings(monkeypatch: pytest.Monkey
     assert client is not None
     assert client.api_url == "https://ai.example/v1"
     assert client.api_key == "test-key"
-    assert client.model == "test-model"
+    assert client.model == "google/gemini-embedding-2"

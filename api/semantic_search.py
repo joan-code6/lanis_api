@@ -162,7 +162,7 @@ class SemanticSearchEngine:
             if api_url and api_url.endswith("/chat/completions"):
                 api_url = api_url[: -len("/chat/completions")]
             api_key = os.getenv("AI_API_KEY") or os.getenv("ai_api_key")
-            model = os.getenv("AI_EMBEDDING_MODEL") or os.getenv("ai_default_model") or "google/gemini-embedding-2"
+            model = os.getenv("AI_EMBEDDING_MODEL") or "google/gemini-embedding-2"
             if api_url and api_key:
                 self._client = EmbeddingClient(api_url, api_key, model)
                 logger.info("Semantic search embedding client initialized (model=%s)", model)
