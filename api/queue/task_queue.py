@@ -105,9 +105,11 @@ class TaskQueue:
         self,
         max_concurrent: int = 2,
         max_queue_size: int = 100,
+        retain_completed_tasks: bool = True,
     ) -> None:
         self.max_concurrent = max_concurrent
         self.max_queue_size = max_queue_size
+        self.retain_completed_tasks = retain_completed_tasks
         
         self._queue: asyncio.PriorityQueue[Task] = asyncio.PriorityQueue(maxsize=max_queue_size)
         self._active_tasks: Dict[str, Task] = {}
@@ -239,7 +241,8 @@ class TaskQueue:
         
         async with self._lock:
             self._active_tasks.pop(task.task_id, None)
-            self._completed_tasks[task.task_id] = task
+            if self.retain_completed_tasks:
+                self._completed_tasks[task.task_id] = task
     
     def get_task_status(self, task_id: str) -> Optional[Task]:
         """Get the status of a task by ID."""

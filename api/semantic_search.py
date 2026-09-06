@@ -11,7 +11,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -267,6 +267,7 @@ class SemanticSearchEngine:
         auth_client: Any,
         top_k: int = 20,
         include_messages: bool = True,
+        preview_check: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic search across all data sources.
@@ -277,6 +278,8 @@ class SemanticSearchEngine:
         client = self._get_client()
         if not client:
             return []
+        if preview_check is not None and include_messages and not await preview_check():
+            include_messages = False
 
         self._evict_stale()
         key = (user_id, include_messages)
@@ -286,10 +289,16 @@ class SemanticSearchEngine:
             async with self._get_build_lock(key):
                 if index.is_empty() or index.is_stale():
                     await self._build_index(
-                        user_id, index, auth_client, include_messages=include_messages
+                        user_id,
+                        index,
+                        auth_client,
+                        include_messages=include_messages,
+                        preview_check=preview_check,
                     )
 
         if index.is_empty():
+            return []
+        if preview_check is not None and not await preview_check():
             return []
 
         try:
@@ -330,6 +339,7 @@ class SemanticSearchEngine:
         auth_client: Any,
         *,
         include_messages: bool = True,
+        preview_check: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> None:
         """Fetch all data sources, embed them, and populate the index."""
         client = self._get_client()
@@ -348,6 +358,9 @@ class SemanticSearchEngine:
                         all_docs.append((doc_id, text, title, subtitle, href, "ChatBubbleLeftRightIcon"))
             except Exception as e:
                 logger.warning("Failed to fetch messages for semantic index: %s", e)
+
+        if include_messages and preview_check is not None and not await preview_check():
+            all_docs = [doc for doc in all_docs if not doc[0].startswith("sem-msg")]
 
         # --- Courses ---
         try:
@@ -384,6 +397,10 @@ class SemanticSearchEngine:
             return
 
         # Batch embed all texts
+        if include_messages and preview_check is not None and not await preview_check():
+            all_docs = [doc for doc in all_docs if not doc[0].startswith("sem-msg")]
+            if not all_docs:
+                return
         texts = [doc[1] for doc in all_docs]
         try:
             embeddings = await run_in_threadpool(client.embed, texts)

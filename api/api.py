@@ -146,7 +146,9 @@ logger = logging.getLogger("api")
 
 # Pending WhatsApp work is bounded by the dispatcher below. Keeping the backing
 # queue unbounded lets a worker fairly reschedule a sender after each turn.
-whatsapp_task_queue = TaskQueue(max_concurrent=4, max_queue_size=0)
+whatsapp_task_queue = TaskQueue(
+    max_concurrent=4, max_queue_size=0, retain_completed_tasks=False
+)
 WHATSAPP_MAX_PENDING_MESSAGES = 100
 WHATSAPP_MAX_PENDING_PER_SENDER = 10
 
@@ -3017,6 +3019,7 @@ def _whatsapp_agent_tools(
             auth_client=auth.client,
             top_k=top_k,
             include_messages=await previews_enabled(),
+            preview_check=previews_enabled,
         )
         return {
             "success": True,
@@ -3211,7 +3214,14 @@ def _election_preview_labels(
             if not isinstance(control, dict) or control.get("id") not in selections:
                 continue
             value = selections[control["id"]]
-            if control.get("kind") == "checkbox" and value is not True:
+            if control.get("kind") == "checkbox":
+                if not value:
+                    continue
+                if isinstance(value, dict) and value.get("teacher"):
+                    display = f"Lehrkraft: {value['teacher']}"
+                else:
+                    display = "ausgewählt"
+                labels.append(f"{control.get('label') or control.get('id')}: {display}")
                 continue
             option_labels = {
                 str(option.get("value")): str(option.get("label") or option.get("value"))
