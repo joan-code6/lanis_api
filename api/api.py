@@ -3240,12 +3240,15 @@ async def _whatsapp_ai_response(
     incoming: IncomingWhatsAppMessage, auth: AuthSession, link: Dict[str, Any]
 ) -> str:
     history = await get_whatsapp_ai_history(auth.user_id)
+    started_with_previews = bool(link.get("show_message_previews"))
     current_link = await get_whatsapp_link_for_sender(incoming.sender_id)
     previews_allowed = bool(
         current_link
         and current_link.get("user_id") == auth.user_id
         and current_link.get("show_message_previews")
     )
+    if started_with_previews and not previews_allowed:
+        history = []
     pending_confirmations: List[Dict[str, str]] = []
     response = await asyncio.wait_for(
         run_agent(
@@ -3275,7 +3278,7 @@ async def _whatsapp_ai_response(
             {"role": "user", "content": incoming.text},
             {"role": "assistant", "content": response},
         ],
-        require_message_previews=previews_allowed,
+        require_message_previews=started_with_previews,
     )
     return response
 
@@ -3564,14 +3567,17 @@ async def _process_whatsapp_stop_immediately(incoming: IncomingWhatsAppMessage) 
         if sender_queue is not None and sender_queue.messages:
             _whatsapp_pending_messages -= len(sender_queue.messages)
             sender_queue.messages.clear()
-    try:
-        await client.send_text(
-            incoming.sender_id,
-            "✅ Die WhatsApp-Verbindung wurde getrennt. LANIS sendet über diesen "
-            "Chat keine persönlichen Daten mehr.",
-        )
-    except Exception:
-        logger.exception("Failed to send WhatsApp unlink confirmation")
+    async def safe_send_unlink_confirmation() -> None:
+        try:
+            await client.send_text(
+                incoming.sender_id,
+                "✅ Die WhatsApp-Verbindung wurde getrennt. LANIS sendet über diesen "
+                "Chat keine persönlichen Daten mehr.",
+            )
+        except Exception:
+            logger.exception("Failed to send WhatsApp unlink confirmation")
+
+    asyncio.create_task(safe_send_unlink_confirmation())
 
 
 async def _process_whatsapp_sender_turn(sender_key: str) -> None:

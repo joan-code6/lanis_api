@@ -225,6 +225,9 @@ async def run_agent(
             and isinstance(call.get("id"), str)
             and call["id"].strip()
             and isinstance(call.get("function"), dict)
+            and isinstance(call["function"].get("name"), str)
+            and call["function"]["name"].strip()
+            and isinstance(call["function"].get("arguments"), str)
         ]
         if raw_calls and not calls:
             raise AIProviderError("AI response contained invalid tool calls")
