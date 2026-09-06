@@ -15,6 +15,7 @@ from api import auth_db
 from api.whatsapp import (
     IncomingWhatsAppMessage,
     command_intent,
+    confirmation_code,
     extract_incoming_messages,
     format_exams,
     format_messages,
@@ -127,7 +128,7 @@ def test_signed_webhook_is_queued_and_invalid_signature_is_rejected(
     async def add_task(task):
         queued.append(task)
 
-    monkeypatch.setattr(api_module.task_queue, "add_task", add_task)
+    monkeypatch.setattr(api_module.whatsapp_task_queue, "add_task", add_task)
 
     accepted = asyncio.run(
         api_module.receive_whatsapp_webhook(
@@ -196,6 +197,62 @@ def test_command_router_is_deterministic_and_pairing_is_explicit() -> None:
     assert command_intent("Was kannst du?") == "help"
     assert pairing_code("LANIS ABCD-2345") == "ABCD-2345"
     assert pairing_code("mein Code ist ABCD-2345") is None
+    assert confirmation_code("BESTÄTIGEN ABC234") == "ABC234"
+    assert confirmation_code("yes ABC234") is None
+
+
+def test_ai_history_is_encrypted_bounded_and_deleted_on_unlink(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_db, "DB_PATH", str(db_path))
+    asyncio.run(auth_db.initialize())
+    code, _ = asyncio.run(auth_db.create_whatsapp_pairing_code("5201:student"))
+    asyncio.run(auth_db.consume_whatsapp_pairing_code(code, "491111111111"))
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"message {index}"}
+        for index in range(20)
+    ]
+
+    asyncio.run(auth_db.save_whatsapp_ai_history("5201:student", history))
+    loaded = asyncio.run(auth_db.get_whatsapp_ai_history("5201:student"))
+
+    assert len(loaded) == auth_db.WHATSAPP_AI_HISTORY_MESSAGES
+    with sqlite3.connect(db_path) as db:
+        encrypted = db.execute(
+            "SELECT encrypted_history FROM whatsapp_ai_conversations"
+        ).fetchone()[0]
+    assert encrypted.startswith("v1:")
+    assert "message 19" not in encrypted
+
+    asyncio.run(auth_db.delete_whatsapp_link_for_sender("491111111111"))
+    assert asyncio.run(auth_db.get_whatsapp_ai_history("5201:student")) == []
+
+
+def test_pending_action_is_single_use_and_bound_to_sender(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    asyncio.run(auth_db.initialize())
+    action_code = asyncio.run(
+        auth_db.create_whatsapp_pending_action(
+            "5201:student",
+            "491111111111",
+            "mark_message_read",
+            {"conversation_id": "conversation-1"},
+        )
+    )
+
+    assert asyncio.run(
+        auth_db.consume_whatsapp_pending_action("492222222222", action_code)
+    ) is None
+    pending = asyncio.run(
+        auth_db.consume_whatsapp_pending_action("491111111111", action_code)
+    )
+    assert pending == {
+        "user_id": "5201:student",
+        "action": "mark_message_read",
+        "payload": {"conversation_id": "conversation-1"},
+    }
+    assert asyncio.run(
+        auth_db.consume_whatsapp_pending_action("491111111111", action_code)
+    ) is None
 
 
 def test_pairing_is_single_use_and_replaces_previous_phone(
@@ -326,6 +383,9 @@ def test_stop_bypasses_rate_limit(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "delete_whatsapp_link_for_sender", delete)
     monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
     monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        api_module, "_ai_config", lambda: SimpleNamespace(configured=False)
+    )
 
     asyncio.run(
         api_module._process_whatsapp_message(
@@ -374,6 +434,9 @@ def test_personal_response_is_suppressed_after_unlink(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "_whatsapp_command_response", response)
     monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
     monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        api_module, "_ai_config", lambda: SimpleNamespace(configured=False)
+    )
 
     asyncio.run(
         api_module._process_whatsapp_message(

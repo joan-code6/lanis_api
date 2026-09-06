@@ -170,9 +170,27 @@ single-use code. The code is sent through WhatsApp, so Schulportal credentials
 never pass through Meta. Message previews are disabled by default, `STOP`
 immediately removes the link, and duplicate webhook deliveries are ignored.
 
-The assistant supports German queries for today's or tomorrow's timetable,
-substitution-plan entries, homework, exams, calendar events, and unread-message
-counts. It does not send Schulportal messages or mutate school data.
+When AI is configured, the assistant uses an OpenRouter-compatible iterative
+tool loop. It can reason between tool calls and access the same account-scoped
+school areas as the LANIS UI, including timetable, substitutions, courses,
+attendance, homework, exams, calendar, messages, files, elections, preferences,
+and semantic search. Changes are never executed from a model tool call alone:
+the backend creates an encrypted, short-lived proposal that the user must
+confirm explicitly in WhatsApp. Recent conversation messages are encrypted,
+limited to twelve messages, expire after 24 hours, and are deleted on unlink.
+
+Configure the AI provider with exactly these three values. `ai_endpoint` must
+be a complete HTTPS Chat Completions URL:
+
+```dotenv
+ai_endpoint=https://ai.hackclub.com/proxy/v1/chat/completions
+ai_api_key=replace-with-a-development-or-production-key
+ai_default_model=openai/gpt-5.6-luna
+```
+
+If AI is unavailable, known basic information requests fall back to the
+deterministic assistant. API keys, raw prompts, reasoning details, tool results,
+and message contents are not logged.
 
 Configure a Meta WhatsApp Business Platform / Cloud API application with:
 

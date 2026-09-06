@@ -19,6 +19,9 @@ MAX_MESSAGE_LENGTH = 3900
 PAIRING_PATTERN = re.compile(
     r"(?:^|\s)LANIS\s+([A-Z0-9]{4}-[A-Z0-9]{4})(?:\s|$)", re.IGNORECASE
 )
+CONFIRM_ACTION_PATTERN = re.compile(
+    r"^\s*(?:BESTÄTIGEN|BESTAETIGEN|CONFIRM)\s+([A-Z0-9]{6})\s*$", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -276,6 +279,11 @@ def _message_text(message: Dict[str, Any]) -> str:
 
 def pairing_code(text: str) -> Optional[str]:
     match = PAIRING_PATTERN.search(text.strip())
+    return match.group(1).upper() if match else None
+
+
+def confirmation_code(text: str) -> Optional[str]:
+    match = CONFIRM_ACTION_PATTERN.fullmatch(text)
     return match.group(1).upper() if match else None
 
 
