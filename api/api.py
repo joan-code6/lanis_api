@@ -2955,11 +2955,14 @@ def _whatsapp_agent_tools(
     async def conversation(arguments: Dict[str, Any]) -> Any:
         if not await previews_enabled():
             return {"success": False, "error": "Message previews are disabled by the user"}
-        return await get_conversation(
+        result = await get_conversation(
             _agent_string(arguments, "conversation_id", required=True, maximum=300),
             _agent_integer(arguments, "last", default=0, minimum=0, maximum=10000),
             auth,
         )
+        if not await previews_enabled():
+            return {"success": False, "error": "Message previews were disabled during the request"}
+        return result
 
     async def recipient_search(arguments: Dict[str, Any]) -> Any:
         return await search_recipients(
@@ -3185,6 +3188,10 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
                 sort_keys=True,
             )
         return f"Wahl {str(payload.get('election_id') or '')} verbindlich absenden:\n{details}"
+    if action == "update_preferences":
+        details = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return f"LANIS-Einstellungen ändern:\n{details}"
+    return "Unbekannte Änderung"
 
 
 def _election_preview_labels(
@@ -3217,10 +3224,6 @@ def _election_preview_labels(
                 display = option_labels.get(str(value), str(value))
             labels.append(f"{control.get('label') or control.get('id')}: {display}")
     return labels
-    if action == "update_preferences":
-        details = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        return f"LANIS-Einstellungen ändern:\n{details}"
-    return "Unbekannte Änderung"
 
 
 async def _whatsapp_ai_response(
