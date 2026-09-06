@@ -298,7 +298,7 @@ class SemanticSearchEngine:
 
         if index.is_empty():
             return []
-        if preview_check is not None and not await preview_check():
+        if preview_check is not None and include_messages and not await preview_check():
             return []
 
         try:

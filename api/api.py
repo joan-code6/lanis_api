@@ -2804,6 +2804,7 @@ def _whatsapp_agent_tools(
     """Build the account-scoped read tools and confirmation-gated actions."""
     prepare_action_lock = asyncio.Lock()
     allowed_course_entry_urls: set[str] = set()
+    recipient_labels: Dict[str, str] = {}
 
     async def previews_enabled() -> bool:
         current = await get_whatsapp_link_for_sender(sender_id)
@@ -2967,9 +2968,13 @@ def _whatsapp_agent_tools(
         return result
 
     async def recipient_search(arguments: Dict[str, Any]) -> Any:
-        return await search_recipients(
+        result = await search_recipients(
             _agent_string(arguments, "query", required=True, maximum=200), auth
         )
+        for item in result.get("results") or []:
+            if isinstance(item, dict) and item.get("id"):
+                recipient_labels[str(item["id"])] = str(item.get("name") or item["id"])
+        return result
 
     async def file_folder(arguments: Dict[str, Any]) -> Any:
         return await get_dateispeicher(
@@ -3058,8 +3063,17 @@ def _whatsapp_agent_tools(
                 }
             if action == "submit_election":
                 form = await get_wahlen_form(payload["election_id"], auth)
-                if form.get("success"):
-                    payload["_preview_labels"] = _election_preview_labels(form, payload)
+                if not form.get("success"):
+                    return {"success": False, "error": "Election form could not be loaded; nothing was prepared"}
+                payload["_preview_labels"] = _election_preview_labels(form, payload)
+            if action == "send_message":
+                payload["_preview_recipients"] = [
+                    {
+                        "id": recipient,
+                        "name": recipient_labels.get(recipient, recipient),
+                    }
+                    for recipient in payload.get("recipients") or []
+                ]
             encoded = json.dumps(payload, ensure_ascii=False, default=str)
             if len(encoded) > 20_000:
                 return {"success": False, "error": "Action payload is too large"}
@@ -3154,7 +3168,13 @@ Keep the final response below 3500 characters."""
 def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
     """Create the authoritative user-visible preview without model wording."""
     if action == "send_message":
-        recipients = ", ".join(str(value) for value in payload.get("recipients") or [])
+        recipient_values = payload.get("_preview_recipients") or [
+            {"id": value, "name": value} for value in payload.get("recipients") or []
+        ]
+        recipients = ", ".join(
+            f"{item.get('name')} ({item.get('id')})" if isinstance(item, dict) else str(item)
+            for item in recipient_values
+        )
         return (
             f"Neue Nachricht an: {recipients}\n"
             f"Betreff: {str(payload.get('subject') or '')}\n"
@@ -3717,7 +3737,7 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
     if current_link is None or any(
         current_link.get(field) != link.get(field)
         for field in ("user_id", "linked_at")
-    ):
+    ) or (link.get("show_message_previews") and not current_link.get("show_message_previews")):
         logger.info("Suppressed WhatsApp response after account unlink/relink")
         return
     await client.send_text(incoming.sender_id, response)
