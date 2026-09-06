@@ -2835,9 +2835,9 @@ def _whatsapp_agent_tools(
             return
         if not isinstance(value, dict):
             return
-        course_id = value.get("course_id") or value.get("id")
-        if course_id and (value.get("name") or value.get("title")):
-            course_labels[str(course_id)] = str(value.get("name") or value.get("title"))
+        course_id = value.get("course_id") or value.get("book_id") or value.get("id")
+        if course_id and (value.get("name") or value.get("title") or value.get("course_name")):
+            course_labels[str(course_id)] = str(value.get("name") or value.get("title") or value.get("course_name"))
         entry_id = value.get("entry_id")
         if entry_id:
             label = value.get("homework") or value.get("topic") or value.get("subject") or value.get("text") or value.get("name") or value.get("title")
@@ -2855,6 +2855,21 @@ def _whatsapp_agent_tools(
             and current.get("user_id") == auth.user_id
             and current.get("show_message_previews")
         )
+
+    def remember_conversation_labels(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                remember_conversation_labels(item)
+            return
+        if not isinstance(value, dict):
+            return
+        conversation_id = value.get("conversation_id") or value.get("id") or value.get("Uniquid") or value.get("Id")
+        if conversation_id:
+            label = value.get("subject") or value.get("title") or value.get("from") or value.get("sender") or value.get("Betreff") or value.get("SenderName") or "Unterhaltung"
+            conversation_labels[str(conversation_id)] = str(label)
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                remember_conversation_labels(item)
 
     def remember_course_entry_urls(value: Any) -> None:
         if isinstance(value, list):
@@ -2980,12 +2995,7 @@ def _whatsapp_agent_tools(
         )
         if await previews_enabled():
             turn_state["preview_data_used"] = True
-            for item in result.get("conversations") or result.get("messages") or []:
-                if isinstance(item, dict):
-                    conversation_id = item.get("conversation_id") or item.get("id")
-                    if conversation_id:
-                        label = item.get("subject") or item.get("title") or item.get("from") or item.get("sender") or "Unterhaltung"
-                        conversation_labels[str(conversation_id)] = str(label)
+            remember_conversation_labels(result)
             return result
         # The model may count unread rows but must not see sender/subject previews.
         conversations: List[Dict[str, Any]] = []
@@ -3018,9 +3028,7 @@ def _whatsapp_agent_tools(
             return {"success": False, "error": "Message previews were disabled during the request"}
         turn_state["preview_data_used"] = True
         conversation_id = _agent_string(arguments, "conversation_id", required=True, maximum=300)
-        label = result.get("subject") or result.get("title") or result.get("from") or result.get("sender")
-        if label:
-            conversation_labels[conversation_id] = str(label)
+        remember_conversation_labels(result)
         return result
 
     async def recipient_search(arguments: Dict[str, Any]) -> Any:
@@ -3551,6 +3559,14 @@ async def _confirm_whatsapp_action(
             raise RuntimeError("Portal rejected action")
     except Exception:
         logger.warning("Confirmed WhatsApp action failed", exc_info=True)
+        try:
+            failure_history = await get_whatsapp_ai_history(str(pending.get("user_id") or ""))
+            await save_whatsapp_ai_history(
+                str(pending.get("user_id") or ""),
+                [*failure_history, {"role": "user", "content": f"BESTÄTIGEN {code}"}, {"role": "assistant", "content": "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden."}],
+            )
+        except Exception:
+            logger.warning("Could not persist WhatsApp confirmation failure", exc_info=True)
         await client.send_text(
             incoming.sender_id,
             "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden. Bitte prüfe deine Daten und versuche es erneut.",
