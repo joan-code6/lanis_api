@@ -3050,6 +3050,10 @@ def _whatsapp_agent_tools(
                     "success": False,
                     "error": f"Invalid action proposal: {error}",
                 }
+            if action == "submit_election":
+                form = await get_wahlen_form(payload["election_id"], auth)
+                if form.get("success"):
+                    payload["_preview_labels"] = _election_preview_labels(form, payload)
             encoded = json.dumps(payload, ensure_ascii=False, default=str)
             if len(encoded) > 20_000:
                 return {"success": False, "error": "Action payload is too large"}
@@ -3168,15 +3172,51 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
             f"{str(payload.get('course_id') or '')} als {state} markieren"
         )
     if action == "submit_election":
-        details = json.dumps(
-            {
-                "fields": payload.get("fields") or {},
-                "selections": payload.get("selections") or {},
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        labels = payload.get("_preview_labels")
+        if isinstance(labels, list) and labels:
+            details = "\n".join(f"- {str(label)}" for label in labels)
+        else:
+            details = json.dumps(
+                {
+                    "fields": payload.get("fields") or {},
+                    "selections": payload.get("selections") or {},
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         return f"Wahl {str(payload.get('election_id') or '')} verbindlich absenden:\n{details}"
+
+
+def _election_preview_labels(
+    form: Dict[str, Any], payload: Dict[str, Any]
+) -> List[str]:
+    """Resolve validated election IDs and values into user-readable labels."""
+    labels: List[str] = []
+    fields = payload.get("fields") or {}
+    for field in form.get("personal_fields") or []:
+        if isinstance(field, dict) and field.get("id") in fields:
+            labels.append(f"{field.get('label') or field.get('id')}: {fields[field['id']]}")
+    selections = payload.get("selections") or {}
+    for block in form.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        for control in block.get("controls") or []:
+            if not isinstance(control, dict) or control.get("id") not in selections:
+                continue
+            value = selections[control["id"]]
+            if control.get("kind") == "checkbox" and value is not True:
+                continue
+            option_labels = {
+                str(option.get("value")): str(option.get("label") or option.get("value"))
+                for option in control.get("options") or []
+                if isinstance(option, dict) and option.get("value") is not None
+            }
+            if isinstance(value, list):
+                display = ", ".join(option_labels.get(str(item), str(item)) for item in value)
+            else:
+                display = option_labels.get(str(value), str(value))
+            labels.append(f"{control.get('label') or control.get('id')}: {display}")
+    return labels
     if action == "update_preferences":
         details = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return f"LANIS-Einstellungen ändern:\n{details}"
