@@ -144,7 +144,9 @@ load_dotenv()
 
 logger = logging.getLogger("api")
 
-whatsapp_task_queue = TaskQueue(max_concurrent=4, max_queue_size=100)
+# Pending WhatsApp work is bounded by the dispatcher below. Keeping the backing
+# queue unbounded lets a worker fairly reschedule a sender after each turn.
+whatsapp_task_queue = TaskQueue(max_concurrent=4, max_queue_size=0)
 WHATSAPP_MAX_PENDING_MESSAGES = 100
 WHATSAPP_MAX_PENDING_PER_SENDER = 10
 
@@ -2799,6 +2801,36 @@ def _whatsapp_agent_tools(
 ) -> List[AgentTool]:
     """Build the account-scoped read tools and confirmation-gated actions."""
     prepare_action_lock = asyncio.Lock()
+    allowed_course_entry_urls: set[str] = set()
+
+    def remember_course_entry_urls(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                remember_course_entry_urls(item)
+            return
+        if not isinstance(value, dict):
+            return
+        for key, item in value.items():
+            if isinstance(item, (dict, list)):
+                remember_course_entry_urls(item)
+            elif key in {"course_link", "entry_url", "detail_url"} and isinstance(
+                item, str
+            ):
+                parsed = urlparse(item.strip())
+                if item.startswith("//") or parsed.fragment:
+                    continue
+                if parsed.scheme and (
+                    parsed.scheme != "https"
+                    or parsed.hostname != "start.schulportal.hessen.de"
+                ):
+                    continue
+                if not parsed.scheme and parsed.netloc:
+                    continue
+                path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
+                if path and path != "/":
+                    allowed_course_entry_urls.add(
+                        f"{path}?{parsed.query}" if parsed.query else path
+                    )
 
     async def profile(_: Dict[str, Any]) -> Any:
         return await get_user_data(auth=auth)
@@ -2838,33 +2870,46 @@ def _whatsapp_agent_tools(
         return await get_lerngruppen(auth=auth)
 
     async def courses(_: Dict[str, Any]) -> Any:
-        return await meinunterricht_overview(auth=auth)
+        result = await meinunterricht_overview(auth=auth)
+        remember_course_entry_urls(result)
+        return result
 
     async def attendance(_: Dict[str, Any]) -> Any:
         return await meinunterricht_attendance(refresh=False, auth=auth)
 
     async def course(arguments: Dict[str, Any]) -> Any:
-        return await meinunterricht_course(
+        result = await meinunterricht_course(
             _agent_string(arguments, "course_id", required=True, maximum=200), auth
         )
+        remember_course_entry_urls(result)
+        return result
 
     async def course_entry(arguments: Dict[str, Any]) -> Any:
         entry_url = _agent_string(arguments, "url", required=True, maximum=2000)
         parsed = urlparse(entry_url)
-        if entry_url.startswith("//") or (
-            parsed.scheme
-            and (
-                parsed.scheme != "https"
-                or parsed.hostname != "start.schulportal.hessen.de"
+        path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
+        normalized_url = f"{path}?{parsed.query}" if parsed.query else path
+        if (
+            entry_url.startswith("//")
+            or parsed.fragment
+            or (
+                parsed.scheme
+                and (
+                    parsed.scheme != "https"
+                    or parsed.hostname != "start.schulportal.hessen.de"
+                )
             )
+            or (
+                not parsed.scheme
+                and parsed.netloc
+            )
+            or normalized_url not in allowed_course_entry_urls
         ):
             return {
                 "success": False,
-                "error": "Only Schulportal-relative entry URLs are allowed",
+                "error": "Only URLs returned by a course tool are allowed",
             }
-        return await meinunterricht_entry(
-            entry_url, auth
-        )
+        return await meinunterricht_entry(normalized_url, auth)
 
     async def weekly(_: Dict[str, Any]) -> Any:
         return await meinunterricht_weekly(auth=auth)
@@ -3162,6 +3207,7 @@ async def _whatsapp_ai_response(
             {"role": "user", "content": incoming.text},
             {"role": "assistant", "content": response},
         ],
+        require_message_previews=bool(link.get("show_message_previews")),
     )
     return response
 
@@ -3418,7 +3464,7 @@ async def _enqueue_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
         _whatsapp_pending_messages += 1
         task = Task(
             name=f"whatsapp_sender:{sender_key[:12]}",
-            func=_drain_whatsapp_sender_queue,
+            func=_process_whatsapp_sender_turn,
             args=(sender_key,),
             priority=TaskPriority.NORMAL,
             # Pairing and unlinking are state transitions. Retrying the entire
@@ -3433,22 +3479,35 @@ async def _enqueue_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
             raise
 
 
-async def _drain_whatsapp_sender_queue(sender_key: str) -> None:
-    """Process one sender serially without tying up workers waiting on locks."""
+async def _process_whatsapp_sender_turn(sender_key: str) -> None:
+    """Process one turn, then reschedule the sender for fair worker sharing."""
     global _whatsapp_pending_messages
     try:
-        while True:
-            async with _whatsapp_dispatch_lock:
-                sender_queue = _whatsapp_sender_queues.get(sender_key)
-                if sender_queue is None or not sender_queue.messages:
-                    _whatsapp_sender_queues.pop(sender_key, None)
-                    return
-                incoming = sender_queue.messages.popleft()
-                _whatsapp_pending_messages -= 1
-            try:
-                await _process_whatsapp_message(incoming)
-            except Exception:
-                logger.exception("Unhandled WhatsApp message processing failure")
+        async with _whatsapp_dispatch_lock:
+            sender_queue = _whatsapp_sender_queues.get(sender_key)
+            if sender_queue is None or not sender_queue.messages:
+                _whatsapp_sender_queues.pop(sender_key, None)
+                return
+            incoming = sender_queue.messages.popleft()
+            _whatsapp_pending_messages -= 1
+        try:
+            await _process_whatsapp_message(incoming)
+        except Exception:
+            logger.exception("Unhandled WhatsApp message processing failure")
+
+        async with _whatsapp_dispatch_lock:
+            sender_queue = _whatsapp_sender_queues.get(sender_key)
+            if sender_queue is None or not sender_queue.messages:
+                _whatsapp_sender_queues.pop(sender_key, None)
+                return
+            task = Task(
+                name=f"whatsapp_sender:{sender_key[:12]}",
+                func=_process_whatsapp_sender_turn,
+                args=(sender_key,),
+                priority=TaskPriority.NORMAL,
+                max_retries=0,
+            )
+            await whatsapp_task_queue.add_task(task)
     except asyncio.CancelledError:
         async with _whatsapp_dispatch_lock:
             sender_queue = _whatsapp_sender_queues.pop(sender_key, None)

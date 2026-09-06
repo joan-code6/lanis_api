@@ -671,6 +671,11 @@ async def save_whatsapp_preferences(
                 "updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
                 (int(show_message_previews), user_id),
             )
+            if not show_message_previews:
+                await db.execute(
+                    "DELETE FROM whatsapp_ai_conversations WHERE user_id = ?",
+                    (user_id,),
+                )
             await db.commit()
             if cursor.rowcount == 0:
                 raise LookupError("WhatsApp account is not linked")
@@ -754,7 +759,10 @@ async def get_whatsapp_ai_history(user_id: str) -> List[Dict[str, str]]:
 
 
 async def save_whatsapp_ai_history(
-    user_id: str, history: List[Dict[str, str]]
+    user_id: str,
+    history: List[Dict[str, str]],
+    *,
+    require_message_previews: bool = False,
 ) -> None:
     user_id = _canonical_user_id(user_id)
     cleaned = []
@@ -769,10 +777,11 @@ async def save_whatsapp_ai_history(
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
-                "SELECT 1 FROM whatsapp_links WHERE user_id = ?", (user_id,)
+                "SELECT show_message_previews FROM whatsapp_links WHERE user_id = ?",
+                (user_id,),
             ) as cursor:
-                link_exists = await cursor.fetchone()
-            if link_exists is None:
+                link = await cursor.fetchone()
+            if link is None or (require_message_previews and not bool(link[0])):
                 await db.commit()
                 return
             await db.execute(

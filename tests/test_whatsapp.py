@@ -305,6 +305,25 @@ def test_whatsapp_preferences_and_message_deduplication(tmp_path, monkeypatch) -
     assert link is not None
     assert link["show_message_previews"] is True
 
+    asyncio.run(
+        auth_db.save_whatsapp_ai_history(
+            "5201:student",
+            [{"role": "assistant", "content": "Teacher: Private subject"}],
+        )
+    )
+    asyncio.run(
+        auth_db.save_whatsapp_preferences("5201:student", show_message_previews=False)
+    )
+    assert asyncio.run(auth_db.get_whatsapp_ai_history("5201:student")) == []
+    asyncio.run(
+        auth_db.save_whatsapp_ai_history(
+            "5201:student",
+            [{"role": "assistant", "content": "stale private preview"}],
+            require_message_previews=True,
+        )
+    )
+    assert asyncio.run(auth_db.get_whatsapp_ai_history("5201:student")) == []
+
     assert asyncio.run(auth_db.reserve_whatsapp_message("wamid.1")) is True
     assert asyncio.run(auth_db.reserve_whatsapp_message("wamid.1")) is False
     assert asyncio.run(auth_db.allow_whatsapp_message("49123456789", limit=2)) is True
@@ -525,6 +544,11 @@ def test_sender_queue_uses_one_worker_and_preserves_turn_order(monkeypatch) -> N
         assert api_module._whatsapp_queue_stats()["max_sender_queue_depth"] == 2
 
         await scheduled[0].func(*scheduled[0].args)
+        assert started == ["first"]
+        assert len(scheduled) == 2
+        assert sender_key in api_module._whatsapp_sender_queues
+
+        await scheduled[1].func(*scheduled[1].args)
         assert started == ["first", "second"]
         assert sender_key not in api_module._whatsapp_sender_queues
         assert api_module._whatsapp_pending_messages == 0
@@ -566,6 +590,50 @@ def test_parallel_prepare_action_keeps_one_valid_confirmation(monkeypatch) -> No
     assert len(confirmations) == 1
     assert sum(result["success"] is True for result in results) == 1
     assert any("Only one change" in result.get("error", "") for result in results)
+
+
+def test_course_entry_only_accepts_urls_returned_by_course_tools(monkeypatch) -> None:
+    fetched = []
+
+    async def overview(*_args, **_kwargs):
+        return {
+            "success": True,
+            "entries": [
+                {
+                    "book_id": "course-1",
+                    "course_link": "/meinunterricht.php?a=sus_view&id=course-1",
+                }
+            ],
+        }
+
+    async def entry(url, _auth):
+        fetched.append(url)
+        return {"success": True}
+
+    async def scenario():
+        tools = api_module._whatsapp_agent_tools(
+            SimpleNamespace(user_id="5201:student", client=object()),
+            {"show_message_previews": False},
+            "49123456789",
+            [],
+        )
+        by_name = {tool.name: tool for tool in tools}
+        rejected = await by_name["get_course_entry"].handler(
+            {"url": "/index.php?logout=all"}
+        )
+        await by_name["get_courses"].handler({})
+        allowed = await by_name["get_course_entry"].handler(
+            {"url": "https://start.schulportal.hessen.de/meinunterricht.php?a=sus_view&id=course-1"}
+        )
+        return rejected, allowed
+
+    monkeypatch.setattr(api_module, "meinunterricht_overview", overview)
+    monkeypatch.setattr(api_module, "meinunterricht_entry", entry)
+    rejected, allowed = asyncio.run(scenario())
+
+    assert rejected["success"] is False
+    assert allowed["success"] is True
+    assert fetched == ["/meinunterricht.php?a=sus_view&id=course-1"]
 
 
 def test_confirmation_attempts_are_rate_limited(monkeypatch) -> None:
