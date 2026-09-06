@@ -88,6 +88,7 @@ from .auth_db import (
     get_whatsapp_link_for_sender,
     get_whatsapp_link_for_user,
     get_whatsapp_ai_history,
+    purge_expired_whatsapp_ai_history,
     reserve_whatsapp_message,
     save_whatsapp_ai_history,
     save_whatsapp_preferences,
@@ -795,6 +796,16 @@ sessions = AuthManager()
 _dsb_scheduler_task = None
 _message_notification_task = None
 _uptime_scheduler_task = None
+_whatsapp_history_cleanup_task = None
+
+
+async def _run_whatsapp_history_cleanup() -> None:
+    while True:
+        try:
+            await purge_expired_whatsapp_ai_history()
+        except Exception:
+            logger.warning("WhatsApp history cleanup failed", exc_info=True)
+        await asyncio.sleep(3600)
 
 
 # --- Background Tasks ---
@@ -980,8 +991,9 @@ app.include_router(admin_router)
 @app.on_event("startup")
 async def _startup() -> None:
     """Initialize stores and start the API's background schedulers."""
-    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task
+    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task
     await auth_db_initialize()
+    await purge_expired_whatsapp_ai_history()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
     await task_queue.start()
@@ -993,6 +1005,7 @@ async def _startup() -> None:
         get_notification_preferences,
     )
     _uptime_scheduler_task = await run_uptime_scheduler()
+    _whatsapp_history_cleanup_task = asyncio.create_task(_run_whatsapp_history_cleanup())
     logger.info(
         "API started with task queue, databases, DSB snapshot scheduler, "
         "message notification scheduler, and Schulportal uptime monitor"
@@ -1002,13 +1015,15 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _cleanup_sessions() -> None:
     """Cancel background schedulers and close active sessions cleanly."""
-    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task
+    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task
     if _dsb_scheduler_task:
         _dsb_scheduler_task.cancel()
     if _message_notification_task:
         _message_notification_task.cancel()
     if _uptime_scheduler_task:
         _uptime_scheduler_task.cancel()
+    if _whatsapp_history_cleanup_task:
+        _whatsapp_history_cleanup_task.cancel()
     await task_queue.stop(wait=True, timeout=10.0)
     await whatsapp_task_queue.stop(wait=True, timeout=10.0)
     await sessions.shutdown()
@@ -3074,6 +3089,12 @@ def _whatsapp_agent_tools(
                     return {"success": False, "error": "Election form could not be loaded; nothing was prepared"}
                 payload["_preview_labels"] = _election_preview_labels(form, payload)
             if action == "send_message":
+                recipients = payload.get("recipients") or []
+                if any(recipient not in recipient_labels for recipient in recipients):
+                    return {
+                        "success": False,
+                        "error": "Search for each recipient first so the destination can be verified",
+                    }
                 payload["_preview_recipients"] = [
                     {
                         "id": recipient,

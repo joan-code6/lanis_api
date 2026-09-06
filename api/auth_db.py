@@ -773,6 +773,19 @@ async def get_whatsapp_ai_history(user_id: str) -> List[Dict[str, str]]:
     return history
 
 
+async def purge_expired_whatsapp_ai_history() -> int:
+    """Delete expired WhatsApp AI transcripts without requiring a new turn."""
+    cutoff = datetime.utcnow() - timedelta(hours=WHATSAPP_AI_HISTORY_TTL_HOURS)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "DELETE FROM whatsapp_ai_conversations WHERE updated_at < ?", (cutoff,)
+            )
+            deleted = cursor.rowcount
+            await db.commit()
+    return max(deleted, 0)
+
+
 async def save_whatsapp_ai_history(
     user_id: str,
     history: List[Dict[str, str]],
