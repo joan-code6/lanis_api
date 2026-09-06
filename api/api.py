@@ -3471,6 +3471,7 @@ async def _whatsapp_ai_response(
             {"role": "assistant", "content": response},
         ],
         require_message_previews=turn_state["preview_data_used"],
+        expected_link_generation=link.get("linked_at"),
     )
     return response
 
@@ -3582,6 +3583,7 @@ async def _confirm_whatsapp_action(
                 str(pending.get("user_id") or ""),
                 [*failure_history, {"role": "user", "content": f"BESTÄTIGEN {code}"}, {"role": "assistant", "content": "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden."}],
                 require_message_previews=False,
+                expected_link_generation=(pending.get("payload") or {}).get("_link_generation"),
             )
         except Exception:
             logger.warning("Could not persist WhatsApp confirmation failure", exc_info=True)
@@ -3600,6 +3602,7 @@ async def _confirm_whatsapp_action(
                 {"role": "assistant", "content": "✅ Die bestätigte Änderung wurde ausgeführt."},
             ],
             require_message_previews=bool(link.get("show_message_previews")),
+            expected_link_generation=(pending.get("payload") or {}).get("_link_generation"),
         )
     except Exception:
         logger.warning("Could not persist WhatsApp confirmation outcome", exc_info=True)

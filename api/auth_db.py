@@ -794,6 +794,7 @@ async def save_whatsapp_ai_history(
     history: List[Dict[str, str]],
     *,
     require_message_previews: bool = False,
+    expected_link_generation: Optional[str] = None,
 ) -> None:
     user_id = _canonical_user_id(user_id)
     cleaned = []
@@ -808,11 +809,11 @@ async def save_whatsapp_ai_history(
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
-                "SELECT show_message_previews FROM whatsapp_links WHERE user_id = ?",
+                "SELECT show_message_previews, linked_at FROM whatsapp_links WHERE user_id = ?",
                 (user_id,),
             ) as cursor:
                 link = await cursor.fetchone()
-            if link is None or (require_message_previews and not bool(link[0])):
+            if link is None or (expected_link_generation and link[1] != expected_link_generation) or (require_message_previews and not bool(link[0])):
                 await db.commit()
                 return
             await db.execute(
