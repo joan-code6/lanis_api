@@ -2822,6 +2822,27 @@ def _whatsapp_agent_tools(
     turn_state = turn_state if turn_state is not None else {}
     allowed_course_entry_urls: set[str] = set()
     recipient_labels: Dict[str, str] = {}
+    course_labels: Dict[str, str] = {}
+    homework_labels: Dict[str, str] = {}
+
+    def remember_course_labels(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                remember_course_labels(item)
+            return
+        if not isinstance(value, dict):
+            return
+        course_id = value.get("course_id") or value.get("id")
+        if course_id and (value.get("name") or value.get("title")):
+            course_labels[str(course_id)] = str(value.get("name") or value.get("title"))
+        entry_id = value.get("entry_id")
+        if entry_id:
+            label = value.get("name") or value.get("title") or value.get("subject") or value.get("text")
+            if label:
+                homework_labels[str(entry_id)] = str(label)
+        for item in value.values():
+            if isinstance(item, (dict, list)):
+                remember_course_labels(item)
 
     async def previews_enabled() -> bool:
         current = await get_whatsapp_link_for_sender(sender_id)
@@ -2899,6 +2920,7 @@ def _whatsapp_agent_tools(
 
     async def courses(_: Dict[str, Any]) -> Any:
         result = await meinunterricht_overview(auth=auth)
+        remember_course_labels(result)
         remember_course_entry_urls(result)
         return result
 
@@ -2909,6 +2931,7 @@ def _whatsapp_agent_tools(
         result = await meinunterricht_course(
             _agent_string(arguments, "course_id", required=True, maximum=200), auth
         )
+        remember_course_labels(result)
         remember_course_entry_urls(result)
         return result
 
@@ -3087,6 +3110,15 @@ def _whatsapp_agent_tools(
                 form = await get_wahlen_form(payload["election_id"], auth)
                 if not form.get("success"):
                     return {"success": False, "error": "Election form could not be loaded; nothing was prepared"}
+                for block in form.get("blocks") or []:
+                    for control in (block or {}).get("controls") or []:
+                        if control.get("kind") != "select" or control.get("id") not in payload["selections"]:
+                            continue
+                        allowed_values = {str(option.get("value")) for option in control.get("options") or []}
+                        selected = payload["selections"][control["id"]]
+                        selected_values = selected if isinstance(selected, list) else [selected]
+                        if any(str(value) not in allowed_values for value in selected_values):
+                            return {"success": False, "error": "Election selection is not one of the loaded options"}
                 payload["_preview_labels"] = _election_preview_labels(form, payload)
             if action == "send_message":
                 recipients = payload.get("recipients") or []
@@ -3102,6 +3134,14 @@ def _whatsapp_agent_tools(
                     }
                     for recipient in payload.get("recipients") or []
                 ]
+            if action == "mark_homework_done":
+                entry_id = payload["entry_id"]
+                if entry_id not in homework_labels:
+                    return {"success": False, "error": "Load the course homework first so the item can be verified"}
+                payload["_preview_homework"] = {
+                    "course": course_labels.get(payload["course_id"], payload["course_id"]),
+                    "entry": homework_labels[entry_id],
+                }
             encoded = json.dumps(payload, ensure_ascii=False, default=str)
             if len(encoded) > 20_000:
                 return {"success": False, "error": "Action payload is too large"}
@@ -3221,9 +3261,11 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
         )
     if action == "mark_homework_done":
         state = "erledigt" if payload.get("done", True) is True else "offen"
+        details = payload.get("_preview_homework") or {}
+        course = details.get("course", payload.get("course_id"))
+        entry = details.get("entry", payload.get("entry_id"))
         return (
-            f"Hausaufgabe {str(payload.get('entry_id') or '')} im Kurs "
-            f"{str(payload.get('course_id') or '')} als {state} markieren"
+            f"Hausaufgabe {str(entry)} im Kurs {str(course)} als {state} markieren"
         )
     if action == "submit_election":
         labels = payload.get("_preview_labels")
@@ -3433,6 +3475,16 @@ async def _confirm_whatsapp_action(
             "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden. Bitte prüfe deine Daten und versuche es erneut.",
         )
         return
+    history = await get_whatsapp_ai_history(auth.user_id)
+    await save_whatsapp_ai_history(
+        auth.user_id,
+        [
+            *history,
+            {"role": "user", "content": f"BESTÄTIGEN {code}"},
+            {"role": "assistant", "content": "✅ Die bestätigte Änderung wurde ausgeführt."},
+        ],
+        require_message_previews=bool(link.get("show_message_previews")),
+    )
     await client.send_text(incoming.sender_id, "✅ Die bestätigte Änderung wurde ausgeführt.")
 
 
