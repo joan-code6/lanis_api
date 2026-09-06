@@ -2843,7 +2843,7 @@ def _whatsapp_agent_tools(
             label = value.get("homework") or value.get("topic") or value.get("subject") or value.get("text") or value.get("name") or value.get("title")
             if label:
                 course_key = value.get("book_id") or value.get("course_id")
-                homework_labels[str(entry_id)] = f"{course_key}: {label}" if course_key else str(label)
+                homework_labels[str(entry_id)] = {"course_id": str(course_key) if course_key else "", "label": str(label)}
         for item in value.values():
             if isinstance(item, (dict, list)):
                 remember_course_labels(item)
@@ -3161,12 +3161,14 @@ def _whatsapp_agent_tools(
                 payload["_preview_conversation"] = conversation_labels.get(conversation_id, conversation_id)
             if action == "mark_homework_done":
                 entry_id = payload["entry_id"]
-                if entry_id not in homework_labels:
+                homework = homework_labels.get(entry_id)
+                if homework is None or (homework.get("course_id") and str(payload.get("course_id")) != homework["course_id"]):
                     return {"success": False, "error": "Load the course homework first so the item can be verified"}
                 payload["_preview_homework"] = {
                     "course": course_labels.get(payload["course_id"], payload["course_id"]),
-                    "entry": homework_labels[entry_id],
+                    "entry": homework["label"],
                 }
+            payload["_link_generation"] = link.get("linked_at")
             encoded = json.dumps(payload, ensure_ascii=False, default=str)
             if len(encoded) > 20_000:
                 return {"success": False, "error": "Action payload is too large"}
@@ -3542,6 +3544,10 @@ async def _confirm_whatsapp_action(
     if link is None or link.get("user_id") != pending.get("user_id"):
         await client.send_text(incoming.sender_id, "⚠️ Die Aktion konnte nicht bestätigt werden.")
         return
+    expected_generation = (pending.get("payload") or {}).get("_link_generation")
+    if expected_generation and link.get("linked_at") != expected_generation:
+        await client.send_text(incoming.sender_id, "⚠️ Diese Bestätigung gehört zu einer früheren WhatsApp-Verbindung.")
+        return
     try:
         session_data = await sessions._get_or_create_schulportal_client(link["user_id"])
         auth = AuthSession(
@@ -3561,9 +3567,11 @@ async def _confirm_whatsapp_action(
         logger.warning("Confirmed WhatsApp action failed", exc_info=True)
         try:
             failure_history = await get_whatsapp_ai_history(str(pending.get("user_id") or ""))
+            latest_for_history = await get_whatsapp_link_for_sender(incoming.sender_id)
             await save_whatsapp_ai_history(
                 str(pending.get("user_id") or ""),
                 [*failure_history, {"role": "user", "content": f"BESTÄTIGEN {code}"}, {"role": "assistant", "content": "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden."}],
+                require_message_previews=bool((latest_for_history or {}).get("show_message_previews")),
             )
         except Exception:
             logger.warning("Could not persist WhatsApp confirmation failure", exc_info=True)
