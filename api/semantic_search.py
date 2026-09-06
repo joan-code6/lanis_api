@@ -295,6 +295,8 @@ class SemanticSearchEngine:
                         include_messages=include_messages,
                         preview_check=preview_check,
                     )
+                    if index.is_stale():
+                        return []
 
         if index.is_empty():
             return []
@@ -305,6 +307,8 @@ class SemanticSearchEngine:
             query_embedding = await run_in_threadpool(client.embed_single, query)
         except Exception as e:
             logger.error("Failed to embed query: %s", e)
+            return []
+        if preview_check is not None and include_messages and not await preview_check():
             return []
 
         # Search
@@ -360,7 +364,7 @@ class SemanticSearchEngine:
                 logger.warning("Failed to fetch messages for semantic index: %s", e)
 
         if include_messages and preview_check is not None and not await preview_check():
-            all_docs = [doc for doc in all_docs if not doc[0].startswith("sem-msg")]
+            return
 
         # --- Courses ---
         try:
@@ -398,9 +402,7 @@ class SemanticSearchEngine:
 
         # Batch embed all texts
         if include_messages and preview_check is not None and not await preview_check():
-            all_docs = [doc for doc in all_docs if not doc[0].startswith("sem-msg")]
-            if not all_docs:
-                return
+            return
         texts = [doc[1] for doc in all_docs]
         try:
             embeddings = await run_in_threadpool(client.embed, texts)
