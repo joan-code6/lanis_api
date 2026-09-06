@@ -23,6 +23,7 @@ MAX_AGENT_ROUNDS = 20
 MAX_AGENT_TOOL_CALLS = 32
 MAX_TOOL_RESULT_CHARS = 60_000
 MAX_AGENT_CONTEXT_CHARS = 240_000
+MAX_AGENT_RESPONSE_CHARS = 3_500
 
 
 @dataclass(frozen=True)
@@ -238,7 +239,7 @@ async def run_agent(
         if not calls:
             text = _text_content(message.get("content"))
             if text:
-                return text
+                return text[:MAX_AGENT_RESPONSE_CHARS]
             raise AIProviderError("AI returned neither text nor tool calls")
 
         if total_tool_calls + len(calls) > MAX_AGENT_TOOL_CALLS:

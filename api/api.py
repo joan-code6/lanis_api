@@ -2800,9 +2800,11 @@ def _whatsapp_agent_tools(
     link: Dict[str, Any],
     sender_id: str,
     pending_confirmations: List[Dict[str, str]],
+    turn_state: Optional[Dict[str, bool]] = None,
 ) -> List[AgentTool]:
     """Build the account-scoped read tools and confirmation-gated actions."""
     prepare_action_lock = asyncio.Lock()
+    turn_state = turn_state if turn_state is not None else {}
     allowed_course_entry_urls: set[str] = set()
     recipient_labels: Dict[str, str] = {}
 
@@ -2935,6 +2937,7 @@ def _whatsapp_agent_tools(
             auth=auth,
         )
         if await previews_enabled():
+            turn_state["preview_data_used"] = True
             return result
         # The model may count unread rows but must not see sender/subject previews.
         conversations: List[Dict[str, Any]] = []
@@ -2965,6 +2968,7 @@ def _whatsapp_agent_tools(
         )
         if not await previews_enabled():
             return {"success": False, "error": "Message previews were disabled during the request"}
+        turn_state["preview_data_used"] = True
         return result
 
     async def recipient_search(arguments: Dict[str, Any]) -> Any:
@@ -3018,14 +3022,17 @@ def _whatsapp_agent_tools(
         top_k = _agent_integer(
             arguments, "limit", default=20, minimum=1, maximum=50
         )
+        previews_current = await previews_enabled()
         results = await semantic_engine.search(
             user_id=auth.user_id,
             query=query,
             auth_client=auth.client,
             top_k=top_k,
-            include_messages=await previews_enabled(),
+            include_messages=previews_current,
             preview_check=previews_enabled,
         )
+        if previews_current and any(item.get("category") == "Nachrichten" for item in results):
+            turn_state["preview_data_used"] = True
         return {
             "success": True,
             "query": query,
@@ -3270,13 +3277,14 @@ async def _whatsapp_ai_response(
     if started_with_previews and not previews_allowed:
         history = []
     pending_confirmations: List[Dict[str, str]] = []
+    turn_state = {"preview_data_used": started_with_previews}
     response = await asyncio.wait_for(
         run_agent(
             config=_ai_config(),
             system_prompt=_whatsapp_agent_prompt(),
             user_message=incoming.text,
             tools=_whatsapp_agent_tools(
-                auth, link, incoming.sender_id, pending_confirmations
+                auth, link, incoming.sender_id, pending_confirmations, turn_state
             ),
             history=history,
         ),
@@ -3291,6 +3299,11 @@ async def _whatsapp_ai_response(
             f"Antworte innerhalb von 10 Minuten exakt mit:\n"
             f"BESTÄTIGEN {pending['code']}"
         )
+    latest_link = await get_whatsapp_link_for_sender(incoming.sender_id)
+    if turn_state["preview_data_used"] and not (latest_link or {}).get(
+        "show_message_previews"
+    ):
+        return ""
     await save_whatsapp_ai_history(
         auth.user_id,
         [
@@ -3298,7 +3311,7 @@ async def _whatsapp_ai_response(
             {"role": "user", "content": incoming.text},
             {"role": "assistant", "content": response},
         ],
-        require_message_previews=started_with_previews,
+        require_message_previews=turn_state["preview_data_used"],
     )
     return response
 
@@ -3385,6 +3398,10 @@ async def _confirm_whatsapp_action(
             school_id=session_data.school_id,
             username=session_data.username,
         )
+        latest_link = await get_whatsapp_link_for_sender(incoming.sender_id)
+        if latest_link is None or latest_link.get("user_id") != pending.get("user_id"):
+            await client.send_text(incoming.sender_id, "⚠️ Die Aktion konnte nicht bestätigt werden.")
+            return
         result = await _execute_whatsapp_pending_action(pending, auth)
         if not result.get("success"):
             raise RuntimeError("Portal rejected action")
@@ -3734,6 +3751,8 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
     # A STOP command or settings-page unlink can run while portal data is being
     # fetched. Never send that result unless the exact link is still active.
     current_link = await get_whatsapp_link_for_sender(incoming.sender_id)
+    if not response:
+        return
     if current_link is None or any(
         current_link.get(field) != link.get(field)
         for field in ("user_id", "linked_at")
