@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from api.semantic_search import SemanticIndex, SemanticSearchEngine
 
 
@@ -65,3 +67,19 @@ def test_private_and_full_semantic_indices_are_separate() -> None:
     assert engine.get_index("user-1", include_messages=False) is not engine.get_index(
         "user-1", include_messages=True
     )
+
+
+def test_embedding_client_uses_documented_ai_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AI_API_URL", raising=False)
+    monkeypatch.delenv("AI_API_KEY", raising=False)
+    monkeypatch.delenv("AI_EMBEDDING_MODEL", raising=False)
+    monkeypatch.setenv("ai_endpoint", "https://ai.example/v1/chat/completions")
+    monkeypatch.setenv("ai_api_key", "test-key")
+    monkeypatch.setenv("ai_default_model", "test-model")
+
+    client = SemanticSearchEngine()._get_client()
+
+    assert client is not None
+    assert client.api_url == "https://ai.example/v1"
+    assert client.api_key == "test-key"
+    assert client.model == "test-model"

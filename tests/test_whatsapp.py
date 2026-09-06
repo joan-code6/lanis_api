@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+from collections import deque
 from datetime import date
 from types import SimpleNamespace
 
@@ -417,6 +418,49 @@ def test_stop_bypasses_rate_limit(monkeypatch) -> None:
     assert sent and "getrennt" in sent[0][1]
 
 
+def test_stop_clears_pending_sender_turns_before_ai_processing(monkeypatch) -> None:
+    deleted = []
+    sender_id = "49123456789"
+    sender_key = hashlib.sha256(sender_id.encode()).hexdigest()
+    api_module._whatsapp_sender_queues.clear()
+    api_module._whatsapp_pending_messages = 0
+    api_module._whatsapp_sender_queues[sender_key] = api_module._WhatsAppSenderQueue(
+        deque(
+            [IncomingWhatsAppMessage("wamid.queued", sender_id, "private question")]
+        )
+    )
+    api_module._whatsapp_pending_messages = 1
+
+    async def reserve(_message_id):
+        return True
+
+    async def delete(sender):
+        deleted.append(sender)
+
+    class Client:
+        def __init__(self, _config):
+            pass
+
+        async def send_text(self, *_args):
+            pass
+
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", reserve)
+    monkeypatch.setattr(api_module, "delete_whatsapp_link_for_sender", delete)
+    monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
+    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
+
+    asyncio.run(
+        api_module._process_whatsapp_stop_immediately(
+            IncomingWhatsAppMessage("wamid.stop-immediate", sender_id, "STOP")
+        )
+    )
+
+    assert deleted == [sender_id]
+    assert not api_module._whatsapp_sender_queues[sender_key].messages
+    assert api_module._whatsapp_pending_messages == 0
+    api_module._whatsapp_sender_queues.clear()
+
+
 def test_personal_response_is_suppressed_after_unlink(monkeypatch) -> None:
     sent = []
     links = [
@@ -502,6 +546,14 @@ def test_write_confirmation_preserves_the_complete_message_body() -> None:
     assert "".join(chunks) == confirmation
     assert all(len(chunk) <= 3900 for chunk in chunks)
     assert chunks[-1].endswith("BESTÄTIGEN ABC123")
+
+
+def test_reply_confirmation_includes_recipient() -> None:
+    preview = api_module._whatsapp_action_preview(
+        "reply_message",
+        {"to": "conversation-member-1", "conversation_id": "conversation-1", "body": "Hallo"},
+    )
+    assert "conversation-member-1" in preview
 
 
 def test_whatsapp_client_sends_every_confirmation_chunk() -> None:

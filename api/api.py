@@ -3144,7 +3144,8 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
         )
     if action == "reply_message":
         return (
-            f"Antwort in Unterhaltung {str(payload.get('conversation_id') or '')}:\n"
+            f"Antwort an {str(payload.get('to') or 'all')} in Unterhaltung "
+            f"{str(payload.get('conversation_id') or '')}:\n"
             f"{str(payload.get('body') or '')}"
         )
     if action == "mark_message_read":
@@ -3416,7 +3417,10 @@ async def receive_whatsapp_webhook(request: Request) -> Dict[str, str]:
 
     for incoming in extract_incoming_messages(payload, config.phone_number_id):
         try:
-            await _enqueue_whatsapp_message(incoming)
+            if command_intent(incoming.text) == "unlink":
+                await _process_whatsapp_stop_immediately(incoming)
+            else:
+                await _enqueue_whatsapp_message(incoming)
         except asyncio.QueueFull as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -3477,6 +3481,30 @@ async def _enqueue_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
             _whatsapp_pending_messages -= len(sender_queue.messages)
             _whatsapp_sender_queues.pop(sender_key, None)
             raise
+
+
+async def _process_whatsapp_stop_immediately(incoming: IncomingWhatsAppMessage) -> None:
+    """Unlink immediately, bypassing the per-sender AI queue."""
+    if not await reserve_whatsapp_message(incoming.message_id):
+        return
+    client = WhatsAppCloudClient(_whatsapp_config())
+    await delete_whatsapp_link_for_sender(incoming.sender_id)
+
+    global _whatsapp_pending_messages
+    sender_key = hashlib.sha256(incoming.sender_id.encode()).hexdigest()
+    async with _whatsapp_dispatch_lock:
+        sender_queue = _whatsapp_sender_queues.get(sender_key)
+        if sender_queue is not None and sender_queue.messages:
+            _whatsapp_pending_messages -= len(sender_queue.messages)
+            sender_queue.messages.clear()
+    try:
+        await client.send_text(
+            incoming.sender_id,
+            "✅ Die WhatsApp-Verbindung wurde getrennt. LANIS sendet über diesen "
+            "Chat keine persönlichen Daten mehr.",
+        )
+    except Exception:
+        logger.exception("Failed to send WhatsApp unlink confirmation")
 
 
 async def _process_whatsapp_sender_turn(sender_key: str) -> None:

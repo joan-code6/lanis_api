@@ -157,14 +157,17 @@ class SemanticSearchEngine:
 
     def _get_client(self) -> Optional[EmbeddingClient]:
         if self._client is None:
-            api_url = os.getenv("AI_API_URL")
-            api_key = os.getenv("AI_API_KEY")
-            model = os.getenv("AI_EMBEDDING_MODEL", "google/gemini-embedding-2")
+            configured_endpoint = os.getenv("AI_API_URL") or os.getenv("ai_endpoint")
+            api_url = configured_endpoint.rstrip("/") if configured_endpoint else None
+            if api_url and api_url.endswith("/chat/completions"):
+                api_url = api_url[: -len("/chat/completions")]
+            api_key = os.getenv("AI_API_KEY") or os.getenv("ai_api_key")
+            model = os.getenv("AI_EMBEDDING_MODEL") or os.getenv("ai_default_model") or "google/gemini-embedding-2"
             if api_url and api_key:
                 self._client = EmbeddingClient(api_url, api_key, model)
                 logger.info("Semantic search embedding client initialized (model=%s)", model)
             else:
-                logger.debug("Semantic search disabled — AI_API_URL / AI_API_KEY not set")
+                logger.debug("Semantic search disabled — AI endpoint/API key not set")
         return self._client
 
     def get_index(self, user_id: str, include_messages: bool = True) -> SemanticIndex:
