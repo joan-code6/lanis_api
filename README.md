@@ -178,6 +178,8 @@ and semantic search. Changes are never executed from a model tool call alone:
 the backend creates an encrypted, short-lived proposal that the user must
 confirm explicitly in WhatsApp. Recent conversation messages are encrypted,
 limited to twelve messages, expire after 24 hours, and are deleted on unlink.
+Replying to or marking an existing message as read requires message previews to
+be enabled so the assistant can verify the exact conversation target.
 
 Configure the AI provider with exactly these three values. `ai_endpoint` must
 be a complete HTTPS Chat Completions URL:

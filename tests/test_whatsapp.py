@@ -229,6 +229,34 @@ def test_ai_history_is_encrypted_bounded_and_deleted_on_unlink(tmp_path, monkeyp
     assert asyncio.run(auth_db.get_whatsapp_ai_history("5201:student")) == []
 
 
+def test_rapid_relink_uses_a_new_generation_and_cannot_restore_old_history(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    asyncio.run(auth_db.initialize())
+    first_code, _ = asyncio.run(auth_db.create_whatsapp_pairing_code("5201:student"))
+    asyncio.run(auth_db.consume_whatsapp_pairing_code(first_code, "491111111111"))
+    first_link = asyncio.run(auth_db.get_whatsapp_link_for_sender("491111111111"))
+
+    second_code, _ = asyncio.run(auth_db.create_whatsapp_pairing_code("5201:student"))
+    asyncio.run(auth_db.consume_whatsapp_pairing_code(second_code, "491111111111"))
+    second_link = asyncio.run(auth_db.get_whatsapp_link_for_sender("491111111111"))
+
+    assert first_link is not None and second_link is not None
+    assert first_link["linked_at"] != second_link["linked_at"]
+    asyncio.run(
+        auth_db.save_whatsapp_ai_history(
+            "5201:student",
+            [{"role": "assistant", "content": "old private response"}],
+            expected_link_generation=first_link["linked_at"],
+        )
+    )
+    with sqlite3.connect(auth_db.DB_PATH) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM whatsapp_ai_conversations"
+        ).fetchone()[0] == 0
+
+
 def test_pending_action_is_single_use_and_bound_to_sender(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
     asyncio.run(auth_db.initialize())
@@ -489,6 +517,43 @@ def test_stop_clears_pending_sender_turns_before_ai_processing(monkeypatch) -> N
     api_module._whatsapp_sender_queues.clear()
 
 
+def test_stop_retains_confirmation_task_until_send_finishes(monkeypatch) -> None:
+    release = None
+
+    async def reserve(_message_id):
+        return True
+
+    async def delete(_sender_id):
+        return None
+
+    class Client:
+        def __init__(self, _config):
+            pass
+
+        async def send_text(self, *_args):
+            await release.wait()
+
+    async def scenario():
+        nonlocal release
+        release = asyncio.Event()
+        api_module._whatsapp_unlink_confirmation_tasks.clear()
+        await api_module._process_whatsapp_stop_immediately(
+            IncomingWhatsAppMessage("wamid.stop-retained", "49123456789", "STOP")
+        )
+        await asyncio.sleep(0)
+        assert len(api_module._whatsapp_unlink_confirmation_tasks) == 1
+        release.set()
+        await asyncio.gather(*api_module._whatsapp_unlink_confirmation_tasks)
+        await asyncio.sleep(0)
+        assert not api_module._whatsapp_unlink_confirmation_tasks
+
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", reserve)
+    monkeypatch.setattr(api_module, "delete_whatsapp_link_for_sender", delete)
+    monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
+    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
+    asyncio.run(scenario())
+
+
 def test_personal_response_is_suppressed_after_unlink(monkeypatch) -> None:
     sent = []
     links = [
@@ -667,6 +732,9 @@ def test_parallel_prepare_action_keeps_one_valid_confirmation(monkeypatch) -> No
         await asyncio.sleep(0)
         return "ABC123"
 
+    async def active_link(_sender_id):
+        return {"user_id": "5201:student", "linked_at": None}
+
     async def scenario():
         tools = api_module._whatsapp_agent_tools(
             SimpleNamespace(user_id="5201:student"),
@@ -684,12 +752,86 @@ def test_parallel_prepare_action_keeps_one_valid_confirmation(monkeypatch) -> No
         )
 
     monkeypatch.setattr(api_module, "create_whatsapp_pending_action", create)
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", active_link)
     results = asyncio.run(scenario())
 
     assert len(created) == 1
     assert len(confirmations) == 1
     assert sum(result["success"] is True for result in results) == 1
     assert any("Only one change" in result.get("error", "") for result in results)
+
+
+def test_confirmation_preview_excludes_internal_link_generation(monkeypatch) -> None:
+    confirmations = []
+
+    async def create(*_args, **_kwargs):
+        return "ABC123"
+
+    async def active_link(_sender_id):
+        return {"user_id": "5201:student", "linked_at": "generation-1"}
+
+    monkeypatch.setattr(api_module, "create_whatsapp_pending_action", create)
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", active_link)
+    tools = api_module._whatsapp_agent_tools(
+        SimpleNamespace(user_id="5201:student"),
+        {"show_message_previews": False, "linked_at": "generation-1"},
+        "49123456789",
+        confirmations,
+    )
+    prepare = next(tool for tool in tools if tool.name == "prepare_action")
+    result = asyncio.run(
+        prepare.handler(
+            {
+                "action": "update_preferences",
+                "payload": {"appearance": {"theme_mode": "dark"}},
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert "_link_generation" not in confirmations[0]["preview"]
+
+
+def test_election_execution_preserves_link_generation_before_normalizing(
+    monkeypatch,
+) -> None:
+    checks = []
+
+    async def get_form(_election_id, _auth):
+        return {"success": True, "personal_fields": [], "blocks": []}
+
+    class Client:
+        def wahlen_submit(
+            self, _election_id, _submission, _confirmed, pre_submit_check
+        ):
+            checks.append(pre_submit_check())
+            return {"success": True}
+
+    def link_matches(sender_id, user_id, generation):
+        assert sender_id == "49123456789"
+        assert user_id == "5201:student"
+        return generation == "generation-1"
+
+    monkeypatch.setattr(api_module, "get_wahlen_form", get_form)
+    monkeypatch.setattr(api_module, "whatsapp_link_matches_sync", link_matches)
+    result = asyncio.run(
+        api_module._execute_whatsapp_pending_action(
+            {
+                "action": "submit_election",
+                "payload": {
+                    "election_id": "18",
+                    "fields": {},
+                    "selections": {},
+                    "_link_generation": "generation-1",
+                },
+            },
+            SimpleNamespace(client=Client(), user_id="5201:student"),
+            sender_id="49123456789",
+        )
+    )
+
+    assert result["success"] is True
+    assert checks == [True]
 
 
 def test_detailed_course_homework_is_bound_to_parent_course(monkeypatch) -> None:
@@ -705,6 +847,9 @@ def test_detailed_course_homework_is_bound_to_parent_course(monkeypatch) -> None
 
     async def create(*_args, **_kwargs):
         return "ABC123"
+
+    async def active_link(_sender_id):
+        return {"user_id": "5201:student", "linked_at": "generation-1"}
 
     async def scenario():
         tools = api_module._whatsapp_agent_tools(
@@ -728,6 +873,7 @@ def test_detailed_course_homework_is_bound_to_parent_course(monkeypatch) -> None
 
     monkeypatch.setattr(api_module, "meinunterricht_course", get_course)
     monkeypatch.setattr(api_module, "create_whatsapp_pending_action", create)
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", active_link)
     rejected = asyncio.run(scenario())
 
     assert rejected["success"] is False
@@ -753,6 +899,9 @@ def test_course_entry_only_accepts_urls_returned_by_course_tools(monkeypatch) ->
         fetched.append(url)
         return {"success": True}
 
+    async def active_link(_sender_id):
+        return {"user_id": "5201:student", "linked_at": None}
+
     async def scenario():
         tools = api_module._whatsapp_agent_tools(
             SimpleNamespace(user_id="5201:student", client=object()),
@@ -772,11 +921,61 @@ def test_course_entry_only_accepts_urls_returned_by_course_tools(monkeypatch) ->
 
     monkeypatch.setattr(api_module, "meinunterricht_overview", overview)
     monkeypatch.setattr(api_module, "meinunterricht_entry", entry)
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", active_link)
     rejected, allowed = asyncio.run(scenario())
 
     assert rejected["success"] is False
     assert allowed["success"] is True
     assert fetched == ["/meinunterricht.php?a=sus_view&id=course-1"]
+
+
+def test_message_actions_require_previews_for_target_verification(monkeypatch) -> None:
+    async def active_link(_sender_id):
+        return {"user_id": "5201:student", "linked_at": "generation-1"}
+
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", active_link)
+    tools = api_module._whatsapp_agent_tools(
+        SimpleNamespace(user_id="5201:student"),
+        {
+            "show_message_previews": False,
+            "linked_at": "generation-1",
+        },
+        "49123456789",
+        [],
+        {},
+    )
+    prepare = next(tool for tool in tools if tool.name == "prepare_action")
+    result = asyncio.run(
+        prepare.handler(
+            {
+                "action": "mark_message_read",
+                "payload": {"conversation_id": "conversation-1"},
+            }
+        )
+    )
+
+    assert result["success"] is False
+    assert "Load the conversation first" in result["error"]
+
+
+def test_tool_guards_fail_closed_when_link_table_is_missing(monkeypatch) -> None:
+    async def missing_table(_sender_id):
+        raise sqlite3.OperationalError("no such table: whatsapp_links")
+
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", missing_table)
+    tools = api_module._whatsapp_agent_tools(
+        SimpleNamespace(user_id="5201:student"),
+        {"linked_at": "generation-1"},
+        "49123456789",
+        [],
+    )
+    profile = next(tool for tool in tools if tool.name == "get_profile")
+    result = asyncio.run(profile.handler({}))
+
+    assert result == {
+        "success": False,
+        "error": "WhatsApp connection is no longer active",
+    }
 
 
 def test_confirmation_attempts_are_rate_limited(monkeypatch) -> None:

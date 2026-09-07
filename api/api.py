@@ -799,6 +799,7 @@ _dsb_scheduler_task = None
 _message_notification_task = None
 _uptime_scheduler_task = None
 _whatsapp_history_cleanup_task = None
+_whatsapp_unlink_confirmation_tasks: set[asyncio.Task] = set()
 
 
 async def _run_whatsapp_history_cleanup() -> None:
@@ -1028,6 +1029,17 @@ async def _cleanup_sessions() -> None:
         _whatsapp_history_cleanup_task.cancel()
     await task_queue.stop(wait=True, timeout=10.0)
     await whatsapp_task_queue.stop(wait=True, timeout=10.0)
+    if _whatsapp_unlink_confirmation_tasks:
+        pending_confirmations = list(_whatsapp_unlink_confirmation_tasks)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending_confirmations, return_exceptions=True),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            for confirmation_task in pending_confirmations:
+                confirmation_task.cancel()
+            await asyncio.gather(*pending_confirmations, return_exceptions=True)
     await sessions.shutdown()
 
 
@@ -3179,6 +3191,7 @@ def _whatsapp_agent_tools(
                     "course": course_labels.get(payload["course_id"], payload["course_id"]),
                     "entry": homework,
                 }
+            preview = _whatsapp_action_preview(action, payload)
             payload["_link_generation"] = link.get("linked_at")
             encoded = json.dumps(payload, ensure_ascii=False, default=str)
             if len(encoded) > 20_000:
@@ -3190,7 +3203,6 @@ def _whatsapp_agent_tools(
                 payload,
                 expected_link_generation=str(link.get("linked_at") or ""),
             )
-            preview = _whatsapp_action_preview(action, payload)
             pending_confirmations.append(
                 {"code": code, "action": action, "preview": preview}
             )
@@ -3235,8 +3247,9 @@ def _whatsapp_agent_tools(
         AgentTool(
             "prepare_action",
             "Prepare a change for explicit user confirmation. Never claim it was executed. "
-            "For send_message use recipients, subject, body; reply_message uses conversation_id, body, to; "
-            "mark_message_read uses conversation_id; mark_homework_done uses course_id, entry_id, done; "
+            "For send_message use recipients, subject, body. reply_message and mark_message_read require "
+            "message previews to be enabled and the conversation to be loaded first; reply_message uses "
+            "conversation_id, body, to; mark_message_read uses conversation_id; mark_homework_done uses course_id, entry_id, done; "
             "submit_election uses election_id, fields, selections; update_preferences uses the same nested "
             "preference fields shown by get_preferences.",
             _agent_object_schema(
@@ -3266,7 +3279,7 @@ def _whatsapp_agent_tools(
                 current = await get_whatsapp_link_for_sender(sender_id)
             except sqlite3.OperationalError as error:
                 if "no such table" in str(error).lower():
-                    return True
+                    return False
                 raise
             return bool(current and current.get("user_id") == auth.user_id and current.get("linked_at") == link.get("linked_at"))
 
@@ -3496,6 +3509,7 @@ async def _execute_whatsapp_pending_action(
     payload = pending.get("payload")
     if not isinstance(payload, dict):
         raise ValueError("Invalid action payload")
+    expected_generation = str(payload.get("_link_generation") or "")
     payload = _normalize_whatsapp_action_payload(str(action or ""), payload)
     if action == "mark_homework_done":
         return await meinunterricht_homework_done(
@@ -3534,7 +3548,6 @@ async def _execute_whatsapp_pending_action(
             auth=auth,
         )
     if action == "submit_election":
-        expected_generation = str(payload.get("_link_generation") or "")
         election_id = _agent_string(
             payload, "election_id", required=True, maximum=200
         )
@@ -3835,7 +3848,9 @@ async def _process_whatsapp_stop_immediately(incoming: IncomingWhatsAppMessage) 
         except Exception:
             logger.exception("Failed to send WhatsApp unlink confirmation")
 
-    asyncio.create_task(safe_send_unlink_confirmation())
+    confirmation_task = asyncio.create_task(safe_send_unlink_confirmation())
+    _whatsapp_unlink_confirmation_tasks.add(confirmation_task)
+    confirmation_task.add_done_callback(_whatsapp_unlink_confirmation_tasks.discard)
 
 
 async def _process_whatsapp_sender_turn(sender_key: str) -> None:

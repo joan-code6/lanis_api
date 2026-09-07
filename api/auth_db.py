@@ -624,9 +624,9 @@ async def consume_whatsapp_pairing_code(
             )
             await db.execute(
                 "INSERT INTO whatsapp_links "
-                "(user_id, whatsapp_id_hash, phone_suffix, last_inbound_at) "
-                "VALUES (?, ?, ?, ?)",
-                (user_id, whatsapp_hash, whatsapp_id[-4:], now),
+                "(user_id, whatsapp_id_hash, phone_suffix, linked_at, last_inbound_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, whatsapp_hash, whatsapp_id[-4:], uuid.uuid4().hex, now),
             )
             await db.execute(
                 "DELETE FROM whatsapp_pairing_codes WHERE code_hash = ?",
@@ -814,7 +814,7 @@ async def save_whatsapp_ai_history(
                 (user_id,),
             ) as cursor:
                 link = await cursor.fetchone()
-            if link is None or (expected_link_generation and link[1] != expected_link_generation) or (require_message_previews and not bool(link[0])):
+            if link is None or (expected_link_generation is not None and link[1] != expected_link_generation) or (require_message_previews and not bool(link[0])):
                 await db.commit()
                 return
             await db.execute(
