@@ -604,6 +604,78 @@ def test_personal_response_is_suppressed_after_unlink(monkeypatch) -> None:
     assert sent == []
 
 
+def test_ai_path_marks_incoming_message_as_read_before_answering(monkeypatch) -> None:
+    events = []
+    sent = []
+    link = {
+        "user_id": "5201:student",
+        "linked_at": "2026-09-05 12:00:00",
+        "show_message_previews": False,
+    }
+
+    async def true_result(*_args, **_kwargs):
+        return True
+
+    async def get_link(_sender_id):
+        return link
+
+    async def get_client(_user_id):
+        return SimpleNamespace(client=object(), school_id="5201", username="Student")
+
+    async def ai_response(incoming, _auth, _link):
+        events.append(("ai", incoming.message_id))
+        return "Antwort"
+
+    class Client:
+        def __init__(self, _config):
+            pass
+
+        async def mark_read(self, message_id):
+            events.append(("read", message_id))
+
+        async def send_text(self, sender_id, body, **_kwargs):
+            sent.append((sender_id, body))
+
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", true_result)
+    monkeypatch.setattr(api_module, "allow_whatsapp_message", true_result)
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", get_link)
+    monkeypatch.setattr(api_module.sessions, "_get_or_create_schulportal_client", get_client)
+    monkeypatch.setattr(api_module, "_whatsapp_ai_response", ai_response)
+    monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
+    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        api_module, "_ai_config", lambda: SimpleNamespace(configured=True)
+    )
+
+    asyncio.run(
+        api_module._process_whatsapp_message(
+            IncomingWhatsAppMessage("wamid.ai", "49123456789", "Was habe ich morgen?")
+        )
+    )
+
+    assert events == [("read", "wamid.ai"), ("ai", "wamid.ai")]
+    assert sent == [("49123456789", "Antwort")]
+
+
+def test_whatsapp_client_sends_read_receipt_payload() -> None:
+    client = api_module.WhatsAppCloudClient(SimpleNamespace(configured=True))
+    payloads = []
+
+    async def post(payload):
+        payloads.append(payload)
+
+    client._post = post
+    asyncio.run(client.mark_read("wamid.123"))
+
+    assert payloads == [
+        {
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": "wamid.123",
+        }
+    ]
+
+
 def test_sensitive_previews_default_to_counts_only() -> None:
     messages = {
         "success": True,

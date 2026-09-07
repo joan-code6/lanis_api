@@ -192,6 +192,18 @@ class WhatsAppCloudClient:
             },
         )
 
+    async def mark_read(self, message_id: str) -> None:
+        """Send a read receipt for an incoming message."""
+        if not self.config.configured:
+            raise RuntimeError("WhatsApp Cloud API is not configured")
+        await self._post(
+            {
+                "messaging_product": "whatsapp",
+                "status": "read",
+                "message_id": message_id,
+            }
+        )
+
     async def _send(self, recipient: str, message: Dict[str, Any]) -> None:
         if not self.config.configured:
             raise RuntimeError("WhatsApp Cloud API is not configured")
@@ -199,29 +211,34 @@ class WhatsAppCloudClient:
             raise ValueError("Invalid WhatsApp recipient")
         if message.get("type") == "text" and not message.get("text", {}).get("body"):
             raise ValueError("WhatsApp message body cannot be empty")
+        await self._post(
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": recipient,
+                **message,
+            }
+        )
+
+    async def _post(self, payload: Dict[str, Any]) -> None:
         url = (
             "https://graph.facebook.com/"
             f"{self.config.graph_api_version}/{self.config.phone_number_id}/messages"
         )
 
-        def _send() -> None:
+        def _request() -> None:
             response = requests.post(
                 url,
                 headers={
                     "Authorization": f"Bearer {self.config.access_token}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "messaging_product": "whatsapp",
-                    "recipient_type": "individual",
-                    "to": recipient,
-                    **message,
-                },
+                json=payload,
                 timeout=15,
             )
             response.raise_for_status()
 
-        await run_in_threadpool(_send)
+        await run_in_threadpool(_request)
 
 
 def verify_webhook_signature(body: bytes, signature: str, app_secret: str) -> bool:
