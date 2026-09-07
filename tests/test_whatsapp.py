@@ -23,6 +23,7 @@ from api.whatsapp import (
     format_substitutions,
     format_timetable,
     pairing_code,
+    normalize_whatsapp_formatting,
     split_message,
     verify_webhook_signature,
 )
@@ -672,8 +673,15 @@ def test_whatsapp_client_sends_read_receipt_payload() -> None:
             "messaging_product": "whatsapp",
             "status": "read",
             "message_id": "wamid.123",
+            "typing_indicator": {"type": "text"},
         }
     ]
+
+
+def test_whatsapp_formatting_uses_supported_syntax() -> None:
+    assert normalize_whatsapp_formatting(
+        "• item\n**bold**\n## Heading\n* another item"
+    ) == "- item\n*bold*\n*Heading*\n- another item"
 
 
 def test_sensitive_previews_default_to_counts_only() -> None:

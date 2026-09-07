@@ -89,6 +89,7 @@ class WhatsAppCloudClient:
         *,
         continuation_check: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> None:
+        body = normalize_whatsapp_formatting(body)
         for chunk in split_message(body):
             if continuation_check is not None and not await continuation_check():
                 return
@@ -193,7 +194,7 @@ class WhatsAppCloudClient:
         )
 
     async def mark_read(self, message_id: str) -> None:
-        """Send a read receipt for an incoming message."""
+        """Send a read receipt and show that the assistant is typing."""
         if not self.config.configured:
             raise RuntimeError("WhatsApp Cloud API is not configured")
         await self._post(
@@ -201,6 +202,7 @@ class WhatsAppCloudClient:
                 "messaging_product": "whatsapp",
                 "status": "read",
                 "message_id": message_id,
+                "typing_indicator": {"type": "text"},
             }
         )
 
@@ -576,6 +578,19 @@ def truncate_message(body: str) -> str:
     if len(body) <= MAX_MESSAGE_LENGTH:
         return body
     return body[: MAX_MESSAGE_LENGTH - 2].rstrip() + "…"
+
+
+def normalize_whatsapp_formatting(body: str) -> str:
+    """Normalize common Markdown output to WhatsApp's supported text syntax."""
+    lines = []
+    for line in body.splitlines():
+        line = re.sub(r"^(\s*)•\s+", r"\1- ", line)
+        line = re.sub(r"^(\s*)\*\s+", r"\1- ", line)
+        line = re.sub(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", r"*\1*", line)
+        line = re.sub(r"\*\*(.+?)\*\*", r"*\1*", line)
+        line = re.sub(r"__(.+?)__", r"_\1_", line)
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def split_message(body: str) -> List[str]:
