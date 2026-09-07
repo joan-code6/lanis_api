@@ -257,6 +257,34 @@ def test_pending_action_is_single_use_and_bound_to_sender(tmp_path, monkeypatch)
     ) is None
 
 
+def test_pending_action_requires_the_same_active_link_generation(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    asyncio.run(auth_db.initialize())
+    pairing_code, _ = asyncio.run(auth_db.create_whatsapp_pairing_code("5201:student"))
+    asyncio.run(auth_db.consume_whatsapp_pairing_code(pairing_code, "491111111111"))
+    link = asyncio.run(auth_db.get_whatsapp_link_for_sender("491111111111"))
+    assert link is not None
+    asyncio.run(auth_db.delete_whatsapp_link_for_sender("491111111111"))
+
+    with pytest.raises(LookupError, match="no longer active"):
+        asyncio.run(
+            auth_db.create_whatsapp_pending_action(
+                "5201:student",
+                "491111111111",
+                "mark_message_read",
+                {"conversation_id": "conversation-1"},
+                expected_link_generation=link["linked_at"],
+            )
+        )
+
+    with sqlite3.connect(auth_db.DB_PATH) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM whatsapp_pending_actions"
+        ).fetchone()[0] == 0
+
+
 def test_pairing_is_single_use_and_replaces_previous_phone(
     tmp_path, monkeypatch
 ) -> None:
@@ -571,6 +599,26 @@ def test_whatsapp_client_sends_every_confirmation_chunk() -> None:
     assert sent[-1].endswith("BESTÄTIGEN ABC123")
 
 
+def test_whatsapp_client_rechecks_link_before_each_chunk() -> None:
+    body = "payload:" + ("x" * 5000)
+    client = api_module.WhatsAppCloudClient(SimpleNamespace())
+    sent = []
+
+    async def send(_recipient, payload):
+        sent.append(payload["text"]["body"])
+
+    checks = iter([True, False])
+
+    async def still_linked():
+        return next(checks)
+
+    client._send = send
+    asyncio.run(client.send_text("49123456789", body, continuation_check=still_linked))
+
+    assert len(sent) == 1
+    assert "".join(sent) != body
+
+
 def test_sender_queue_uses_one_worker_and_preserves_turn_order(monkeypatch) -> None:
     sender = "49123456789"
     sender_key = hashlib.sha256(sender.encode()).hexdigest()
@@ -614,7 +662,7 @@ def test_parallel_prepare_action_keeps_one_valid_confirmation(monkeypatch) -> No
     created = []
     confirmations = []
 
-    async def create(*args):
+    async def create(*args, **kwargs):
         created.append(args)
         await asyncio.sleep(0)
         return "ABC123"
@@ -642,6 +690,49 @@ def test_parallel_prepare_action_keeps_one_valid_confirmation(monkeypatch) -> No
     assert len(confirmations) == 1
     assert sum(result["success"] is True for result in results) == 1
     assert any("Only one change" in result.get("error", "") for result in results)
+
+
+def test_detailed_course_homework_is_bound_to_parent_course(monkeypatch) -> None:
+    confirmations = []
+
+    async def get_course(_course_id, _auth):
+        return {
+            "success": True,
+            "course_id": "course-a",
+            "course_name": "Mathematik",
+            "entries": [{"entry_id": "entry-1", "homework": "Aufgabe 1"}],
+        }
+
+    async def create(*_args, **_kwargs):
+        return "ABC123"
+
+    async def scenario():
+        tools = api_module._whatsapp_agent_tools(
+            SimpleNamespace(user_id="5201:student", client=object()),
+            {"show_message_previews": False, "linked_at": "generation-1"},
+            "49123456789",
+            confirmations,
+        )
+        by_name = {tool.name: tool for tool in tools}
+        await by_name["get_course"].handler({"course_id": "course-a"})
+        return await by_name["prepare_action"].handler(
+            {
+                "action": "mark_homework_done",
+                "payload": {
+                    "course_id": "course-b",
+                    "entry_id": "entry-1",
+                    "done": True,
+                },
+            }
+        )
+
+    monkeypatch.setattr(api_module, "meinunterricht_course", get_course)
+    monkeypatch.setattr(api_module, "create_whatsapp_pending_action", create)
+    rejected = asyncio.run(scenario())
+
+    assert rejected["success"] is False
+    assert "Load the course homework" in rejected["error"]
+    assert confirmations == []
 
 
 def test_course_entry_only_accepts_urls_returned_by_course_tools(monkeypatch) -> None:

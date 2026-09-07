@@ -130,3 +130,13 @@ def test_submit_requires_confirmation_before_upstream_post() -> None:
     confirmed = wahlen_submit(Client(), "18", submission, confirmed=True)
     assert confirmed["success"] is True
     assert Client.session.post_calls == 1
+
+    revoked = wahlen_submit(
+        Client(),
+        "18",
+        submission,
+        confirmed=True,
+        pre_submit_check=lambda: False,
+    )
+    assert revoked["success"] is False
+    assert Client.session.post_calls == 1

@@ -93,6 +93,7 @@ from .auth_db import (
     reserve_whatsapp_message,
     save_whatsapp_ai_history,
     save_whatsapp_preferences,
+    whatsapp_link_matches_sync,
 )
 from .file_cache import (
     get_file_hash,
@@ -2826,12 +2827,12 @@ def _whatsapp_agent_tools(
     recipient_labels: Dict[str, str] = {}
     conversation_labels: Dict[str, str] = {}
     course_labels: Dict[str, str] = {}
-    homework_labels: Dict[str, str] = {}
+    homework_labels: Dict[tuple[str, str], str] = {}
 
-    def remember_course_labels(value: Any) -> None:
+    def remember_course_labels(value: Any, parent_course_id: str = "") -> None:
         if isinstance(value, list):
             for item in value:
-                remember_course_labels(item)
+                remember_course_labels(item, parent_course_id)
             return
         if not isinstance(value, dict):
             return
@@ -2842,11 +2843,12 @@ def _whatsapp_agent_tools(
         if entry_id:
             label = value.get("homework") or value.get("topic") or value.get("subject") or value.get("text") or value.get("name") or value.get("title")
             if label:
-                course_key = value.get("book_id") or value.get("course_id")
-                homework_labels[str(entry_id)] = {"course_id": str(course_key) if course_key else "", "label": str(label)}
+                course_key = value.get("book_id") or value.get("course_id") or parent_course_id
+                if course_key:
+                    homework_labels[(str(course_key), str(entry_id))] = str(label)
         for item in value.values():
             if isinstance(item, (dict, list)):
-                remember_course_labels(item)
+                remember_course_labels(item, str(course_id or parent_course_id))
 
     async def previews_enabled() -> bool:
         current = await get_whatsapp_link_for_sender(sender_id)
@@ -3090,6 +3092,12 @@ def _whatsapp_agent_tools(
             top_k=top_k,
             include_messages=previews_current,
             preview_check=previews_enabled,
+            message_embedding_guard=lambda: whatsapp_link_matches_sync(
+                sender_id,
+                auth.user_id,
+                str(link.get("linked_at") or ""),
+                require_message_previews=True,
+            ),
         )
         if previews_current and any(item.get("category") == "Nachrichten" for item in results):
             turn_state["preview_data_used"] = True
@@ -3162,20 +3170,25 @@ def _whatsapp_agent_tools(
                     return {"success": False, "error": "Load the conversation first so the thread can be verified"}
                 payload["_preview_conversation"] = conversation_labels.get(conversation_id, conversation_id)
             if action == "mark_homework_done":
+                course_id = str(payload["course_id"])
                 entry_id = payload["entry_id"]
-                homework = homework_labels.get(entry_id)
-                if homework is None or (homework.get("course_id") and str(payload.get("course_id")) != homework["course_id"]):
+                homework = homework_labels.get((course_id, entry_id))
+                if homework is None:
                     return {"success": False, "error": "Load the course homework first so the item can be verified"}
                 payload["_preview_homework"] = {
                     "course": course_labels.get(payload["course_id"], payload["course_id"]),
-                    "entry": homework["label"],
+                    "entry": homework,
                 }
             payload["_link_generation"] = link.get("linked_at")
             encoded = json.dumps(payload, ensure_ascii=False, default=str)
             if len(encoded) > 20_000:
                 return {"success": False, "error": "Action payload is too large"}
             code = await create_whatsapp_pending_action(
-                auth.user_id, sender_id, action, payload
+                auth.user_id,
+                sender_id,
+                action,
+                payload,
+                expected_link_generation=str(link.get("linked_at") or ""),
             )
             preview = _whatsapp_action_preview(action, payload)
             pending_confirmations.append(
@@ -3477,7 +3490,7 @@ async def _whatsapp_ai_response(
 
 
 async def _execute_whatsapp_pending_action(
-    pending: Dict[str, Any], auth: AuthSession
+    pending: Dict[str, Any], auth: AuthSession, *, sender_id: str
 ) -> Dict[str, object]:
     action = pending.get("action")
     payload = pending.get("payload")
@@ -3521,6 +3534,7 @@ async def _execute_whatsapp_pending_action(
             auth=auth,
         )
     if action == "submit_election":
+        expected_generation = str(payload.get("_link_generation") or "")
         election_id = _agent_string(
             payload, "election_id", required=True, maximum=200
         )
@@ -3532,7 +3546,18 @@ async def _execute_whatsapp_pending_action(
             selections=payload.get("selections") or {},
             confirm=True,
         )
-        return await submit_wahlen(election_id, request, auth)
+        submission = request.model_dump() if hasattr(request, "model_dump") else request.dict()
+        return await run_in_threadpool(
+            auth.client.wahlen_submit,
+            election_id,
+            submission,
+            True,
+            lambda: whatsapp_link_matches_sync(
+                sender_id,
+                auth.user_id,
+                expected_generation,
+            ),
+        )
     if action == "update_preferences":
         request = UserPreferencesRequest(**payload)
         return await update_account_preferences(request, auth)
@@ -3569,7 +3594,9 @@ async def _confirm_whatsapp_action(
         if latest_link is None or latest_link.get("user_id") != pending.get("user_id") or (expected_generation and latest_link.get("linked_at") != expected_generation):
             await client.send_text(incoming.sender_id, "⚠️ Die Aktion konnte nicht bestätigt werden.")
             return
-        result = await _execute_whatsapp_pending_action(pending, auth)
+        result = await _execute_whatsapp_pending_action(
+            pending, auth, sender_id=incoming.sender_id
+        )
         if not result.get("success"):
             raise RuntimeError("Portal rejected action")
     except Exception:
@@ -3582,7 +3609,7 @@ async def _confirm_whatsapp_action(
             await save_whatsapp_ai_history(
                 str(pending.get("user_id") or ""),
                 [*failure_history, {"role": "user", "content": f"BESTÄTIGEN {code}"}, {"role": "assistant", "content": "⚠️ Die bestätigte Änderung konnte nicht ausgeführt werden."}],
-                require_message_previews=False,
+                require_message_previews=bool(failure_history),
                 expected_link_generation=(pending.get("payload") or {}).get("_link_generation"),
             )
         except Exception:
@@ -3953,7 +3980,23 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
     ) or (link.get("show_message_previews") and not current_link.get("show_message_previews")):
         logger.info("Suppressed WhatsApp response after account unlink/relink")
         return
-    await client.send_text(incoming.sender_id, response)
+    async def response_still_allowed() -> bool:
+        latest = await get_whatsapp_link_for_sender(incoming.sender_id)
+        return bool(
+            latest
+            and latest.get("user_id") == link.get("user_id")
+            and latest.get("linked_at") == link.get("linked_at")
+            and (
+                not link.get("show_message_previews")
+                or latest.get("show_message_previews")
+            )
+        )
+
+    await client.send_text(
+        incoming.sender_id,
+        response,
+        continuation_check=response_still_allowed,
+    )
 
 
 async def _whatsapp_command_response(

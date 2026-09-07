@@ -13,6 +13,7 @@ import base64
 import hashlib
 import hmac
 import secrets
+import sqlite3
 import time
 import uuid
 from collections import defaultdict
@@ -826,7 +827,12 @@ async def save_whatsapp_ai_history(
 
 
 async def create_whatsapp_pending_action(
-    user_id: str, whatsapp_id: str, action: str, payload: Dict[str, Any]
+    user_id: str,
+    whatsapp_id: str,
+    action: str,
+    payload: Dict[str, Any],
+    *,
+    expected_link_generation: Optional[str] = None,
 ) -> str:
     """Store an encrypted action proposal and return its short confirmation code."""
     user_id = _canonical_user_id(user_id)
@@ -834,6 +840,17 @@ async def create_whatsapp_pending_action(
     encrypted = _encrypt_password(json.dumps(payload, ensure_ascii=False))
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if expected_link_generation is not None:
+                async with db.execute(
+                    "SELECT linked_at FROM whatsapp_links "
+                    "WHERE user_id = ? AND whatsapp_id_hash = ?",
+                    (user_id, _whatsapp_id_hash(whatsapp_id)),
+                ) as cursor:
+                    link = await cursor.fetchone()
+                if link is None or link[0] != expected_link_generation:
+                    await db.commit()
+                    raise LookupError("WhatsApp connection is no longer active")
             await db.execute(
                 "DELETE FROM whatsapp_pending_actions WHERE expires_at <= ? OR user_id = ?",
                 (datetime.utcnow(), user_id),
@@ -859,6 +876,31 @@ async def create_whatsapp_pending_action(
                     continue
             await db.commit()
     return code
+
+
+def whatsapp_link_matches_sync(
+    whatsapp_id: str,
+    user_id: str,
+    expected_link_generation: str,
+    *,
+    require_message_previews: bool = False,
+) -> bool:
+    """Recheck a link from a worker thread immediately before an external sink."""
+    user_id = _canonical_user_id(user_id)
+    try:
+        with sqlite3.connect(DB_PATH) as db:
+            row = db.execute(
+                "SELECT show_message_previews, linked_at FROM whatsapp_links "
+                "WHERE user_id = ? AND whatsapp_id_hash = ?",
+                (user_id, _whatsapp_id_hash(whatsapp_id)),
+            ).fetchone()
+    except sqlite3.Error:
+        return False
+    return bool(
+        row
+        and row[1] == expected_link_generation
+        and (not require_message_previews or bool(row[0]))
+    )
 
 
 async def consume_whatsapp_pending_action(

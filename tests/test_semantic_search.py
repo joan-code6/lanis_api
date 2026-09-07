@@ -61,6 +61,28 @@ def test_message_free_semantic_index_never_fetches_or_embeds_messages() -> None:
     assert set(index.documents) == {"sem-crs-course-1"}
 
 
+def test_message_embedding_guard_runs_at_worker_request_boundary() -> None:
+    engine = SemanticSearchEngine()
+    embeddings = _EmbeddingClient()
+    portal = _PortalClient()
+    engine._client = embeddings
+    index = SemanticIndex("user-1")
+
+    asyncio.run(
+        engine._build_index(
+            "user-1",
+            index,
+            portal,
+            include_messages=True,
+            preview_check=lambda: asyncio.sleep(0, result=True),
+            message_embedding_guard=lambda: False,
+        )
+    )
+
+    assert embeddings.texts == []
+    assert index.is_empty()
+
+
 def test_private_and_full_semantic_indices_are_separate() -> None:
     engine = SemanticSearchEngine()
 

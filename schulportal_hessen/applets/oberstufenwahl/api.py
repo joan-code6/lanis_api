@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
@@ -520,6 +520,7 @@ def wahlen_submit(
     election_id: str,
     submission: Dict[str, Any],
     confirmed: bool = False,
+    pre_submit_check: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
@@ -541,6 +542,11 @@ def wahlen_submit(
     kurse = serialize_oberstufenwahl_submission(form, submission)
 
     try:
+        if pre_submit_check is not None and not pre_submit_check():
+            return {
+                "success": False,
+                "error": "Submission authorization expired",
+            }
         response = self.session.post(
             f"{self.BASE_START_URL}/oberstufenwahl.php",
             data={

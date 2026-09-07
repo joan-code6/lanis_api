@@ -24,6 +24,7 @@ MAX_AGENT_TOOL_CALLS = 32
 MAX_TOOL_RESULT_CHARS = 60_000
 MAX_AGENT_CONTEXT_CHARS = 240_000
 MAX_AGENT_RESPONSE_CHARS = 3_500
+MAX_AI_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -114,19 +115,38 @@ class OpenRouterClient:
                     json=payload,
                     timeout=(5, 75),
                     allow_redirects=False,
+                    stream=True,
                 )
             except requests.RequestException as error:
                 raise AIProviderError("AI endpoint request failed") from error
-            if response.is_redirect:
-                raise AIProviderError("AI endpoint attempted a redirect")
-            if response.status_code >= 400:
-                raise AIProviderError(
-                    f"AI endpoint returned HTTP {response.status_code}"
-                )
             try:
-                value = response.json()
-            except ValueError as error:
-                raise AIProviderError("AI endpoint returned invalid JSON") from error
+                if response.is_redirect:
+                    raise AIProviderError("AI endpoint attempted a redirect")
+                if response.status_code >= 400:
+                    raise AIProviderError(
+                        f"AI endpoint returned HTTP {response.status_code}"
+                    )
+                content_length = response.headers.get("Content-Length", "")
+                if (
+                    content_length.isdigit()
+                    and int(content_length) > MAX_AI_PROVIDER_RESPONSE_BYTES
+                ):
+                    raise AIProviderError("AI endpoint response was too large")
+                body = bytearray()
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    body.extend(chunk)
+                    if len(body) > MAX_AI_PROVIDER_RESPONSE_BYTES:
+                        raise AIProviderError("AI endpoint response was too large")
+                try:
+                    value = json.loads(body.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError) as error:
+                    raise AIProviderError("AI endpoint returned invalid JSON") from error
+            except requests.RequestException as error:
+                raise AIProviderError("AI endpoint request failed") from error
+            finally:
+                response.close()
             if not isinstance(value, dict):
                 raise AIProviderError("AI endpoint returned an invalid response")
             if isinstance(value.get("error"), dict):

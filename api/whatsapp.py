@@ -9,7 +9,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import quote
 
 import requests
@@ -82,8 +82,16 @@ class WhatsAppCloudClient:
     def __init__(self, config: WhatsAppConfig):
         self.config = config
 
-    async def send_text(self, recipient: str, body: str) -> None:
+    async def send_text(
+        self,
+        recipient: str,
+        body: str,
+        *,
+        continuation_check: Optional[Callable[[], Awaitable[bool]]] = None,
+    ) -> None:
         for chunk in split_message(body):
+            if continuation_check is not None and not await continuation_check():
+                return
             await self._send(
                 recipient,
                 {

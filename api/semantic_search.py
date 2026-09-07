@@ -268,6 +268,7 @@ class SemanticSearchEngine:
         top_k: int = 20,
         include_messages: bool = True,
         preview_check: Optional[Callable[[], Awaitable[bool]]] = None,
+        message_embedding_guard: Optional[Callable[[], bool]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic search across all data sources.
@@ -294,6 +295,7 @@ class SemanticSearchEngine:
                         auth_client,
                         include_messages=include_messages,
                         preview_check=preview_check,
+                        message_embedding_guard=message_embedding_guard,
                     )
                     if index.is_stale():
                         return []
@@ -344,6 +346,7 @@ class SemanticSearchEngine:
         *,
         include_messages: bool = True,
         preview_check: Optional[Callable[[], Awaitable[bool]]] = None,
+        message_embedding_guard: Optional[Callable[[], bool]] = None,
     ) -> None:
         """Fetch all data sources, embed them, and populate the index."""
         client = self._get_client()
@@ -404,8 +407,18 @@ class SemanticSearchEngine:
         if include_messages and preview_check is not None and not await preview_check():
             return
         texts = [doc[1] for doc in all_docs]
+
+        def embed_documents() -> List[List[float]]:
+            if (
+                include_messages
+                and message_embedding_guard is not None
+                and not message_embedding_guard()
+            ):
+                return []
+            return client.embed(texts)
+
         try:
-            embeddings = await run_in_threadpool(client.embed, texts)
+            embeddings = await run_in_threadpool(embed_documents)
         except Exception as e:
             logger.error("Failed to batch-embed documents: %s", e)
             return

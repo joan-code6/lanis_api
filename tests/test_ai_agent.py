@@ -15,13 +15,20 @@ from api.ai_agent import (
 
 
 class _Response:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, *, body=None, headers=None):
         self.payload = payload
         self.status_code = status_code
         self.is_redirect = 300 <= status_code < 400
+        self.body = body if body is not None else json.dumps(payload).encode()
+        self.headers = headers or {}
+        self.closed = False
 
-    def json(self):
-        return self.payload
+    def iter_content(self, chunk_size):
+        for start in range(0, len(self.body), chunk_size):
+            yield self.body[start : start + chunk_size]
+
+    def close(self):
+        self.closed = True
 
 
 def _config():
@@ -233,3 +240,31 @@ def test_client_wraps_transport_errors(monkeypatch):
 
     with pytest.raises(AIProviderError, match="request failed"):
         asyncio.run(OpenRouterClient(_config()).complete([], []))
+
+
+def test_client_rejects_oversized_provider_response(monkeypatch):
+    response = _Response(
+        {},
+        body=b"x",
+        headers={"Content-Length": str(2 * 1024 * 1024 + 1)},
+    )
+    monkeypatch.setattr(
+        "api.ai_agent.requests.post", lambda *_args, **_kwargs: response
+    )
+
+    with pytest.raises(AIProviderError, match="too large"):
+        asyncio.run(OpenRouterClient(_config()).complete([], []))
+
+    assert response.closed is True
+
+
+def test_client_rejects_oversized_stream_without_content_length(monkeypatch):
+    response = _Response({}, body=b"x" * (2 * 1024 * 1024 + 1))
+    monkeypatch.setattr(
+        "api.ai_agent.requests.post", lambda *_args, **_kwargs: response
+    )
+
+    with pytest.raises(AIProviderError, match="too large"):
+        asyncio.run(OpenRouterClient(_config()).complete([], []))
+
+    assert response.closed is True
