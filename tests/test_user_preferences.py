@@ -41,7 +41,7 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "theme_mode": "system",
         "theme_color": "cyan",
     }
-    assert defaults["sidebar"] == {"order": auth_db.DEFAULT_SIDEBAR_ORDER}
+    assert defaults["sidebar"] == {"order": auth_db.DEFAULT_SIDEBAR_ORDER, "hidden_items": []}
     assert defaults["dashboard"]["pinned_modules"] == []
     assert defaults["dashboard"]["hidden_modules"] == []
     assert defaults["homework"] == {"completed_display": "green"}
@@ -158,8 +158,26 @@ def test_sidebar_preferences_reject_unknown_and_oversized_orders() -> None:
 
     with pytest.raises(ValidationError):
         SidebarPreferencesRequest(
-            order=["dashboard"] * (len(auth_db.DEFAULT_SIDEBAR_ORDER) + 1)
+            order=["dashboard"] * (len(auth_db.DEFAULT_SIDEBAR_ORDER) + 11)
         )
+
+
+def test_sidebar_preferences_accept_search_and_dividers() -> None:
+    accepted = SidebarPreferencesRequest(
+        order=["search", "dashboard", "divider-1788796958596", "messages"]
+    )
+    assert accepted.order == ["search", "dashboard", "divider-1788796958596", "messages"]
+
+    with pytest.raises(ValidationError):
+        SidebarPreferencesRequest(order=["divider-invalid"])
+
+
+def test_sidebar_preferences_hidden_items() -> None:
+    accepted = SidebarPreferencesRequest(hidden_items=["messages", "dateispeicher"])
+    assert accepted.hidden_items == ["messages", "dateispeicher"]
+
+    with pytest.raises(ValidationError):
+        SidebarPreferencesRequest(hidden_items=["unknown"])
 
 
 def test_sidebar_preferences_are_normalized_before_saving(monkeypatch) -> None:

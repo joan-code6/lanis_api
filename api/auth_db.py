@@ -92,6 +92,7 @@ DEFAULT_NOTIFICATION_PREFERENCES: Dict[str, Any] = {
     "show_preview": True,
 }
 DEFAULT_SIDEBAR_ORDER = [
+    "search",
     "dashboard",
     "messages",
     "dateispeicher",
@@ -112,6 +113,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     },
     "sidebar": {
         "order": DEFAULT_SIDEBAR_ORDER,
+        "hidden_items": [],
     },
     "dashboard": {
         "pinned_modules": [],

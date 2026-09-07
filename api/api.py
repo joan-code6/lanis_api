@@ -326,6 +326,7 @@ class DashboardPreferencesRequest(BaseModel):
 
 
 SidebarItemId = Literal[
+    "search",
     "dashboard",
     "messages",
     "dateispeicher",
@@ -342,12 +343,23 @@ SidebarItemId = Literal[
 
 
 class SidebarPreferencesRequest(BaseModel):
-    order: Optional[List[SidebarItemId]] = None
+    order: Optional[List[str]] = None
+    hidden_items: Optional[List[SidebarItemId]] = None
 
     @field_validator("order")
     def validate_order(cls, value):
-        if value is not None and len(value) > len(DEFAULT_SIDEBAR_ORDER):
-            raise ValueError("Sidebar order contains too many entries")
+        if value is not None:
+            if len(value) > len(DEFAULT_SIDEBAR_ORDER) + 10:
+                raise ValueError("Sidebar order contains too many entries")
+            for item in value:
+                if not re.match(r"^divider-\d+$", item) and item not in SidebarItemId.__args__:
+                    raise ValueError(f"Invalid sidebar item: {item}")
+        return value
+
+    @field_validator("hidden_items")
+    def validate_hidden_items(cls, value):
+        if value is not None and len(value) > len(SidebarItemId.__args__):
+            raise ValueError("Too many hidden sidebar items")
         return value
 
 
