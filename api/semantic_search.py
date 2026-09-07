@@ -11,7 +11,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -134,15 +134,15 @@ class SemanticSearchEngine:
     """Manages semantic indices and embedding clients across all users."""
 
     def __init__(self):
-        self.indices: Dict[str, SemanticIndex] = {}
+        self.indices: Dict[Tuple[str, bool], SemanticIndex] = {}
         self._client: Optional[EmbeddingClient] = None
-        self._build_locks: Dict[str, asyncio.Lock] = {}
-        self._last_access: Dict[str, float] = {}
+        self._build_locks: Dict[Tuple[str, bool], asyncio.Lock] = {}
+        self._last_access: Dict[Tuple[str, bool], float] = {}
 
-    def _get_build_lock(self, user_id: str) -> asyncio.Lock:
-        if user_id not in self._build_locks:
-            self._build_locks[user_id] = asyncio.Lock()
-        return self._build_locks[user_id]
+    def _get_build_lock(self, key: Tuple[str, bool]) -> asyncio.Lock:
+        if key not in self._build_locks:
+            self._build_locks[key] = asyncio.Lock()
+        return self._build_locks[key]
 
     def _evict_stale(self) -> None:
         cutoff = time.time() - 2 * SemanticIndex.INDEX_TTL
@@ -157,28 +157,33 @@ class SemanticSearchEngine:
 
     def _get_client(self) -> Optional[EmbeddingClient]:
         if self._client is None:
-            api_url = os.getenv("AI_API_URL")
-            api_key = os.getenv("AI_API_KEY")
-            model = os.getenv("AI_EMBEDDING_MODEL", "google/gemini-embedding-2")
+            configured_endpoint = os.getenv("AI_API_URL") or os.getenv("ai_endpoint")
+            api_url = configured_endpoint.rstrip("/") if configured_endpoint else None
+            if api_url and api_url.endswith("/chat/completions"):
+                api_url = api_url[: -len("/chat/completions")]
+            api_key = os.getenv("AI_API_KEY") or os.getenv("ai_api_key")
+            model = os.getenv("AI_EMBEDDING_MODEL") or "google/gemini-embedding-2"
             if api_url and api_key:
                 self._client = EmbeddingClient(api_url, api_key, model)
                 logger.info("Semantic search embedding client initialized (model=%s)", model)
             else:
-                logger.debug("Semantic search disabled — AI_API_URL / AI_API_KEY not set")
+                logger.debug("Semantic search disabled — AI endpoint/API key not set")
         return self._client
 
-    def get_index(self, user_id: str) -> SemanticIndex:
-        self._last_access[user_id] = time.time()
-        if user_id not in self.indices:
-            self.indices[user_id] = SemanticIndex(user_id)
-        return self.indices[user_id]
+    def get_index(self, user_id: str, include_messages: bool = True) -> SemanticIndex:
+        key = (user_id, include_messages)
+        self._last_access[key] = time.time()
+        if key not in self.indices:
+            self.indices[key] = SemanticIndex(user_id)
+        return self.indices[key]
 
     def invalidate(self, user_id: str) -> None:
-        self.indices.pop(user_id, None)
-        self._last_access.pop(user_id, None)
-        lock = self._build_locks.get(user_id)
-        if lock is None or not lock.locked():
-            self._build_locks.pop(user_id, None)
+        for key in ((user_id, True), (user_id, False)):
+            self.indices.pop(key, None)
+            self._last_access.pop(key, None)
+            lock = self._build_locks.get(key)
+            if lock is None or not lock.locked():
+                self._build_locks.pop(key, None)
 
     # --- Document preparation helpers ---
 
@@ -261,6 +266,9 @@ class SemanticSearchEngine:
         query: str,
         auth_client: Any,
         top_k: int = 20,
+        include_messages: bool = True,
+        preview_check: Optional[Callable[[], Awaitable[bool]]] = None,
+        message_embedding_guard: Optional[Callable[[], bool]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic search across all data sources.
@@ -271,22 +279,38 @@ class SemanticSearchEngine:
         client = self._get_client()
         if not client:
             return []
+        if preview_check is not None and include_messages and not await preview_check():
+            include_messages = False
 
         self._evict_stale()
-        index = self.get_index(user_id)
+        key = (user_id, include_messages)
+        index = self.get_index(user_id, include_messages)
 
         if index.is_empty() or index.is_stale():
-            async with self._get_build_lock(user_id):
+            async with self._get_build_lock(key):
                 if index.is_empty() or index.is_stale():
-                    await self._build_index(user_id, index, auth_client)
+                    await self._build_index(
+                        user_id,
+                        index,
+                        auth_client,
+                        include_messages=include_messages,
+                        preview_check=preview_check,
+                        message_embedding_guard=message_embedding_guard,
+                    )
+                    if index.is_stale():
+                        return []
 
         if index.is_empty():
+            return []
+        if preview_check is not None and include_messages and not await preview_check():
             return []
 
         try:
             query_embedding = await run_in_threadpool(client.embed_single, query)
         except Exception as e:
             logger.error("Failed to embed query: %s", e)
+            return []
+        if preview_check is not None and include_messages and not await preview_check():
             return []
 
         # Search
@@ -319,6 +343,10 @@ class SemanticSearchEngine:
         user_id: str,
         index: SemanticIndex,
         auth_client: Any,
+        *,
+        include_messages: bool = True,
+        preview_check: Optional[Callable[[], Awaitable[bool]]] = None,
+        message_embedding_guard: Optional[Callable[[], bool]] = None,
     ) -> None:
         """Fetch all data sources, embed them, and populate the index."""
         client = self._get_client()
@@ -328,14 +356,18 @@ class SemanticSearchEngine:
         all_docs: List[Tuple[str, str, str, str, str, str]] = []  # (id, text, title, subtitle, href, icon)
 
         # --- Messages ---
-        try:
-            msg_res = await run_in_threadpool(auth_client.nachrichten_get_headers, "All", 0)
-            if msg_res.get("success") and msg_res.get("conversations"):
-                messages = msg_res["conversations"]
-                for doc_id, text, title, subtitle, href in self._prepare_message_docs(messages):
-                    all_docs.append((doc_id, text, title, subtitle, href, "ChatBubbleLeftRightIcon"))
-        except Exception as e:
-            logger.warning("Failed to fetch messages for semantic index: %s", e)
+        if include_messages:
+            try:
+                msg_res = await run_in_threadpool(auth_client.nachrichten_get_headers, "All", 0)
+                if msg_res.get("success") and msg_res.get("conversations"):
+                    messages = msg_res["conversations"]
+                    for doc_id, text, title, subtitle, href in self._prepare_message_docs(messages):
+                        all_docs.append((doc_id, text, title, subtitle, href, "ChatBubbleLeftRightIcon"))
+            except Exception as e:
+                logger.warning("Failed to fetch messages for semantic index: %s", e)
+
+        if include_messages and preview_check is not None and not await preview_check():
+            return
 
         # --- Courses ---
         try:
@@ -372,9 +404,21 @@ class SemanticSearchEngine:
             return
 
         # Batch embed all texts
+        if include_messages and preview_check is not None and not await preview_check():
+            return
         texts = [doc[1] for doc in all_docs]
+
+        def embed_documents() -> List[List[float]]:
+            if (
+                include_messages
+                and message_embedding_guard is not None
+                and not message_embedding_guard()
+            ):
+                return []
+            return client.embed(texts)
+
         try:
-            embeddings = await run_in_threadpool(client.embed, texts)
+            embeddings = await run_in_threadpool(embed_documents)
         except Exception as e:
             logger.error("Failed to batch-embed documents: %s", e)
             return

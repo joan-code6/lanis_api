@@ -9,7 +9,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import quote
 
 import requests
@@ -18,6 +18,9 @@ from fastapi.concurrency import run_in_threadpool
 MAX_MESSAGE_LENGTH = 3900
 PAIRING_PATTERN = re.compile(
     r"(?:^|\s)LANIS\s+([A-Z0-9]{4}-[A-Z0-9]{4})(?:\s|$)", re.IGNORECASE
+)
+CONFIRM_ACTION_PATTERN = re.compile(
+    r"^\s*(?:BESTÄTIGEN|BESTAETIGEN|CONFIRM)\s+([A-Z0-9]{6})\s*$", re.IGNORECASE
 )
 
 
@@ -79,14 +82,23 @@ class WhatsAppCloudClient:
     def __init__(self, config: WhatsAppConfig):
         self.config = config
 
-    async def send_text(self, recipient: str, body: str) -> None:
-        await self._send(
-            recipient,
-            {
-                "type": "text",
-                "text": {"preview_url": False, "body": truncate_message(body)},
-            },
-        )
+    async def send_text(
+        self,
+        recipient: str,
+        body: str,
+        *,
+        continuation_check: Optional[Callable[[], Awaitable[bool]]] = None,
+    ) -> None:
+        for chunk in split_message(body):
+            if continuation_check is not None and not await continuation_check():
+                return
+            await self._send(
+                recipient,
+                {
+                    "type": "text",
+                    "text": {"preview_url": False, "body": chunk},
+                },
+            )
 
     async def send_menu(self, recipient: str, body: str) -> None:
         """Send the assistant's primary navigation as a native WhatsApp list."""
@@ -276,6 +288,11 @@ def _message_text(message: Dict[str, Any]) -> str:
 
 def pairing_code(text: str) -> Optional[str]:
     match = PAIRING_PATTERN.search(text.strip())
+    return match.group(1).upper() if match else None
+
+
+def confirmation_code(text: str) -> Optional[str]:
+    match = CONFIRM_ACTION_PATTERN.fullmatch(text)
     return match.group(1).upper() if match else None
 
 
@@ -542,6 +559,14 @@ def truncate_message(body: str) -> str:
     if len(body) <= MAX_MESSAGE_LENGTH:
         return body
     return body[: MAX_MESSAGE_LENGTH - 2].rstrip() + "…"
+
+
+def split_message(body: str) -> List[str]:
+    """Split text without dropping content so confirmations remain complete."""
+    return [
+        body[offset : offset + MAX_MESSAGE_LENGTH]
+        for offset in range(0, len(body), MAX_MESSAGE_LENGTH)
+    ] or [""]
 
 
 def _plain(value: Any) -> str:
