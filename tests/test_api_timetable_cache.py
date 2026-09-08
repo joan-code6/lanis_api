@@ -96,6 +96,9 @@ def test_user_cache_invalidation_rejects_fetches_started_before_version_registra
 
 def test_timetable_does_not_cache_a_failed_course_overview(monkeypatch):
     class FakeClient:
+        def lerngruppen_get_overview(self):
+            return {"success": True, "exams": []}
+
         def stundenplan_get_plan(self):
             return {"success": True, "plan_for_all": [], "plan_for_own": []}
 
@@ -123,7 +126,7 @@ def test_timetable_does_not_cache_a_failed_course_overview(monkeypatch):
     result = asyncio.run(api_module.get_stundenplan(auth=auth))
 
     assert result["success"] is True
-    assert [endpoint for _, endpoint, _ in fake_sessions.cached] == ["/stundenplan"]
+    assert [endpoint for _, endpoint, _ in fake_sessions.cached] == ["/lerngruppen", "/stundenplan"]
 
 
 def test_attendance_does_not_cache_partial_course_aggregates(monkeypatch):
@@ -462,6 +465,9 @@ def test_timetable_cache_is_keyed_by_the_current_week(monkeypatch):
         def __init__(self):
             self.timetable_calls = 0
 
+        def lerngruppen_get_overview(self):
+            return {"success": True, "exams": []}
+
         def stundenplan_get_plan(self):
             self.timetable_calls += 1
             return {"success": True, "plan_for_all": [], "plan_for_own": []}
@@ -512,6 +518,9 @@ def test_timetable_exposes_week_anchor_and_unmodified_template(monkeypatch):
     portal_lesson = {"stunde": 1, "name": "Mathematik"}
 
     class FakeClient:
+        def lerngruppen_get_overview(self):
+            return {"success": True, "exams": []}
+
         def stundenplan_get_plan(self):
             return {
                 "success": True,
@@ -556,3 +565,74 @@ def test_timetable_exposes_week_anchor_and_unmodified_template(monkeypatch):
     assert result["template_plan_for_all"][0][0]["name"] == "Mathematik"
     assert result["template_plan_for_own"][0][0]["name"] == "Mathematik"
     assert result["plan_for_all"][0][0]["name"] == "Deutsch"
+
+
+def test_timetable_exams_use_shared_cache_and_preserve_dates(monkeypatch):
+    async def scenario():
+        manager = AuthManager()
+        monkeypatch.setattr(api_module, "sessions", manager)
+        exam = {"id": "exam-1", "date": "2026-11-25", "course_name": "Mathematik"}
+        await manager.set_cache("user-a", "/lerngruppen", {"success": True, "exams": [exam]})
+
+        class FakeClient:
+            def stundenplan_get_plan(self):
+                return {"success": True, "plan_for_all": [], "plan_for_own": []}
+
+            def meinunterricht_get_overview(self):
+                return {"success": True, "entries": []}
+
+            def lerngruppen_get_overview(self):
+                raise AssertionError("should reuse the user's Lerngruppen cache")
+
+        async def no_custom_lessons(_user_id):
+            return []
+
+        monkeypatch.setattr(api_module, "get_custom_lessons", no_custom_lessons)
+        auth = AuthSession(client=FakeClient(), user_id="user-a", school_id="school", username="user")
+        result = await api_module.get_stundenplan(auth=auth)
+        assert result["exams"] == [exam]
+        assert "exams_error" not in result
+        assert await api_module.get_stundenplan(auth=auth) == result
+
+    asyncio.run(scenario())
+
+
+def test_timetable_exam_failure_keeps_lessons_and_allows_retry(monkeypatch):
+    async def scenario():
+        manager = AuthManager()
+        monkeypatch.setattr(api_module, "sessions", manager)
+
+        class FakeClient:
+            calls = 0
+
+            def stundenplan_get_plan(self):
+                return {"success": True, "plan_for_all": [[{"name": "Mathematik", "stunde": 1}]], "plan_for_own": []}
+
+            def meinunterricht_get_overview(self):
+                return {"success": True, "entries": []}
+
+            def lerngruppen_get_overview(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"success": False, "error": "temporary failure"}
+                if self.calls == 2:
+                    raise RuntimeError("upstream unavailable")
+                return {"success": True, "exams": [{"id": "exam-1", "date": "2026-11-25"}]}
+
+        async def no_custom_lessons(_user_id):
+            return []
+
+        monkeypatch.setattr(api_module, "get_custom_lessons", no_custom_lessons)
+        auth = AuthSession(client=FakeClient(), user_id="user-a", school_id="school", username="user")
+        for _ in range(2):
+            result = await api_module.get_stundenplan(auth=auth)
+            assert result["success"] is True
+            assert result["plan_for_all"][0][0]["name"] == "Mathematik"
+            assert result["exams"] == []
+            assert result["exams_error"]
+            assert await manager.get_cached("user-a", "/lerngruppen") is None
+        result = await api_module.get_stundenplan(auth=auth)
+        assert result["exams"] == [{"id": "exam-1", "date": "2026-11-25"}]
+        assert "exams_error" not in result
+
+    asyncio.run(scenario())

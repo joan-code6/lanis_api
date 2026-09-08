@@ -1562,6 +1562,17 @@ async def get_stundenplan(
                     auth.user_id, "/meinunterricht", course_overview
                 )
         result = enrich_timetable(result, course_overview)
+        # Exams are dated events, kept separate from recurring lesson templates.
+        result["exams"] = []
+        try:
+            study_groups = await get_lerngruppen(auth=auth)
+            if study_groups.get("success"):
+                result["exams"] = copy.deepcopy(study_groups.get("exams") or [])
+            else:
+                result["exams_error"] = "Klausurtermine konnten nicht geladen werden."
+        except Exception:
+            result["exams_error"] = "Klausurtermine konnten nicht geladen werden."
+
         # Keep an unmodified recurring template for clients that project the
         # timetable onto dates outside the current Monday-Friday window.
         # Date-specific overrides are still applied to the legacy plan fields
@@ -1574,7 +1585,8 @@ async def get_stundenplan(
             result.get("plan_for_own")
         )
     result = apply_custom_lessons(result, await get_custom_lessons(auth.user_id))
-    await sessions.set_cache(auth.user_id, "/stundenplan", result, timetable_params)
+    if not result.get("exams_error"):
+        await sessions.set_cache(auth.user_id, "/stundenplan", result, timetable_params)
     return result
 
 
@@ -1791,7 +1803,8 @@ async def get_lerngruppen(
         return cached
 
     result = await run_in_threadpool(auth.client.lerngruppen_get_overview)
-    await sessions.set_cache(auth.user_id, "/lerngruppen", result)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/lerngruppen", result)
     return result
 
 

@@ -1037,6 +1037,8 @@ Retrieve the substitution plan from Schulportal Hessen (vertretungsplan.php).
 
 Retrieve the timetable from stundenplan.php (all and personal views).
 
+The response also includes `exams`, a list of dated exam objects from `/lerngruppen` (same schema). Exams are kept separate from recurring lesson templates; clients match their ISO `date` to the displayed day, including rolling views. The backend reuses the user’s Lerngruppen cache. If exam loading fails, lessons remain available with `exams: []` and an `exams_error` message. Incomplete timetable responses and failed Lerngruppen responses are not cached, so a retry can recover.
+
 **Headers:**
 - `X-Session-Token: {token}` (required)
 
