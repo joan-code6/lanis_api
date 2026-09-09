@@ -44,6 +44,79 @@ def test_course_heading_uses_first_visible_text() -> None:
     assert result["semester"] == "2. Halbjahr"
 
 
+def test_course_homework_is_not_taken_from_content_markup() -> None:
+    class HomeworkResponse:
+        text = """
+        <html><body>
+          <table class="table-hover"><tbody>
+            <tr data-entry="9">
+              <td><a id="eintrag20260908"></a>08.09.2026<br/><small>5. - 6. Stunde</small></td>
+              <td>
+                <b>Übungen zu Kräften</b><br/>
+                <span class="markup"><i class="far fa-comment-alt" title="Ausführlicher Inhalt"></i> Übungen zur Einheitenumrechnung</span>
+                <br/><br/>
+                <i class="fas fa-home" title="Hausaufgaben"></i>
+                <span class="homework">
+                  <span class="done hidden"><span class="label label-success">Hausaufgabe erledigt</span></span>
+                  <span class="undone "><span class="label label-danger">Hausaufgabe unerledigt</span></span>
+                </span>
+                <br/>
+                <span class="markup">AB Einheitenumrechnung/ 2, 5; AB. S.2/4, 5</span>
+              </td>
+            </tr>
+            <tr data-entry="8">
+              <td><a id="eintrag20260907"></a>07.09.2026<br/><small>1. Stunde</small></td>
+              <td>
+                <b>Nur Hausaufgabe</b><br/>
+                <i class="fas fa-home" title="Hausaufgaben"></i>
+                <span class="homework">
+                  <span class="done hidden"><span class="label label-success">Hausaufgabe erledigt</span></span>
+                  <span class="undone "><span class="label label-danger">Hausaufgabe unerledigt</span></span>
+                </span>
+                <br/>
+                <span class="markup">S. 16</span>
+              </td>
+            </tr>
+            <tr data-entry="7">
+              <td><a id="eintrag20260906"></a>06.09.2026<br/><small>3. Stunde</small></td>
+              <td>
+                <b>Nur Inhalt</b><br/>
+                <span class="markup"><i class="far fa-comment-alt" title="Ausführlicher Inhalt"></i> Besprechung der Hausaufgaben</span>
+              </td>
+            </tr>
+          </tbody></table>
+        </body></html>
+        """
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class HomeworkSession:
+        def get(self, *_args, **_kwargs) -> HomeworkResponse:
+            return HomeworkResponse()
+
+    class HomeworkClient:
+        logged_in = True
+        cryptor = FakeCryptor()
+        session = HomeworkSession()
+        BASE_START_URL = "https://example.invalid"
+
+    result = meinunterricht_get_course(HomeworkClient(), "42")
+
+    assert result["success"] is True
+    entries = result["entries"]
+    assert len(entries) == 3
+
+    assert entries[0]["homework"].strip() == "AB Einheitenumrechnung/ 2, 5; AB. S.2/4, 5"
+    assert "Übungen zur Einheitenumrechnung" in entries[0]["content"]
+    assert entries[0]["homework_done"] is False
+
+    assert entries[1]["homework"].strip() == "S. 16"
+
+    assert entries[2]["homework"] == ""
+    assert "Besprechung der Hausaufgaben" in entries[2]["content"]
+
+
 def test_course_summary_can_skip_entry_decryption() -> None:
     class SummaryResponse:
         text = """

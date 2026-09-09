@@ -311,10 +311,24 @@ def meinunterricht_get_course(
                 if thema_tag:
                     entry["thema"] = thema_tag.get_text(separator="\n")
 
-                # Extract homework
+                # Extract homework. The homework text is the markup span that
+                # follows the homework marker. Rows with an
+                # "Ausführlicher Inhalt" contain another markup span above it,
+                # so searching the whole row would return the lesson content.
                 homework_span = row.find("span", {"class": "homework"})
                 if homework_span:
-                    markup = row.find("span", {"class": "markup"})
+                    markup = homework_span.find_next_sibling(
+                        "span", {"class": "markup"}
+                    )
+                    if markup is None:
+                        cell = homework_span.find_parent("td")
+                        candidate = homework_span.find_next(
+                            "span", {"class": "markup"}
+                        )
+                        if candidate is not None and (
+                            cell is None or cell in candidate.parents
+                        ):
+                            markup = candidate
                     if markup:
                         entry["homework"] = markup.get_text(separator="\n")
 
