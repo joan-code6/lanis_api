@@ -107,6 +107,11 @@ from .file_cache import (
     get_content_path,
 )
 from .timetable_enrichment import enrich_timetable
+from .timetable_substitutions import (
+    dsb_substitutions,
+    native_substitutions,
+    resolve_timetable,
+)
 from .user_overrides import (
     apply_custom_lessons,
     current_timetable_monday,
@@ -1544,11 +1549,15 @@ async def get_vertretungsplan_options(
 
 @app.get("/stundenplan")
 async def get_stundenplan(
+    refresh: bool = False,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     week_start = current_timetable_monday()
     timetable_params = _make_param_key({"week_start": week_start.isoformat()})
-    cached = await sessions.get_cached(auth.user_id, "/stundenplan", timetable_params)
+    cached = (
+        None if refresh
+        else await sessions.get_cached(auth.user_id, "/stundenplan", timetable_params)
+    )
     if cached is not None:
         return cached
 
@@ -1589,6 +1598,143 @@ async def get_stundenplan(
     result = apply_custom_lessons(result, await get_custom_lessons(auth.user_id))
     if not result.get("exams_error"):
         await sessions.set_cache(auth.user_id, "/stundenplan", result, timetable_params)
+    return result
+
+
+# The DSB account is school-wide. Keep its cache separate from user timetables,
+# and serialize cache misses so simultaneous students reuse the same fetch.
+_school_dsb_lock = asyncio.Lock()
+
+
+def _school_dsb_credentials(school_id: str) -> tuple[str, str] | None:
+    configured_school = os.getenv("DSB_SCHOOL_ID", "5201")
+    if school_id != configured_school:
+        return None
+    # Preserve the existing school's integration when moving it out of the UI.
+    default_user, default_password = (
+        ("282822", "berlin") if configured_school == "5201" else ("", "")
+    )
+    username = os.getenv("DSB_USERNAME", default_user)
+    password = os.getenv("DSB_PASSWORD", default_password)
+    return (username, password) if username and password else None
+
+
+@app.get("/dsb/school-plan")
+async def get_school_dsb_plan(
+    refresh: bool = False,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return the configured school's shared, cached DSB plan without credentials."""
+    credentials = _school_dsb_credentials(auth.school_id)
+    if credentials is None:
+        return {
+            "success": False,
+            "tables": [],
+            "error": "DSB ist für diese Schule nicht eingerichtet.",
+        }
+    owner = f"dsb-school:{auth.school_id}"
+    # Configuration changes must not reuse another DSB account's cached plan.
+    params = hashlib.sha256(json.dumps(credentials).encode()).hexdigest()
+    async with _school_dsb_lock:
+        cached = (
+            None
+            if refresh
+            else await sessions.get_cached(owner, "/dsb/school-plan", params)
+        )
+        if cached is not None:
+            return cached
+        result = await run_in_threadpool(
+            auth.client.dsb_get_substitution_plan, *credentials
+        )
+        if result.get("success"):
+            await sessions.set_cache(owner, "/dsb/school-plan", result, params)
+        return result
+
+
+@app.get("/stundenplan/view")
+async def get_timetable_view(
+    view_mode: Literal["rolling", "week"] = "rolling",
+    plan_mode: Literal["personal", "all"] = "personal",
+    week_type: Optional[Literal["A", "B"]] = None,
+    refresh: bool = False,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Resolve dates, custom lessons and substitutions using source response caches.
+
+    No second aggregate TTL: a refreshed native/DSB plan is reflected immediately
+    and account overrides continue using the existing timetable invalidation.
+    """
+    timetable = await get_stundenplan(refresh=refresh, auth=auth)
+    if not timetable.get("success"):
+        return {
+            "success": False,
+            "days": [],
+            "message": timetable.get("error") or "Stundenplan nicht verfügbar",
+        }
+    changes = []
+    sources = []
+    own_class = ""
+    try:
+        modules = await get_modules(auth=auth)
+        if not modules.get("success"):
+            raise ValueError("Module unavailable")
+        dsb_available = native_available = False
+        for module in modules.get("modules") or []:
+            label = f"{module.get('name', '')} {module.get('url', '')} {module.get('direct_url', '')}".lower()
+            is_dsb = "dsb" in label
+            dsb_available |= is_dsb
+            native_available |= not is_dsb and "vertretungsplan" in label
+        if native_available or dsb_available:
+            profile = await get_user_data(auth=auth)
+            if not profile.get("success"):
+                sources.append({"name": "Klassenzuordnung", "error": True})
+            own_class = vertretungsplan_notification_options(profile, {})["own_class"]
+            preferences, _ = await get_user_preferences(auth.user_id)
+            own_class = (
+                str(
+                    (preferences.get("vertretungsplan") or {}).get("class_override")
+                    or ""
+                ).strip()
+                or own_class
+            )
+        for name, enabled, fetch, normalize in (
+            (
+                "Schulportal",
+                native_available,
+                get_vertretungsplan,
+                native_substitutions,
+            ),
+            (
+                "DSB",
+                dsb_available,
+                get_school_dsb_plan,
+                lambda plan: dsb_substitutions(plan.get("tables") or []),
+            ),
+        ):
+            if not enabled:
+                continue
+            try:
+                plan = await fetch(refresh=refresh, auth=auth)
+                if not plan.get("success") or plan.get("available") is False:
+                    raise ValueError("Plan unavailable")
+                changes.extend(normalize(plan))
+                sources.append(
+                    {"name": name, "error": False, "updated": plan.get("last_updated")}
+                )
+            except Exception:
+                sources.append({"name": name, "error": True})
+    except Exception:
+        sources.append({"name": "Vertretungspläne", "error": True})
+    result = resolve_timetable(
+        timetable,
+        changes,
+        own_class,
+        datetime.now(ZoneInfo("Europe/Berlin")).date(),
+        view_mode,
+        plan_mode,
+        week_type,
+    )
+    result["substitution_sources"] = sources
     return result
 
 
