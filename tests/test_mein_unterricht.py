@@ -44,7 +44,7 @@ def test_course_heading_uses_first_visible_text() -> None:
     assert result["semester"] == "2. Halbjahr"
 
 
-def test_course_summary_can_load_without_cryptor_authentication() -> None:
+def test_course_summary_can_skip_entry_decryption() -> None:
     class SummaryResponse:
         text = """
         <html><body>
@@ -64,7 +64,7 @@ def test_course_summary_can_load_without_cryptor_authentication() -> None:
 
     class SummaryClient:
         logged_in = True
-        cryptor = None
+        cryptor = FakeCryptor()
         session = SummarySession()
         BASE_START_URL = "https://example.invalid"
 
@@ -227,3 +227,90 @@ def test_attendance_overview_marks_unparseable_summaries_as_failed(monkeypatch) 
     assert result["totals"] == {}
     assert result["courses"] == []
     assert result["failed_course_count"] == 1
+
+
+def test_course_decrypts_summary_even_when_entry_decryption_is_disabled(monkeypatch):
+    class SummaryCryptor:
+        authenticated = False
+
+        def __init__(self, session):
+            pass
+
+        def authenticate(self):
+            self.authenticated = True
+            return True
+
+        def decrypt(self, value):
+            assert self.authenticated
+            return {
+                'U2FsdGVkX1label': '<span>Anwesend</span><span class="hidden">ignored</span>',
+                'U2FsdGVkX1count': '<strong>12</strong> Stunden',
+            }[value]
+
+    class SummarySession:
+        def get(self, *_args, **_kwargs):
+            # The key must be established before requesting encrypted cells.
+            assert client.cryptor.authenticated
+            response = FakeResponse()
+            response.text = '''<div id="attendanceTable"><table><tr>
+                <td><encoded>U2FsdGVkX1label</encoded></td>
+                <td><encoded>U2FsdGVkX1count</encoded></td>
+                </tr></table></div>'''
+            return response
+
+    monkeypatch.setattr(mein_unterricht_api, 'Cryptor', SummaryCryptor)
+    client = FakeClient()
+    client.cryptor = None
+    client.session = SummarySession()
+    result = meinunterricht_get_course(client, '42', decrypt_attendance=False)
+    assert result['success'] is True
+    assert result['attendance_summary'] == {'Anwesend': '12 Stunden'}
+
+
+def test_attendance_counts_reject_ciphertext_and_preserve_zero():
+    parse = mein_unterricht_api._parse_attendance_count
+    assert parse('U2FsdGVkX1encrypted123') is None
+    assert parse('error 2') is None
+    assert parse('-1') is None
+    assert parse(0) == 0
+    assert parse('2,5 Stunden') == 2.5
+
+
+def test_course_does_not_return_ciphertext_when_summary_decryption_fails():
+    class BrokenCryptor:
+        authenticated = True
+
+        def decrypt(self, value):
+            raise ValueError('Invalid encrypted data')
+
+    class SummarySession:
+        def get(self, *_args, **_kwargs):
+            response = FakeResponse()
+            response.text = '''<div id="attendanceTable"><table><tr>
+                <td><encoded>U2FsdGVkX1label</encoded></td><td>2</td>
+                </tr></table></div>'''
+            return response
+
+    client = FakeClient()
+    client.cryptor = BrokenCryptor()
+    client.session = SummarySession()
+    result = meinunterricht_get_course(client, '42', decrypt_attendance=False)
+    assert result['success'] is False
+    assert 'attendance_summary' not in result
+
+
+def test_attendance_overview_does_not_report_empty_course_as_failed(monkeypatch):
+    monkeypatch.setattr(
+        mein_unterricht_api, "meinunterricht_get_overview",
+        lambda _client: {"success": True, "courses": [{"book_id": "42"}]},
+    )
+    monkeypatch.setattr(
+        mein_unterricht_api, "meinunterricht_get_course",
+        lambda *_args, **_kwargs: {"success": True, "attendance_summary": {}},
+    )
+    result = meinunterricht_get_attendance_overview(FakeClient())
+    assert result["success"] is True
+    assert result["available"] is False
+    assert result["course_count"] == 1
+    assert result["failed_course_count"] == 0
+    assert result["totals"] == {}

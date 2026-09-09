@@ -202,8 +202,8 @@ def meinunterricht_get_course(
 
     Args:
         course_id: The course book ID (from data-book attribute)
-        decrypt_attendance: Decrypt per-entry attendance fields. The aggregate
-            plaintext summary can be loaded without Cryptor authentication.
+        decrypt_attendance: Decrypt per-entry attendance fields. Summary cells
+            are always decrypted, including when loading only the aggregate.
 
     Returns:
         Dict with success status and parsed course details including:
@@ -222,7 +222,7 @@ def meinunterricht_get_course(
         return {"success": False, "error": "Not logged in"}
 
     # Initialize cryptor if needed
-    if decrypt_attendance and (not self.cryptor or not self.cryptor.authenticated):
+    if not self.cryptor or not self.cryptor.authenticated:
         if not self.cryptor:
             self.cryptor = Cryptor(self.session)
 
@@ -429,8 +429,18 @@ def meinunterricht_get_course(
             for row in attendance_table.find_all("tr"):
                 cells = row.find_all("td")
                 if len(cells) >= 2:
-                    att_type = cells[0].get_text(separator="\n")
-                    att_hours = cells[1].get_text(separator="\n")
+                    values = []
+                    for cell in cells[:2]:
+                        for encoded in cell.find_all("encoded"):
+                            decrypted = self.cryptor.decrypt(encoded.get_text(strip=True))
+                            encoded.replace_with(BeautifulSoup(decrypted, "html.parser"))
+                        for hidden in cell.select(".hidden, [hidden]"):
+                            hidden.decompose()
+                        value = cell.get_text(" ", strip=True)
+                        if "u2fsdgvkx1" in value.casefold():
+                            raise ValueError("Attendance summary could not be decrypted")
+                        values.append(value)
+                    att_type, att_hours = values
                     attendance_summary[att_type] = att_hours
 
         return {
@@ -456,10 +466,14 @@ def _normalise_attendance_label(value: Any) -> str:
 
 
 def _parse_attendance_count(value: Any) -> Optional[float]:
-    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value or ""))
+    match = re.fullmatch(
+        r"(\d+(?:[.,]\d+)?)\s*(?:Stunden?|Std\.?)?",
+        str(value if value is not None else "").strip(),
+        re.IGNORECASE,
+    )
     if not match:
         return None
-    number = float(match.group(0).replace(",", "."))
+    number = float(match.group(1).replace(",", "."))
     return int(number) if number.is_integer() else number
 
 
@@ -518,12 +532,16 @@ def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
 
             summary: Dict[str, float] = {}
             raw_summary = course.get("attendance_summary", {})
-            parse_failed = not isinstance(raw_summary, dict) or not raw_summary
+            # A course with no recorded attendance is not a loading failure.
+            if raw_summary == {}:
+                continue
+            parse_failed = not isinstance(raw_summary, dict)
             if isinstance(raw_summary, dict):
                 for raw_label, raw_count in raw_summary.items():
                     label = _normalise_attendance_label(raw_label)
                     count = _parse_attendance_count(raw_count)
-                    if not label:
+                    if not label or "u2fsdgvkx1" in label:
+                        parse_failed = True
                         continue
                     if count is None:
                         parse_failed = True

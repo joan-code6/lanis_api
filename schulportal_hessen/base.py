@@ -453,6 +453,7 @@ class SchulportalHessenAPI:
         Args:
             course_id: Course/book id from the portal's data-book attribute.
             decrypt_attendance: Whether to decrypt per-entry attendance fields.
+                Summary cells are always decrypted.
 
         Returns:
             Dict containing course metadata, entries, attendance information,
