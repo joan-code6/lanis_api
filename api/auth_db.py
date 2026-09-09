@@ -122,6 +122,8 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     },
     "timetable": {
         "view_mode": "rolling",
+        "show_homework": True,
+        "show_exams": True,
     },
     "homework": {
         "completed_display": "green",
