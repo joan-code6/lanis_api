@@ -1685,18 +1685,20 @@ async def get_timetable_view(
             dsb_available |= is_dsb
             native_available |= not is_dsb and "vertretungsplan" in label
         if native_available or dsb_available:
-            profile = await get_user_data(auth=auth)
-            if not profile.get("success"):
-                sources.append({"name": "Klassenzuordnung", "error": True})
-            own_class = vertretungsplan_notification_options(profile, {})["own_class"]
-            preferences, _ = await get_user_preferences(auth.user_id)
-            own_class = (
-                str(
-                    (preferences.get("vertretungsplan") or {}).get("class_override")
-                    or ""
+            try:
+                preferences, _ = await get_user_preferences(auth.user_id)
+                own_class = str(
+                    (preferences.get("vertretungsplan") or {}).get("class_override") or ""
                 ).strip()
-                or own_class
-            )
+                if not own_class:
+                    profile = await get_user_data(auth=auth)
+                    if not profile.get("success"):
+                        raise ValueError("Profile unavailable")
+                    own_class = vertretungsplan_notification_options(profile, {})["own_class"]
+            except Exception:
+                # Source loading can still succeed, including lessons that
+                # supply their own class. Never discard both sources here.
+                sources.append({"name": "Klassenzuordnung", "error": True})
         for name, enabled, fetch, normalize in (
             (
                 "Schulportal",

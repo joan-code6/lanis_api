@@ -310,6 +310,22 @@ def test_resolved_endpoint_reuses_native_cache_and_handles_partial_failure(monke
         await api_module.get_timetable_view(refresh=True, auth=auth)
         assert client.native_calls == 2
 
+        async def failed_profile(**kwargs):
+            raise RuntimeError("profile unavailable")
+
+        monkeypatch.setattr(api_module, "get_user_data", failed_profile)
+        result = await api_module.get_timetable_view(auth=auth)
+        assert result["success"]
+        assert result["substitution_sources"][0] == {
+            "name": "Klassenzuordnung",
+            "error": True,
+        }
+        assert result["substitution_sources"][1] == {
+            "name": "Schulportal",
+            "error": False,
+            "updated": None,
+        }
+
     asyncio.run(scenario())
 
 
@@ -382,7 +398,9 @@ def test_resolved_endpoint_honors_saved_class_override(monkeypatch):
             return {"success": True, "modules": [{"name": "Vertretungsplan"}]}
 
         async def profile(**kwargs):
-            return {"success": True, "data": {"klasse": "wrong"}}
+            raise AssertionError(
+                "A saved class override must not depend on profile availability"
+            )
 
         async def preferences(user_id):
             assert user_id == "user"
