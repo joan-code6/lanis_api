@@ -356,7 +356,8 @@ def test_resolved_endpoint_reuses_native_cache_and_handles_partial_failure(monke
 
 
 @pytest.mark.skipif(
-    not os.getenv("LANIS_LIVE_DSB"), reason="Private live captures are opt-in"
+    not (os.getenv("LANIS_LIVE_DSB") and os.getenv("LANIS_LIVE_TIMETABLE")),
+    reason="Private live captures are opt-in",
 )
 def test_real_dsb_and_timetable():
     dsb = json.loads(Path(os.environ["LANIS_LIVE_DSB"]).read_text())
