@@ -523,3 +523,17 @@ def test_caption_only_tables_receive_their_preceding_day_heading():
     assert result["lessons"][0]["cancelled"]
     assert result["lessons"][1]["period"] == 4
     assert not result["lessons"][1].get("cancelled")
+
+
+def test_lowercase_class_header_receives_preceding_day_heading():
+    from schulportal_hessen.external.dsb.api import _parse_plan_tables
+
+    html = (
+        '<div class="mon_title">9.9.2026</div>'
+        '<table><tr><th>klasse</th><th>Stunde</th><th>Art</th></tr>'
+        '<tr><td>10B</td><td>3</td><td>Entfall</td></tr></table>'
+    )
+
+    parsed = _parse_plan_tables(html)["tables"]
+
+    assert parsed[0]["date"] == DAY

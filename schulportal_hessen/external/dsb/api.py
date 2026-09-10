@@ -220,7 +220,7 @@ def _parse_plan_tables(html: str) -> Dict[str, Any]:
         caption = str(parsed.get("caption") or "")
         headers = " ".join(str(header) for header in parsed.get("headers", []))
         is_class_table = (
-            "Klasse" in headers
+            re.search(r"\bKlasse(?:n|\(n\))?\b", headers, re.IGNORECASE)
             or re.search(r"\bKlasse(?:n|\(n\))?\b", caption, re.IGNORECASE)
         )
         if not parsed.get("date") and is_class_table:
