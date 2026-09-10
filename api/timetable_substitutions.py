@@ -415,7 +415,7 @@ def resolve_timetable(
     ]
     slots = [
         {
-            "period": (periods(slot.get("label")) or [i])[0],
+            "period": (periods(slot.get("label")) or [i + 1])[0],
             "start_time": clock(slot.get("start_time")),
             "end_time": clock(slot.get("end_time")),
         }
@@ -465,6 +465,15 @@ def resolve_timetable(
                 duration=duration,
                 start_time=clock(raw.get("start_time")),
                 end_time=clock(raw.get("end_time")),
+                class_name=(
+                    raw.get("class_name")
+                    or (
+                        raw.get("badge")
+                        if plan_mode == "all"
+                        and raw.get("badge") not in (None, "A", "B")
+                        else None
+                    )
+                ),
                 week_type=raw.get("badge") if raw.get("badge") in ("A", "B") else None,
             )
             lessons.append(lesson)

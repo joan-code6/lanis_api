@@ -537,3 +537,36 @@ def test_lowercase_class_header_receives_preceding_day_heading():
     parsed = _parse_plan_tables(html)["tables"]
 
     assert parsed[0]["date"] == DAY
+
+
+def test_all_plan_class_badges_are_used_for_substitution_matching():
+    raw = timetable()
+    raw["template_plan_for_own"] = [[], [], [], [], []]
+    raw["template_plan_for_all"][2] = [
+        {
+            "name": "D",
+            "teacher": "AB",
+            "stunde": 3,
+            "duration": 1,
+            "badge": "9A",
+        }
+    ]
+
+    result = resolve_timetable(
+        raw, native(klasse="9A"), "10B", date(2026, 9, 9), plan_mode="all"
+    )
+
+    assert result["days"][0]["lessons"][0]["class_name"] == "9A"
+    assert result["days"][0]["lessons"][0]["cancelled"]
+
+
+def test_unlabeled_hour_slots_keep_one_based_periods():
+    raw = timetable()
+    raw["hours"] = [
+        {"start_time": {"hour": 8, "minute": 0}, "end_time": {"hour": 8, "minute": 45}},
+        {"start_time": {"hour": 8, "minute": 50}, "end_time": {"hour": 9, "minute": 35}},
+    ]
+
+    result = resolve_timetable(raw, [], "10B", date(2026, 9, 9))
+
+    assert [slot["period"] for slot in result["time_slots"]] == [1, 2]
