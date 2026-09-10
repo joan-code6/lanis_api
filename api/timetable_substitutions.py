@@ -399,7 +399,7 @@ def resolve_timetable(
     week_types = {lesson.get("badge") for day in plan for lesson in day} | {
         item.get("week_type") for item in overrides
     }
-    alternating = {"A", "B"}.issubset(week_types)
+    alternating = bool({"A", "B"} & week_types)
     forced = (
         (week_type or ("A" if not reference else None))
         if view_mode == "week" and alternating
@@ -476,16 +476,20 @@ def resolve_timetable(
         dated_changes = (
             changes
             if not forced
-            or not reference
-            or active == week_for(day, reference_monday, reference)
+            or (
+                reference is not None
+                and active == week_for(day, reference_monday, reference)
+            )
             else []
         )
         days.extend(apply_substitutions([projected], dated_changes, own_class, slots))
+    first_displayed = date.fromisoformat(days[0]["date"]) if days else start
+    displayed_monday = first_displayed - timedelta(days=first_displayed.weekday())
     return {
         "success": True,
         "days": days,
-        "week_start": reference_monday.isoformat(),
-        "active_week": reference,
+        "week_start": displayed_monday.isoformat(),
+        "active_week": forced or week_for(first_displayed, reference_monday, reference),
         "has_alternating_weeks": alternating,
         "time_slots": slots,
         "exams": copy.deepcopy(timetable.get("exams") or []),

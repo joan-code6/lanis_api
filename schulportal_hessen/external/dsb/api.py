@@ -214,20 +214,21 @@ def _parse_plan_tables(html: str) -> Dict[str, Any]:
     title_tag = soup.find(["h1", "h2", "h3"])
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
 
-    mon_dates: List[str] = []
-    for div in soup.find_all("div", class_="mon_title"):
-        d = _extract_date_from_text(div.get_text(" ", strip=True))
-        if d:
-            mon_dates.append(d)
-
     tables = []
-    mon_idx = 0
     for table in soup.find_all("table"):
         parsed = _parse_table(table)
-        if not parsed.get("date") and "Klasse" in str(parsed.get("headers", [])):
-            if mon_idx < len(mon_dates):
-                parsed["date"] = mon_dates[mon_idx]
-                mon_idx += 1
+        caption = str(parsed.get("caption") or "")
+        headers = " ".join(str(header) for header in parsed.get("headers", []))
+        is_class_table = (
+            "Klasse" in headers
+            or re.search(r"\bKlasse(?:n|\(n\))?\b", caption, re.IGNORECASE)
+        )
+        if not parsed.get("date") and is_class_table:
+            # Several class tables may belong to one day heading; pair by
+            # document position, not by consuming one date per table.
+            heading = table.find_previous("div", class_="mon_title")
+            if heading is not None:
+                parsed["date"] = _extract_date_from_text(heading.get_text(" ", strip=True))
         tables.append(parsed)
 
     return {"title": title, "tables": tables}

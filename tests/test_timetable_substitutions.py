@@ -220,19 +220,36 @@ def test_school_cache_reuse_isolation_refresh_expiry_and_failure(monkeypatch):
         manager = AuthManager()
         monkeypatch.setattr(api_module, "sessions", manager)
         monkeypatch.setattr(api_module, "_school_dsb_lock", asyncio.Lock())
-        for key in ("DSB_SCHOOL_ID", "DSB_USERNAME", "DSB_PASSWORD"):
-            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("DSB_SCHOOL_ID", "5201")
+        monkeypatch.setenv("DSB_USERNAME", "configured-account")
+        monkeypatch.setenv("DSB_PASSWORD", "configured-password")
 
         class Client:
             calls = 0
             fail = False
 
-            def dsb_get_substitution_plan(self, *_credentials):
+            closed = 0
+
+            def dsb_get_substitution_plan(self, *credentials):
+                assert credentials == ("configured-account", "configured-password")
                 self.calls += 1
                 return {"success": not self.fail, "tables": [], "revision": self.calls}
 
+            def close(self):
+                self.closed += 1
+
         client = Client()
-        a = AuthSession(client, "a", "5201", "a")
+        monkeypatch.setattr(api_module, "SchulportalHessenAPI", lambda: client)
+
+        class UserClient:
+            dsb_logged_in = True
+
+            def dsb_get_substitution_plan(self, *args):
+                raise AssertionError(
+                    "Never use an arbitrary user's DSB session for a shared plan"
+                )
+
+        a = AuthSession(UserClient(), "a", "5201", "a")
         b = AuthSession(client, "b", "5201", "b")
         other = AuthSession(client, "other", "9999", "other")
         first, second = await asyncio.gather(
@@ -254,6 +271,7 @@ def test_school_cache_reuse_isolation_refresh_expiry_and_failure(monkeypatch):
         assert not (await api_module.get_school_dsb_plan(auth=a))["success"]
         client.fail = False
         assert (await api_module.get_school_dsb_plan(auth=a))["revision"] == 5
+        assert client.closed == client.calls == 5
 
     asyncio.run(scenario())
 
@@ -273,6 +291,14 @@ def test_resolved_endpoint_reuses_native_cache_and_handles_partial_failure(monke
             def dsb_get_substitution_plan(self, *_args):
                 raise RuntimeError("offline")
 
+        class FailingDsbClient:
+            def dsb_get_substitution_plan(self, *_args):
+                raise RuntimeError("offline")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(api_module, "SchulportalHessenAPI", FailingDsbClient)
         client = Client()
         auth = AuthSession(client, "user", "5201", "user")
 
@@ -427,3 +453,73 @@ def test_resolved_endpoint_honors_saved_class_override(monkeypatch):
         assert captured["class"] == "10 B"
 
     asyncio.run(scenario())
+
+
+def test_one_sided_weeks_are_previewable_and_metadata_matches_display():
+    raw = timetable()
+    raw["template_plan_for_own"][2] = [raw["template_plan_for_own"][2][0]]
+    opposite = resolve_timetable(
+        raw, [], "10B", date(2026, 9, 9), "week", week_type="B"
+    )
+    assert opposite["has_alternating_weeks"]
+    assert opposite["days"][2]["lessons"] == []
+    assert opposite["active_week"] == "B"
+    raw["template_plan_for_own"][2] = []
+    raw["custom_lessons"] = [
+        {"date": DAY, "period": "3", "subject": "Kunst", "week_type": "B"}
+    ]
+    custom = resolve_timetable(raw, [], "10B", date(2026, 9, 9), "week", week_type="B")
+    assert custom["days"][2]["lessons"][0]["subject"] == "Kunst"
+    assert custom["active_week"] == "B"
+    next_week = resolve_timetable(timetable(), [], "10B", date(2026, 9, 12), "week")
+    assert next_week["active_week"] == "B"
+    assert next_week["week_start"] == "2026-09-14"
+    rolling = resolve_timetable(timetable(), [], "10B", date(2026, 9, 13))
+    assert rolling["active_week"] == "B"
+    assert rolling["week_start"] == "2026-09-14"
+
+
+def test_unknown_reference_preview_never_applies_dated_changes():
+    raw = timetable()
+    raw.pop("week_badge")
+    preview = resolve_timetable(
+        raw, native(fach="Mathematik"), "10B", date(2026, 9, 9), "week", week_type="B"
+    )
+    assert preview["active_week"] == "B"
+    assert preview["days"][2]["lessons"][0]["subject"] == "M"
+    assert not preview["days"][2]["lessons"][0].get("cancelled")
+    assert not preview["days"][2]["substitutionNotices"]
+
+
+def test_school_credentials_require_complete_explicit_configuration(monkeypatch):
+    for key in ("DSB_SCHOOL_ID", "DSB_USERNAME", "DSB_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    assert api_module._school_dsb_credentials("5201") is None
+    monkeypatch.setenv("DSB_USERNAME", "test")
+    monkeypatch.setenv("DSB_PASSWORD", " leading and trailing ")
+    assert api_module._school_dsb_credentials("") is None
+    monkeypatch.setenv("DSB_SCHOOL_ID", "5201")
+    assert api_module._school_dsb_credentials("5201") == (
+        "test",
+        " leading and trailing ",
+    )
+    assert api_module._school_dsb_credentials("other") is None
+
+
+def test_caption_only_tables_receive_their_preceding_day_heading():
+    from schulportal_hessen.external.dsb.api import _parse_plan_tables
+
+    table = "<table><caption>Klasse 10 B</caption><tr><th>Stunde</th><th>Fach</th><th>Art</th></tr><tr><td>3</td><td>Deutsch</td><td>Entfall</td></tr></table>"
+    html = (
+        '<div class="mon_title">9.9.2026</div>'
+        + table
+        + table
+        + '<div class="mon_title">10.9.2026</div>'
+        + table
+    )
+    parsed = _parse_plan_tables(html)["tables"]
+    assert [item["date"] for item in parsed] == [DAY, DAY, "2026-09-10"]
+    result = apply(dsb_substitutions(parsed))
+    assert result["lessons"][0]["cancelled"]
+    assert result["lessons"][1]["period"] == 4
+    assert not result["lessons"][1].get("cancelled")

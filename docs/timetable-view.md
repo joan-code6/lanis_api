@@ -13,6 +13,8 @@ Query parameters:
 
 Dates use Europe/Berlin. Rolling view returns the weekdays in the next seven calendar days, including today. Week view advances to next week on weekends. A/B previews for a different week type never inherit the actual date's substitutions.
 
+`active_week` describes the first displayed date (or the explicit preview) and `week_start` is its Monday anchor. One-sided A/B lessons also enable week previews. A preview without a known reference week never receives dated substitutions.
+
 The response includes `success`, `days`, `week_start`, `active_week`, `has_alternating_weeks`, `time_slots`, `exams`, `exams_error`, and `substitution_sources`. Each day has `date`, `name`, `lessons`, and `substitutionNotices`. Lesson fields use the UI names (`subject`, `period`, `start_time`, `end_time`, etc.). Changed lessons additionally include `cancelled`, `substitution`, and `original_lesson`. Times are formatted as `HH:mm`; periods can be numbers or ranges. Source records contain `name`, `error`, and optional `updated` timestamps. Clients should display source errors even if the base timetable succeeds.
 
 Matching uses exact dates and normalized class membership, plus subject, teacher, and course identifiers. Upper-school year groups require teacher/course evidence. Ambiguous, conflicting, or unmatched reports remain visible as notices. Changes affecting only part of a double lesson split it using school period boundaries. Recurring templates, course links, homework, and input cache records are preserved.
@@ -23,7 +25,7 @@ The view reuses existing per-user `/stundenplan`, `/modules`, `/benutzer`, and `
 
 `GET /dsb/school-plan` returns the configured school's DSB plan, without requiring credentials from the browser. It supports `refresh=true` and is also used by the dedicated DSB page. Successful plans share the existing ten-minute response cache across authenticated users of the same school. Concurrent cache misses are serialized. Cache keys include school and a configuration digest; other schools cannot consume that plan. Failed fetches are not cached.
 
-`DSB_SCHOOL_ID`, `DSB_USERNAME`, and `DSB_PASSWORD` configure the school account. The existing 5201 integration is retained as the default during migration. A different school requires all three variables. An unconfigured school receives `success=false`, empty `tables`, and an error. No DSB credentials are returned to the frontend.
+`DSB_SCHOOL_ID`, `DSB_USERNAME`, and `DSB_PASSWORD` configure the school account. All three must be set before deploying the companion UI; there are no embedded credential defaults. Each cache miss uses a dedicated DSB client, so a user’s unrelated DSB login cannot contaminate the shared plan. An unconfigured school receives `success=false`, empty `tables`, and an error. No DSB credentials are returned to the frontend.
 
 ## Validation
 

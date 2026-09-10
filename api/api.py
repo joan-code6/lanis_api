@@ -1607,15 +1607,11 @@ _school_dsb_lock = asyncio.Lock()
 
 
 def _school_dsb_credentials(school_id: str) -> tuple[str, str] | None:
-    configured_school = os.getenv("DSB_SCHOOL_ID", "5201")
-    if school_id != configured_school:
+    configured_school = os.getenv("DSB_SCHOOL_ID", "").strip()
+    if not configured_school or school_id != configured_school:
         return None
-    # Preserve the existing school's integration when moving it out of the UI.
-    default_user, default_password = (
-        ("282822", "berlin") if configured_school == "5201" else ("", "")
-    )
-    username = os.getenv("DSB_USERNAME", default_user)
-    password = os.getenv("DSB_PASSWORD", default_password)
+    username = os.getenv("DSB_USERNAME", "").strip()
+    password = os.getenv("DSB_PASSWORD", "")
     return (username, password) if username and password else None
 
 
@@ -1643,9 +1639,17 @@ async def get_school_dsb_plan(
         )
         if cached is not None:
             return cached
-        result = await run_in_threadpool(
-            auth.client.dsb_get_substitution_plan, *credentials
-        )
+        # DSB credentials are school-wide and unrelated to the authenticated
+        # Schulportal account. A fresh client prevents a prior per-user
+        # /dsb/login from contaminating this shared response cache.
+        def fetch_school_plan():
+            dsb_client = SchulportalHessenAPI()
+            try:
+                return dsb_client.dsb_get_substitution_plan(*credentials)
+            finally:
+                dsb_client.close()
+
+        result = await run_in_threadpool(fetch_school_plan)
         if result.get("success"):
             await sessions.set_cache(owner, "/dsb/school-plan", result, params)
         return result
