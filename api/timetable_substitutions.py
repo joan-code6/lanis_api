@@ -444,9 +444,12 @@ def resolve_timetable(
             "message": timetable.get("error", "Stundenplan nicht verfügbar"),
         }
     monday = today - timedelta(days=today.weekday())
-    reference_monday = date.fromisoformat(
-        timetable.get("week_start") or monday.isoformat()
-    )
+    try:
+        reference_monday = date.fromisoformat(
+            text(timetable.get("week_start")) or monday.isoformat()
+        )
+    except ValueError:
+        reference_monday = monday
     badge = re.search(r"\b([AB])\b", text(timetable.get("week_badge")).upper())
     reference = badge[1] if badge else None
     all_plan = (
