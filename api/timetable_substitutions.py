@@ -31,7 +31,7 @@ def periods(value: Any) -> list[int]:
         if not match:
             return []
         first, last = int(match[1]), int(match[2] or match[1])
-        if first < 1 or last < first or last > 30:
+        if first < 0 or last < first or last > 30:
             return []
         result.update(range(first, last + 1))
     return sorted(result)
@@ -111,6 +111,51 @@ def make(**fields: Any) -> dict:
         fields["kind"] = "Entfall"
     fields["cancelled"] = is_cancellation(fields["kind"])
     return fields
+
+
+def effective_value(item: dict, lesson: dict, key: str) -> str:
+    value = text(item.get(key))
+    return value if meaningful(value) else text(lesson.get(key))
+
+
+def effect_key(item: dict, lesson: dict) -> tuple[str, str, str]:
+    return (
+        subject_key(effective_value(item, lesson, "subject")),
+        teacher_key(effective_value(item, lesson, "teacher")),
+        norm(effective_value(item, lesson, "room")),
+    )
+
+
+def reconcile_items(items: list[dict], lesson: dict) -> list[dict]:
+    """Collapse reports with the same effective result for one lesson period."""
+    if len(items) < 2:
+        return items
+    cancellations = [item for item in items if item["cancelled"]]
+    if cancellations and len(cancellations) == len(items):
+        equivalent = [cancellations[0]]
+    elif cancellations:
+        return items
+    else:
+        keys = {effect_key(item, lesson) for item in items}
+        if len(keys) != 1:
+            return items
+        equivalent = [items[0]]
+    merged = copy.deepcopy(equivalent[0])
+    notes = []
+    for item in items:
+        info = text(item.get("info"))
+        if info and info not in notes:
+            notes.append(info)
+    if notes:
+        merged["info"] = " · ".join(notes)
+    sources = []
+    for item in items:
+        source = text(item.get("source"))
+        if source and source not in sources:
+            sources.append(source)
+    if sources:
+        merged["source"] = " + ".join(sources)
+    return [merged]
 
 
 def dsb_substitutions(tables: list[dict]) -> list[dict]:
@@ -220,20 +265,12 @@ def native_substitutions(plan: dict) -> list[dict]:
 def apply_substitutions(
     days: list[dict], changes: list[dict], own_class: str, slots: list[dict]
 ) -> list[dict]:
-    unique = []
-    for item in changes:
-        if not any(
-            {k: v for k, v in item.items() if k != "source"}
-            == {k: v for k, v in other.items() if k != "source"}
-            for other in unique
-        ):
-            unique.append(item)
     result = copy.deepcopy(days)
     for day in result:
         lessons = day["lessons"]
         relevant = [
             item
-            for item in unique
+            for item in changes
             if item["date"] == day["date"]
             and (
                 same_class(item["classes"], own_class)
@@ -311,6 +348,9 @@ def apply_substitutions(
                         matches.append(item)
             if not item["periods"]:
                 notice(item)
+        for index, by_period in assigned.items():
+            for period, items in by_period.items():
+                by_period[period] = reconcile_items(items, lessons[index])
         resolved = []
         for index, lesson in enumerate(lessons):
             if index not in assigned:

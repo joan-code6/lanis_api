@@ -130,7 +130,7 @@ def test_separate_lessons_and_unparseable_periods():
     result = apply(native(stunde="nach Vereinbarung"))
     assert result["lessons"] == [LESSON]
     assert len(result["substitutionNotices"]) == 1
-    for value in ("4–3", "23:59", "0", "3 bis irgendwann"):
+    for value in ("4–3", "23:59", "3 bis irgendwann"):
         assert periods(value) == []
 
 
@@ -659,3 +659,77 @@ def test_native_note_only_cancellations_use_shared_fallback(field):
     assert not native(art="Vertretung", **{field: "Unterricht fällt aus"})[0][
         "cancelled"
     ]
+
+
+def test_zero_periods_are_valid_for_changes_and_labeled_slots():
+    assert periods("0. Stunde") == [0]
+    raw = timetable()
+    raw["hours"] = [
+        {
+            "label": "0. Stunde",
+            "start_time": {"hour": 7, "minute": 0},
+            "end_time": {"hour": 7, "minute": 45},
+        },
+        {
+            "label": "1. Stunde",
+            "start_time": {"hour": 8, "minute": 0},
+            "end_time": {"hour": 8, "minute": 45},
+        },
+    ]
+    raw["template_plan_for_own"][2] = [
+        {"name": "D", "teacher": "AB", "stunde": 0, "duration": 1}
+    ]
+    result = resolve_timetable(raw, native(stunde="0"), "10B", date(2026, 9, 9))
+    assert [slot["period"] for slot in result["time_slots"]] == [0, 1]
+    assert result["days"][0]["lessons"][0]["cancelled"]
+
+
+def test_equivalent_cross_source_cancellations_are_coalesced_after_assignment():
+    dsb = dsb_substitutions(
+        [
+            {
+                "date": DAY,
+                "headers": ["Klasse", "Stunde", "Fach", "Art", "Vertreter"],
+                "rows": [["10B", "3", "Deutsch", "Entfall", "CD"]],
+            }
+        ]
+    )
+    result = apply(native(art="Ausfall") + dsb)
+    assert not result["substitutionNotices"]
+    assert result["lessons"][0]["cancelled"]
+    assert result["lessons"][0]["substitution"]["source"] == "Schulportal + DSB"
+
+
+def test_equivalent_non_cancellation_effects_are_coalesced_after_fallback():
+    first = native(
+        art="Vertretung",
+        fach_alt="Deutsch",
+        fach="?",
+        vertreterkuerzel="?",
+        raum="?",
+    )
+    second = native(
+        art="Raumwechsel",
+        fach_alt="Deutsch",
+        fach="D",
+        raum="-",
+    )
+    result = apply(first + second)
+    assert not result["substitutionNotices"]
+    assert result["lessons"][0]["subject"] == "D"
+    assert result["lessons"][0]["teacher"] == "AB"
+    assert result["lessons"][0]["room"] == "A1"
+
+
+def test_cancellation_and_replacement_effects_remain_a_conflict():
+    result = apply(
+        native(art="Entfall")
+        + native(
+            art="Vertretung",
+            fach_alt="Deutsch",
+            fach="Mathe",
+            vertreterkuerzel="CD",
+        )
+    )
+    assert len(result["substitutionNotices"]) == 2
+    assert not result["lessons"][0].get("cancelled")
