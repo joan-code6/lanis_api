@@ -648,3 +648,14 @@ def test_joint_class_lesson_receives_each_change_once():
     )
     assert personal["lessons"][0]["cancelled"]
     assert not personal["substitutionNotices"]
+
+
+@pytest.mark.parametrize("field", ["hinweis", "hinweis2"])
+def test_native_note_only_cancellations_use_shared_fallback(field):
+    changes = native(art="", **{field: "Unterricht fällt aus"})
+    assert changes[0]["cancelled"]
+    assert changes[0]["kind"] == "Entfall"
+    assert apply(changes)["lessons"][0]["cancelled"]
+    assert not native(art="Vertretung", **{field: "Unterricht fällt aus"})[0][
+        "cancelled"
+    ]

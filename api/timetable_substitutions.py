@@ -107,6 +107,8 @@ def is_cancellation(value: str) -> bool:
 
 
 def make(**fields: Any) -> dict:
+    if not fields["kind"] and is_cancellation(fields.get("info", "")):
+        fields["kind"] = "Entfall"
     fields["cancelled"] = is_cancellation(fields["kind"])
     return fields
 
