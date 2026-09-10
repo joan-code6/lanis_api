@@ -452,10 +452,12 @@ def resolve_timetable(
     all_plan = (
         timetable.get("template_plan_for_all", timetable.get("plan_for_all")) or []
     )
-    own_plan = (
-        timetable.get("template_plan_for_own", timetable.get("plan_for_own")) or []
-    )
-    plan = all_plan if plan_mode == "all" or not any(own_plan) else own_plan
+    own_plan_value = timetable.get("template_plan_for_own")
+    if own_plan_value is None:
+        own_plan_value = timetable.get("plan_for_own")
+    own_plan = own_plan_value or []
+    use_all_plan = plan_mode == "all" or own_plan_value is None
+    plan = all_plan if use_all_plan else own_plan
     overrides = timetable.get("custom_lessons") or []
     week_types = {lesson.get("badge") for day in plan for lesson in day} | {
         item.get("week_type") for item in overrides
@@ -498,6 +500,16 @@ def resolve_timetable(
             ]
             for entries in plan
         ]
+        if use_all_plan:
+            for entries in filtered:
+                for lesson in entries:
+                    class_name = text(lesson.get("badge")).strip()
+                    if (
+                        class_name
+                        and class_name not in ("A", "B")
+                        and not text(lesson.get("class_name")).strip()
+                    ):
+                        lesson["class_name"] = class_name
         while len(filtered) < 5:
             filtered.append([])
         applicable = [

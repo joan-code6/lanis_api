@@ -553,11 +553,50 @@ def test_all_plan_class_badges_are_used_for_substitution_matching():
     ]
 
     result = resolve_timetable(
-        raw, native(klasse="9A"), "10B", date(2026, 9, 9), plan_mode="all"
+        raw,
+        native(klasse="9A"),
+        "10B",
+        date(2026, 9, 9),
+        plan_mode="all",
     )
 
     assert result["days"][0]["lessons"][0]["class_name"] == "9A"
     assert result["days"][0]["lessons"][0]["cancelled"]
+
+
+def test_empty_personal_plan_does_not_fallback_to_all_plan():
+    raw = timetable()
+    raw["template_plan_for_own"] = [[], [], [], [], []]
+    raw["template_plan_for_all"][2] = [
+        {"name": "D", "teacher": "AB", "stunde": 3, "duration": 1, "badge": "9A"}
+    ]
+
+    result = resolve_timetable(raw, [], "10B", date(2026, 9, 9))
+
+    assert result["days"][0]["lessons"] == []
+
+
+def test_all_plan_class_metadata_survives_custom_override():
+    raw = timetable()
+    raw["template_plan_for_own"] = [[], [], [], [], []]
+    raw["template_plan_for_all"][2] = [
+        {"name": "D", "teacher": "AB", "stunde": 3, "duration": 1, "badge": "9A"}
+    ]
+    raw["custom_lessons"] = [
+        {"date": DAY, "period": "3", "subject": "Kunst", "duration": 1}
+    ]
+
+    result = resolve_timetable(
+        raw,
+        native(klasse="9A", fach="Kunst"),
+        "10B",
+        date(2026, 9, 9),
+        plan_mode="all",
+    )
+
+    lesson = result["days"][0]["lessons"][0]
+    assert lesson["class_name"] == "9A"
+    assert lesson["cancelled"]
 
 
 def test_unlabeled_hour_slots_keep_one_based_periods():
