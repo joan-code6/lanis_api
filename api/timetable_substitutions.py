@@ -100,12 +100,14 @@ def change(value: Any) -> tuple[str, str]:
     return parts[0], parts[-1]
 
 
-def make(**fields: Any) -> dict:
-    fields["cancelled"] = bool(
-        re.search(
-            r"\b(?:entfall|ausfall|entfällt|fällt aus)\b", fields["kind"], re.IGNORECASE
-        )
+def is_cancellation(value: str) -> bool:
+    return bool(
+        re.search(r"\b(?:entfall|ausfall|entfällt|fällt\s+aus)\b", value, re.IGNORECASE)
     )
+
+
+def make(**fields: Any) -> dict:
+    fields["cancelled"] = is_cancellation(fields["kind"])
     return fields
 
 
@@ -151,6 +153,19 @@ def dsb_substitutions(tables: list[dict]) -> list[dict]:
             )
             if get("lehrkraft", "lehrer") and get("vertreter", "vertretung"):
                 old_teacher = get("lehrkraft", "lehrer")
+            notes = list(
+                dict.fromkeys(
+                    cells[name]
+                    for name in (
+                        "bemerkungen / hinweise",
+                        "hinweis",
+                        "text",
+                        "bemerkung",
+                        "info",
+                    )
+                    if cells.get(name)
+                )
+            )
             result.append(
                 make(
                     source="DSB",
@@ -165,16 +180,10 @@ def dsb_substitutions(tables: list[dict]) -> list[dict]:
                     kind=get("art")
                     or (
                         "Entfall"
-                        if re.search(
-                            r"\b(?:entfall|ausfall|entfällt)\b",
-                            get("info"),
-                            re.IGNORECASE,
-                        )
+                        if any(is_cancellation(note) for note in notes)
                         else "Vertretung"
                     ),
-                    info=get(
-                        "bemerkungen / hinweise", "hinweis", "text", "bemerkung", "info"
-                    ),
+                    info=" · ".join(notes),
                     group=get("lerngruppe", "kurs"),
                 )
             )
@@ -257,10 +266,10 @@ def apply_substitutions(
                 )
                 scored.append((2 * subject + 3 * teacher + 5 * group, index))
             scored.sort(reverse=True)
-            concrete = all(
-                re.fullmatch(r"\d+[a-z]", value)
-                for value in class_tokens(item["classes"])
-            )
+            visible_classes = class_tokens(own_class)
+            for lesson in lessons:
+                visible_classes.update(class_tokens(lesson.get("class_name")))
+            affected_classes = class_tokens(item["classes"]) & visible_classes
             special = bool(
                 re.search(
                     r"sondereins|klassen(?:leitungs)?stunde|zusatz",
@@ -269,25 +278,35 @@ def apply_substitutions(
                 )
             )
             for period in item["periods"]:
-                options = [
-                    (score, index)
-                    for score, index in scored
-                    if period in lesson_periods(lessons[index])
-                ]
-                if (
-                    not options
-                    or not (
-                        (options[0][0] > 0 or special)
-                        if concrete
-                        else options[0][0] >= 3
+                # Different explicitly listed classes are independent targets.
+                # Only candidates inside the same class compete for a match.
+                for class_name in sorted(affected_classes):
+                    options = [
+                        (score, index)
+                        for score, index in scored
+                        if period in lesson_periods(lessons[index])
+                        and class_name
+                        in class_tokens(lessons[index].get("class_name") or own_class)
+                    ]
+                    concrete = bool(re.fullmatch(r"\d+[a-z]", class_name))
+                    if (
+                        not options
+                        or not (
+                            (options[0][0] > 0 or special)
+                            if concrete
+                            else options[0][0] >= 3
+                        )
+                        or (len(options) > 1 and options[0][0] == options[1][0])
+                    ):
+                        notice(item)
+                        continue
+                    matches = assigned.setdefault(options[0][1], {}).setdefault(
+                        period, []
                     )
-                    or (len(options) > 1 and options[0][0] == options[1][0])
-                ):
-                    notice(item)
-                    continue
-                assigned.setdefault(options[0][1], {}).setdefault(period, []).append(
-                    item
-                )
+                    # A joint lesson can match several class tokens, but is
+                    # still changed once, not reported as conflicting with itself.
+                    if item not in matches:
+                        matches.append(item)
             if not item["periods"]:
                 notice(item)
         resolved = []

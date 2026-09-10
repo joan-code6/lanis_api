@@ -530,8 +530,8 @@ def test_lowercase_class_header_receives_preceding_day_heading():
 
     html = (
         '<div class="mon_title">9.9.2026</div>'
-        '<table><tr><th>klasse</th><th>Stunde</th><th>Art</th></tr>'
-        '<tr><td>10B</td><td>3</td><td>Entfall</td></tr></table>'
+        "<table><tr><th>klasse</th><th>Stunde</th><th>Art</th></tr>"
+        "<tr><td>10B</td><td>3</td><td>Entfall</td></tr></table>"
     )
 
     parsed = _parse_plan_tables(html)["tables"]
@@ -564,9 +564,87 @@ def test_unlabeled_hour_slots_keep_one_based_periods():
     raw = timetable()
     raw["hours"] = [
         {"start_time": {"hour": 8, "minute": 0}, "end_time": {"hour": 8, "minute": 45}},
-        {"start_time": {"hour": 8, "minute": 50}, "end_time": {"hour": 9, "minute": 35}},
+        {
+            "start_time": {"hour": 8, "minute": 50},
+            "end_time": {"hour": 9, "minute": 35},
+        },
     ]
 
     result = resolve_timetable(raw, [], "10B", date(2026, 9, 9))
 
     assert [slot["period"] for slot in result["time_slots"]] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "header", ["Bemerkungen / Hinweise", "Hinweis", "Text", "Bemerkung", "Info"]
+)
+@pytest.mark.parametrize(
+    "note", ["Entfall", "Ausfall", "Unterricht entfällt", "Unterricht fällt aus"]
+)
+def test_cancellations_in_any_supported_dsb_note_column(header, note):
+    table = {
+        "date": DAY,
+        "headers": ["Klasse", "Stunde", "Fach", header],
+        "rows": [{"Klasse": "10B", "Stunde": "3", "Fach": "Deutsch", header: note}],
+    }
+    changes = dsb_substitutions([table])
+    assert changes[0]["cancelled"]
+    assert changes[0]["info"] == note
+    assert apply(changes)["lessons"][0]["cancelled"]
+
+
+def test_note_cancellation_is_not_hidden_by_another_note_column():
+    table = {
+        "date": DAY,
+        "headers": ["Klasse", "Stunde", "Fach", "Hinweis", "Info"],
+        "rows": [["10B", "3", "Deutsch", "Siehe Aufgaben", "Unterricht fällt aus"]],
+    }
+    change = dsb_substitutions([table])[0]
+    assert change["cancelled"]
+    assert change["info"] == "Siehe Aufgaben · Unterricht fällt aus"
+    table["headers"].append("Art")
+    table["rows"][0].append("Vertretung")
+    assert not dsb_substitutions([table])[0]["cancelled"], (
+        "Explicit kind remains authoritative"
+    )
+
+
+def test_multi_class_changes_apply_to_each_class_independently():
+    lessons = [{**LESSON, "class_name": value, "id": value} for value in ("9A", "9B")]
+    result = apply(native(klasse="9A, 9B"), lessons)
+    assert not result["substitutionNotices"]
+    assert len([lesson for lesson in result["lessons"] if lesson.get("cancelled")]) == 2
+    assert all(
+        not lesson.get("cancelled")
+        for lesson in result["lessons"]
+        if lesson["period"] == 4
+    )
+
+
+def test_multi_class_change_preserves_ambiguity_within_one_class():
+    lessons = [
+        {**LESSON, "class_name": value, "id": str(index)}
+        for index, value in enumerate(("9A", "9A", "9B"))
+    ]
+    result = apply(native(klasse="9A, 9B"), lessons)
+    assert len(result["substitutionNotices"]) == 1
+    assert all(
+        not lesson.get("cancelled")
+        for lesson in result["lessons"]
+        if lesson["class_name"] == "9A"
+    )
+    assert next(lesson for lesson in result["lessons"] if lesson["class_name"] == "9B")[
+        "cancelled"
+    ]
+
+
+def test_joint_class_lesson_receives_each_change_once():
+    result = apply(native(klasse="9A, 9B"), [{**LESSON, "class_name": "9A, 9B"}])
+    assert not result["substitutionNotices"]
+    assert result["lessons"][0]["cancelled"]
+    assert not result["lessons"][1].get("cancelled")
+    personal = apply(
+        native(klasse="9A, 9B"), [{**LESSON, "class_name": "9A"}], own_class="9A"
+    )
+    assert personal["lessons"][0]["cancelled"]
+    assert not personal["substitutionNotices"]
