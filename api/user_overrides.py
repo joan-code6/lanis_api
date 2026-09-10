@@ -100,13 +100,17 @@ def _custom_raw_lesson(
 
     # Keep enriched fields such as homework when a user only corrects the
     # visible portal values for an existing lesson.
+    override_class = str(override.get("class_name") or "").strip() or None
+    existing_class = (
+        str(existing.get("class_name") or "").strip() or None if existing else None
+    )
     lesson: dict[str, Any] = {
         **(copy.deepcopy(existing) if existing else {}),
         "id": f"custom-{override.get('date')}-{period}",
         "name": str(override.get("subject") or "Unterricht"),
         "teacher": str(override.get("teacher") or "") or None,
         "room": str(override.get("room") or "") or None,
-        "class_name": str(override.get("class_name") or "") or None,
+        "class_name": override_class or existing_class,
         "info": str(override.get("info") or "") or None,
         "stunde": start_period,
         "duration": duration,

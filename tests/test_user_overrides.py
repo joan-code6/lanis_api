@@ -66,6 +66,47 @@ def test_custom_lesson_replaces_portal_lesson_and_preserves_enrichment() -> None
     assert result["plan_for_own"][0][0]["name"] == "Deutsch"
 
 
+def test_custom_lesson_preserves_existing_class_without_override() -> None:
+    timetable = _raw_timetable()
+    timetable["plan_for_all"][0][0]["class_name"] = "9A"
+
+    result = apply_custom_lessons(
+        timetable,
+        [
+            {
+                "date": "2026-08-24",
+                "period": "1",
+                "subject": "Deutsch",
+                "duration": 1,
+                "removed": False,
+            }
+        ],
+    )
+
+    assert result["plan_for_all"][0][0]["class_name"] == "9A"
+
+
+def test_custom_lesson_explicit_class_replaces_existing_class() -> None:
+    timetable = _raw_timetable()
+    timetable["plan_for_all"][0][0]["class_name"] = "9A"
+
+    result = apply_custom_lessons(
+        timetable,
+        [
+            {
+                "date": "2026-08-24",
+                "period": "1",
+                "subject": "Deutsch",
+                "class_name": "9B",
+                "duration": 1,
+                "removed": False,
+            }
+        ],
+    )
+
+    assert result["plan_for_all"][0][0]["class_name"] == "9B"
+
+
 def test_custom_lesson_recurs_on_the_same_weekday() -> None:
     result = apply_custom_lessons(
         _raw_timetable(),
