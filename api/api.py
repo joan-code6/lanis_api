@@ -57,6 +57,7 @@ from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .uptime import run_uptime_scheduler
 from .documentation import router as documentation_router
+from .homepage import router as homepage_router
 from .admin import AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
     DEFAULT_SIDEBAR_ORDER,
@@ -1002,6 +1003,7 @@ app.add_middleware(
 
 app.include_router(documentation_router)
 app.include_router(admin_router)
+app.include_router(homepage_router)
 
 
 @app.on_event("startup")

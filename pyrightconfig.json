@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/DetachHead/basedpyright/main/packages/pyright-internal/src/schemas/pyrightconfig.schema.json",
+  "typeCheckingMode": "off",
+  "pythonVersion": "3.10",
+  "include": [
+    "api",
+    "schulportal_hessen",
+    "sph_client",
+    "tests"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "build",
+    "dist"
+  ],
+  "reportMissingTypeStubs": "none"
+}
