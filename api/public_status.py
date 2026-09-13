@@ -100,8 +100,11 @@ async def _build_public_status() -> dict[str, Any]:
     for row in rows:
         timestamp = _timestamp(row.get("checked_at"))
         if timestamp is not None and start <= timestamp <= now:
-            checks.append((timestamp, _check(row, timestamp)))
-    checks.sort(key=lambda item: item[0], reverse=True)
+            checks.append((timestamp, row))
+    # Timestamps can collide when checks are written close together. Keep the
+    # newest database row stable without exposing its internal identifier.
+    checks.sort(key=lambda item: (item[0], str(item[1].get("id", ""))), reverse=True)
+    checks = [(timestamp, _check(row, timestamp)) for timestamp, row in checks]
     latest = checks[0] if checks else None
     stale = latest is None or (now - latest[0]).total_seconds() > stale_after
     current = (

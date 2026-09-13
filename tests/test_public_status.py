@@ -81,6 +81,23 @@ def test_public_projection_excludes_private_fields_and_preserves_partial_failure
     asyncio.run(scenario())
 
 
+def test_equal_timestamps_choose_highest_internal_id(monitor, monkeypatch):
+    _db, now = monitor
+
+    class Rows:
+        async def get_uptime_checks(self, **_kwargs):
+            return [
+                {"id": 4, "checked_at": now.isoformat(), "status": "up"},
+                {"id": 5, "checked_at": now.isoformat(), "status": "down"},
+            ]
+
+    monkeypatch.setattr(uptime, "user_metrics_db", Rows())
+    result = asyncio.run(public_status._build_public_status())
+
+    assert result["current"]["status"] == "down"
+    assert "id" not in json.dumps(result)
+
+
 def test_stale_and_disabled_current_do_not_rewrite_history(monitor, monkeypatch):
     db, now = monitor
 
