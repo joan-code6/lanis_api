@@ -2594,7 +2594,8 @@ async def meinunterricht_homework_done(
     result = await run_in_threadpool(
         auth.client.meinunterricht_set_homework_done, course_id, entry_id, done
     )
-    await sessions.invalidate_user_cache(auth.user_id)
+    if result.get("success"):
+        await sessions.invalidate_user_cache(auth.user_id)
     return result
 
 

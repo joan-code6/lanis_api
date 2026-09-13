@@ -290,6 +290,35 @@ def test_endpoint_invalidation_preserves_unrelated_outage_snapshots():
     current = store.version("a", "/kalender")
     assert store.get(calendar, current) is not None
     assert store.get(timetable, store.version("a", "/stundenplan")) is None
+
+
+def test_failed_homework_write_keeps_existing_fallback_data(monkeypatch):
+    class Client:
+        def meinunterricht_set_homework_done(self, *_args):
+            return {"success": False, "error": "upstream unavailable"}
+
+    class Sessions:
+        async def invalidate_user_cache(self, _user_id):
+            raise AssertionError("A failed write must not discard saved reads")
+
+    monkeypatch.setattr(api_module, "sessions", Sessions())
+    auth = api_module.AuthSession(
+        client=Client(),
+        user_id="5201:student",
+        school_id="5201",
+        username="student",
+    )
+
+    result = asyncio.run(
+        api_module.meinunterricht_homework_done(
+            auth=auth,
+            course_id="course",
+            entry_id="entry",
+            done=True,
+        )
+    )
+
+    assert result["success"] is False
     assert store.get(timetable_view, store.version("a", "/stundenplan/view")) is None
     # A response that started before invalidation cannot restore stale data.
     store.put(timetable, b"{}", now, version)
