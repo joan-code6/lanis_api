@@ -1,3 +1,4 @@
+from schulportal_hessen.tools.transport import ObservedSession
 import requests
 import threading
 from typing import Optional, Dict, Any, List
@@ -72,7 +73,7 @@ class SchulportalHessenAPI:
         After initialization, call login() with valid credentials
         to authenticate before making other API calls.
         """
-        self.session = requests.Session()
+        self.session = ObservedSession()
         self.session.headers.update(
             {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",

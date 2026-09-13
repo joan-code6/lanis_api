@@ -1241,6 +1241,30 @@ curl -X GET http://localhost:8000/meinunterricht/course/12345 \
 
 ---
 
+## Cached outage access
+
+`GET /cache/status` requires `X-Session-Token` but does not contact
+Schulportal. Its response has this shape:
+
+```json
+{
+  "available": true,
+  "last_successful_fetch_at": "2026-09-13T08:15:00Z",
+  "snapshot_count": 7,
+  "retention_seconds": 86400
+}
+```
+
+Selected successful JSON read endpoints retain account-isolated snapshots for
+up to 24 hours. A snapshot is returned only after the current request positively
+observes an upstream timeout, connection failure, or HTTP 5xx response. Cached
+fallback responses carry `X-LANIS-Cache: stale` and
+`X-LANIS-Fetched-At: <original UTC timestamp>`; these headers are exposed over
+CORS. `fresh` identifies a live upstream response and `hit` an ordinary API
+cache hit. Authentication, authorization, and TLS failures are returned as-is.
+Writes invalidate snapshots derived from the affected data, logout removes all
+snapshots for the account, and a backend restart clears the in-memory store.
+
 ## Notes
 
 - Session tokens expire after 60 minutes of inactivity
