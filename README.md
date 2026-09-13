@@ -150,6 +150,25 @@ keep navigation responsive.
 - **File cache:** SHA-256 hashed, stored in `data/files/`
 - **Background revalidation:** stale entries are refreshed asynchronously
 
+### Cached access during Schulportal outages
+
+Successful authenticated JSON reads are also retained in a private, in-memory
+snapshot cache for up to 24 hours. If a later request observes a Schulportal
+timeout, connection failure, or HTTP 5xx response, the API can return the last
+snapshot for the same account, route, path parameters, and query parameters.
+Authentication, TLS, and permission failures are never hidden by a snapshot.
+
+Fallback responses include `X-LANIS-Cache: stale` and the original UTC fetch
+time in `X-LANIS-Fetched-At`. Live responses use `fresh` or `hit`. The cache is
+bounded to 100 entries per account, 2 MiB per response, and 64 MiB total. It is
+cleared on logout and invalidated with the affected source data after writes.
+Snapshots are held in process memory, so a backend restart clears them.
+
+Authenticated clients can read `GET /cache/status` without contacting
+Schulportal. It returns whether snapshots exist, their count, the most recent
+successful fetch time, and the retention period. This timestamp describes the
+latest successful cached read; it is not a complete account synchronization.
+
 ## Push notifications
 
 Authenticated users can opt in to daytime polling for new messages and Vertretungsplan entries from the Lanis UI settings. The default polling window is 07:00–21:00 in the user's configured timezone, with a 15-minute interval. Each category creates its own baseline before sending notifications, so enabling it does not alert on existing content. Vertretungsplan notifications default to the user's own class and can instead target selected classes or the full plan.
