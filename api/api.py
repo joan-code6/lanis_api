@@ -56,6 +56,7 @@ from .discord import notify_new_user
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .uptime import run_uptime_scheduler
+from .public_status import get_public_status
 from .documentation import router as documentation_router
 from .admin import AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
@@ -1064,6 +1065,12 @@ async def _cleanup_sessions() -> None:
 
 
 # --- Public Endpoints ---
+
+
+@app.get("/status", tags=["Public status"])
+async def public_status() -> Dict[str, Any]:
+    """Observed Schulportal availability; public and independent of user login."""
+    return await get_public_status()
 
 
 @app.get("/health")
