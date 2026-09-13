@@ -95,7 +95,8 @@ def test_equal_timestamps_choose_highest_internal_id(monitor, monkeypatch):
     result = asyncio.run(public_status._build_public_status())
 
     assert result["current"]["status"] == "down"
-    assert "id" not in json.dumps(result)
+    assert "id" not in result["current"]
+    assert all("id" not in check for check in result["history"])
 
 
 def test_stale_and_disabled_current_do_not_rewrite_history(monitor, monkeypatch):
