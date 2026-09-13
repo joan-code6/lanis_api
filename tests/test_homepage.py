@@ -34,6 +34,12 @@ def test_homepage_map_exposes_only_thresholded_directory_pins(monkeypatch):
         "city_coordinates",
         lambda location: (50.1, 8.6) if location == "Frankfurt" else None,
     )
+    scheduled = []
+    monkeypatch.setattr(
+        homepage_module,
+        "schedule_school_coordinate_population",
+        lambda _tasks, schools: scheduled.extend(schools),
+    )
     route = next(
         route
         for route in homepage_module.router.routes
@@ -65,6 +71,7 @@ def test_homepage_map_exposes_only_thresholded_directory_pins(monkeypatch):
         set(school) == {"school_id", "name", "city", "latitude", "longitude"}
         for school in response["schools"]
     )
+    assert scheduled == [("3000", "Gamma-Schule", "Unbekannt")]
 
 
 def test_homepage_map_tolerates_an_unavailable_directory(monkeypatch):

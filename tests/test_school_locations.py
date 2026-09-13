@@ -1,4 +1,9 @@
+import asyncio
+import sqlite3
+import threading
 from datetime import datetime, timezone
+
+from fastapi import BackgroundTasks
 
 from api import school_locations
 
@@ -10,7 +15,7 @@ def test_geocoded_coordinates_are_shared_through_persistent_cache(
         school_locations, "_SCHOOL_GEOCODE_DB_PATH", tmp_path / "locations.db"
     )
     monkeypatch.setattr(school_locations, "_school_geocode_cache", {})
-    monkeypatch.setattr(school_locations, "_wait_for_geocode_slot", lambda: None)
+    monkeypatch.setattr(school_locations, "_wait_for_geocode_slot", lambda: True)
 
     class Response:
         def raise_for_status(self):
@@ -59,8 +64,8 @@ def test_nominatim_slots_are_rate_limited_through_persistent_state(
     waits = []
     monkeypatch.setattr(school_locations.time, "sleep", waits.append)
 
-    school_locations._wait_for_geocode_slot()
-    school_locations._wait_for_geocode_slot()
+    assert school_locations._wait_for_geocode_slot()
+    assert school_locations._wait_for_geocode_slot()
 
     assert waits
     assert waits[-1] >= 0.9
@@ -68,6 +73,7 @@ def test_nominatim_slots_are_rate_limited_through_persistent_state(
 
 def test_background_population_is_bounded_and_skips_cached_schools(monkeypatch):
     monkeypatch.setattr(school_locations, "_MAX_BACKGROUND_GEOCODES", 2)
+    monkeypatch.setattr(school_locations, "_school_population_lock", threading.Lock())
     monkeypatch.setattr(
         school_locations,
         "_cached_school_coordinates",
@@ -80,13 +86,47 @@ def test_background_population_is_bounded_and_skips_cached_schools(monkeypatch):
         lambda school_id, name, location: geocoded.append(school_id),
     )
 
-    school_locations.populate_school_coordinates(
-        [
-            ("cached", "Cached", "Town"),
-            ("one", "One", "Town"),
-            ("two", "Two", "Town"),
-            ("three", "Three", "Town"),
-        ]
+    schools = [
+        ("cached", "Cached", "Town"),
+        ("one", "One", "Town"),
+        ("two", "Two", "Town"),
+        ("three", "Three", "Town"),
+    ]
+    tasks = BackgroundTasks()
+
+    assert school_locations.schedule_school_coordinate_population(tasks, schools)
+    assert not school_locations.schedule_school_coordinate_population(
+        BackgroundTasks(), schools
     )
+    asyncio.run(tasks())
 
     assert geocoded == ["one", "two"]
+
+
+def test_sqlite_coordination_failure_skips_nominatim(monkeypatch):
+    monkeypatch.setattr(school_locations, "_school_geocode_cache", {})
+    monkeypatch.setattr(
+        school_locations,
+        "_connect_coordinate_db",
+        lambda: (_ for _ in ()).throw(sqlite3.OperationalError()),
+    )
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("uncoordinated Nominatim request")
+
+    monkeypatch.setattr(school_locations.requests, "get", unexpected_request)
+
+    assert school_locations.geocode_school("5201", "Testschule", "Teststadt") is None
+
+
+def test_rate_slot_failure_skips_nominatim(monkeypatch):
+    monkeypatch.setattr(school_locations, "_school_geocode_cache", {})
+    monkeypatch.setattr(school_locations, "_claim_school_geocode", lambda _id: True)
+    monkeypatch.setattr(school_locations, "_wait_for_geocode_slot", lambda: False)
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("uncoordinated Nominatim request")
+
+    monkeypatch.setattr(school_locations.requests, "get", unexpected_request)
+
+    assert school_locations.geocode_school("5201", "Testschule", "Teststadt") is None

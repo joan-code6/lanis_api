@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import requests
+from fastapi import BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 
 from schulportal_hessen.base import SchulportalHessenAPI
@@ -64,6 +65,7 @@ _school_directory_cache: dict[str, Any] = {"data": None, "created_at": None}
 _school_directory_lock = asyncio.Lock()
 _school_geocode_cache: dict[str, dict[str, Any]] = {}
 _school_geocode_lock = threading.Lock()
+_school_population_lock = threading.Lock()
 _coordinate_db_init_lock = threading.Lock()
 _initialized_coordinate_dbs: set[Path] = set()
 _SCHOOL_GEOCODE_CACHE_TTL = timedelta(days=30)
@@ -277,7 +279,7 @@ def _claim_school_geocode(school_id: str) -> bool:
             return True
     except (OSError, sqlite3.Error, ValueError):
         logger.warning("Could not claim a persisted school-coordinate lookup", exc_info=True)
-        return True
+        return False
 
 
 def _persist_school_coordinates(
@@ -314,7 +316,7 @@ def _persist_school_coordinates(
     }
 
 
-def _wait_for_geocode_slot() -> None:
+def _wait_for_geocode_slot() -> bool:
     """Reserve a global one-request-per-second Nominatim slot across workers."""
     now = datetime.now(timezone.utc)
     try:
@@ -337,9 +339,10 @@ def _wait_for_geocode_slot() -> None:
         wait_seconds = (next_request_at - now).total_seconds()
     except (OSError, sqlite3.Error, ValueError):
         logger.warning("Could not reserve a persisted Nominatim rate-limit slot", exc_info=True)
-        wait_seconds = 1.0
+        return False
     if wait_seconds > 0:
         time.sleep(wait_seconds)
+    return True
 
 
 def geocode_school(
@@ -370,7 +373,8 @@ def geocode_school(
         if not _claim_school_geocode(school_id):
             persisted = _persisted_school_coordinates(school_id)
             return persisted[1] if persisted else None
-        _wait_for_geocode_slot()
+        if not _wait_for_geocode_slot():
+            return None
         try:
             query_parameters = urlencode(
                 {
@@ -407,14 +411,32 @@ def geocode_school(
         return coordinates
 
 
-def populate_school_coordinates(schools: list[tuple[str, str, str]]) -> None:
+def _populate_school_coordinates(schools: list[tuple[str, str, str]]) -> None:
     """Populate a bounded number of missing coordinates after the response."""
-    lookups = 0
-    for school_id, name, location in schools:
-        is_cached, _ = _cached_school_coordinates(school_id)
-        if is_cached:
-            continue
-        if lookups >= _MAX_BACKGROUND_GEOCODES:
-            break
-        geocode_school(school_id, name, location)
-        lookups += 1
+    try:
+        lookups = 0
+        for school_id, name, location in schools:
+            is_cached, _ = _cached_school_coordinates(school_id)
+            if is_cached:
+                continue
+            if lookups >= _MAX_BACKGROUND_GEOCODES:
+                break
+            geocode_school(school_id, name, location)
+            lookups += 1
+    finally:
+        _school_population_lock.release()
+
+
+def schedule_school_coordinate_population(
+    background_tasks: BackgroundTasks,
+    schools: list[tuple[str, str, str]],
+) -> bool:
+    """Queue at most one coordinate-population job per API worker."""
+    if not _school_population_lock.acquire(blocking=False):
+        return False
+    try:
+        background_tasks.add_task(_populate_school_coordinates, schools)
+    except Exception:
+        _school_population_lock.release()
+        raise
+    return True

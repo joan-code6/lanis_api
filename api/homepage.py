@@ -13,7 +13,7 @@ from .school_locations import (
     city_coordinates,
     get_cached_school_coordinates,
     get_school_directory,
-    populate_school_coordinates,
+    schedule_school_coordinate_population,
 )
 
 router = APIRouter(prefix="/homepage", tags=["homepage"])
@@ -79,7 +79,7 @@ async def homepage_user_map(background_tasks: BackgroundTasks) -> dict[str, Any]
         )
 
     if missing_coordinates:
-        background_tasks.add_task(populate_school_coordinates, missing_coordinates)
+        schedule_school_coordinate_population(background_tasks, missing_coordinates)
 
     schools.sort(key=lambda school: (school["name"].casefold(), school["school_id"]))
     return {
