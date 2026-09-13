@@ -63,6 +63,7 @@ _HESSEN_CITY_COORDINATES: dict[str, tuple[float, float]] = {
 }
 _school_directory_cache: dict[str, Any] = {"data": None, "created_at": None}
 _school_directory_lock = asyncio.Lock()
+_school_directory_failure_until: datetime | None = None
 _school_geocode_cache: dict[str, dict[str, Any]] = {}
 _school_geocode_lock = threading.Lock()
 _school_population_lock = threading.Lock()
@@ -83,9 +84,23 @@ def _directory_cache_is_fresh(now: datetime) -> bool:
     created_at = _school_directory_cache["created_at"]
     return bool(
         isinstance(created_at, datetime)
-        and _school_directory_cache["data"]
+        and _school_directory_cache["data"] is not None
         and now - created_at < timedelta(hours=12)
     )
+
+
+def _directory_refresh_is_throttled(now: datetime) -> bool:
+    """Avoid retrying a failed directory refresh on every public request."""
+    return bool(
+        _school_directory_failure_until is not None
+        and now < _school_directory_failure_until
+    )
+
+
+def _remember_directory_failure(now: datetime) -> None:
+    """Temporarily serve stale directory data after an upstream failure."""
+    global _school_directory_failure_until
+    _school_directory_failure_until = now + timedelta(minutes=1)
 
 
 async def get_school_directory() -> dict[str, dict[str, Any]]:
@@ -93,22 +108,36 @@ async def get_school_directory() -> dict[str, dict[str, Any]]:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     if _directory_cache_is_fresh(now):
         return _school_directory_cache["data"]
+    if _directory_refresh_is_throttled(now):
+        return _school_directory_cache["data"] or {}
 
     async with _school_directory_lock:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         if _directory_cache_is_fresh(now):
             return _school_directory_cache["data"]
+        if _directory_refresh_is_throttled(now):
+            return _school_directory_cache["data"] or {}
         client = SchulportalHessenAPI()
         try:
             payload = await run_in_threadpool(client.school_list_get_all)
         except Exception:
             logger.warning("Could not load school directory for map", exc_info=True)
+            _remember_directory_failure(now)
             return _school_directory_cache["data"] or {}
         finally:
             client.close()
 
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            logger.warning("School directory returned an unsuccessful response")
+            _remember_directory_failure(now)
+            return _school_directory_cache["data"] or {}
+
         directory: dict[str, dict[str, Any]] = {}
-        districts = payload.get("districts", []) if isinstance(payload, dict) else []
+        districts = payload.get("districts", [])
+        if not isinstance(districts, list):
+            logger.warning("School directory response has no valid districts")
+            _remember_directory_failure(now)
+            return _school_directory_cache["data"] or {}
         for district in districts:
             schools = district.get("schools", []) if isinstance(district, dict) else []
             for school in schools:
@@ -121,6 +150,8 @@ async def get_school_directory() -> dict[str, dict[str, Any]]:
                     }
         _school_directory_cache["data"] = directory
         _school_directory_cache["created_at"] = now
+        global _school_directory_failure_until
+        _school_directory_failure_until = None
         return directory
 
 

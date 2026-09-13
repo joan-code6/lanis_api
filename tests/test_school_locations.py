@@ -8,6 +8,61 @@ from fastapi import BackgroundTasks
 from api import school_locations
 
 
+def test_failed_directory_refresh_preserves_stale_data_and_is_throttled(
+    monkeypatch,
+):
+    stale_directory = {"5201": {"name": "Cached School", "location": "Kassel"}}
+    monkeypatch.setattr(
+        school_locations,
+        "_school_directory_cache",
+        {"data": stale_directory, "created_at": datetime.min},
+    )
+    monkeypatch.setattr(school_locations, "_school_directory_failure_until", None)
+    calls = []
+
+    class Client:
+        def school_list_get_all(self):
+            calls.append(True)
+            return {"success": False, "error": "upstream unavailable"}
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(school_locations, "SchulportalHessenAPI", Client)
+
+    assert asyncio.run(school_locations.get_school_directory()) == stale_directory
+    assert asyncio.run(school_locations.get_school_directory()) == stale_directory
+    assert len(calls) == 1
+    assert school_locations._school_directory_failure_until is not None
+    assert school_locations._school_directory_failure_until > datetime.now(
+        timezone.utc
+    ).replace(tzinfo=None)
+
+
+def test_empty_successful_directory_is_cached(monkeypatch):
+    monkeypatch.setattr(
+        school_locations,
+        "_school_directory_cache",
+        {"data": None, "created_at": None},
+    )
+    monkeypatch.setattr(school_locations, "_school_directory_failure_until", None)
+    calls = []
+
+    class Client:
+        def school_list_get_all(self):
+            calls.append(True)
+            return {"success": True, "districts": []}
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(school_locations, "SchulportalHessenAPI", Client)
+
+    assert asyncio.run(school_locations.get_school_directory()) == {}
+    assert asyncio.run(school_locations.get_school_directory()) == {}
+    assert len(calls) == 1
+
+
 def test_geocoded_coordinates_are_shared_through_persistent_cache(
     monkeypatch, tmp_path
 ):
