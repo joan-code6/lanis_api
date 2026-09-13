@@ -290,6 +290,10 @@ def test_endpoint_invalidation_preserves_unrelated_outage_snapshots():
     current = store.version("a", "/kalender")
     assert store.get(calendar, current) is not None
     assert store.get(timetable, store.version("a", "/stundenplan")) is None
+    assert store.get(timetable_view, store.version("a", "/stundenplan/view")) is None
+    # A response that started before invalidation cannot restore stale data.
+    store.put(timetable, b"{}", now, version)
+    assert store.get(timetable, store.version("a", "/stundenplan")) is None
 
 
 def test_failed_homework_write_keeps_existing_fallback_data(monkeypatch):
@@ -319,10 +323,6 @@ def test_failed_homework_write_keeps_existing_fallback_data(monkeypatch):
     )
 
     assert result["success"] is False
-    assert store.get(timetable_view, store.version("a", "/stundenplan/view")) is None
-    # A response that started before invalidation cannot restore stale data.
-    store.put(timetable, b"{}", now, version)
-    assert store.get(timetable, store.version("a", "/stundenplan")) is None
 
 
 def test_old_metadata_does_not_age_timetable_snapshot(setup):
