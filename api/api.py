@@ -912,11 +912,16 @@ async def cache_status(auth: AuthSession = Depends(local_auth_dependency)):
 
 
 async def client_dependency(
+    request: Request,
     x_session_token: str = Header(..., alias="X-Session-Token"),
 ) -> AuthSession:
     """Validate access token (JWT) and return the AuthSession with a live Schulportal client."""
-    payload = sessions.decode_access_token(x_session_token)
-    user_id = canonicalize_user_id(payload["sub"])
+    identity = getattr(request.state, "lanis_auth", None)
+    if identity is None:
+        payload = sessions.decode_access_token(x_session_token)
+        user_id = canonicalize_user_id(payload["sub"])
+    else:
+        user_id = identity.user_id
     session_data = await sessions._get_or_create_schulportal_client(user_id)
     try:
         await user_metrics_db.record_activity(

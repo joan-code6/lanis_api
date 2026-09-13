@@ -202,6 +202,7 @@ class OutageCacheRoute(APIRoute):
             if not token:
                 return await original(request)
             identity = await local_auth_dependency(token)
+            request.state.lanis_auth = identity
             key = (
                 identity.user_id,
                 request.url.path,
@@ -239,7 +240,7 @@ class OutageCacheRoute(APIRoute):
                 entry = snapshots.get(key, version)
                 # Revocation could have happened while upstream I/O was pending.
                 if entry:
-                    await local_auth_dependency(token)
+                    request.state.lanis_auth = await local_auth_dependency(token)
                     entry = snapshots.get(key, version)
                 if entry:
                     result = Response(entry.body, media_type="application/json")
