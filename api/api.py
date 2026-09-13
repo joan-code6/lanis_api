@@ -95,6 +95,9 @@ from .auth_db import (
     save_whatsapp_preferences,
     whatsapp_link_matches_sync,
 )
+from .outage_cache import OutageCacheRoute, snapshots
+from schulportal_hessen.tools.transport import observation
+
 from .file_cache import (
     get_file_hash,
     is_file_cached,
@@ -659,10 +662,10 @@ class AuthManager:
         user_id = canonicalize_user_id(user_id)
         async with self._lock:
             data = self._schulportal_clients.pop(user_id, None)
-        if data:
-            await run_in_threadpool(data.client.logout)
-            data.client.close()
         await self.invalidate_user_cache(user_id)
+        if data:
+            # Logout is a local revocation even when Schulportal is unreachable.
+            data.client.close()
 
     async def shutdown(self) -> None:
         async with self._lock:
@@ -708,6 +711,9 @@ class AuthManager:
                     LONG_CACHE_TTL_SECONDS if entry.is_long_term else CACHE_TTL_SECONDS
                 )
                 if not entry.is_expired(ttl):
+                    current = observation.get()
+                    if current and (endpoint not in {"/apps", "/modules", "/benutzer"} or current.cache_path == endpoint):
+                        current.cached_timestamps.append(entry.created_at)
                     return entry.data
                 else:
                     self._cache.pop(cache_key)
@@ -727,6 +733,9 @@ class AuthManager:
                     LONG_CACHE_TTL_SECONDS if entry.is_long_term else CACHE_TTL_SECONDS
                 )
                 if not entry.is_expired(ttl):
+                    current = observation.get()
+                    if current and (endpoint not in {"/apps", "/modules", "/benutzer"} or current.cache_path == endpoint):
+                        current.cached_timestamps.append(entry.created_at)
                     if entry.is_long_term and entry.is_stale(ttl):
                         return entry.data, True
                     return entry.data, False
@@ -743,6 +752,11 @@ class AuthManager:
         params: str = "",
         is_long_term: bool = False,
     ) -> None:
+        if isinstance(data, dict) and data.get("success") is False:
+            return
+        current = observation.get()
+        if current and current.cache_user_id == user_id and snapshots.version(user_id, current.cache_path) != current.cache_version:
+            return
         cache_key = self._make_cache_key(user_id, endpoint, params)
         async with self._lock:
             self._cache[cache_key] = CacheEntry(
@@ -769,6 +783,8 @@ class AuthManager:
         is_long_term: bool = False,
     ) -> bool:
         """Store a response unless the endpoint was invalidated while fetching it."""
+        if isinstance(data, dict) and data.get("success") is False:
+            return False
         async with self._lock:
             version_key = (user_id, endpoint)
             if self._cache_versions.get(version_key, 0) != version:
@@ -787,6 +803,7 @@ class AuthManager:
 
     async def invalidate_endpoint_cache(self, user_id: str, endpoint: str) -> None:
         """Invalidate all cached parameter variants for one endpoint."""
+        snapshots.invalidate_endpoint(user_id, endpoint)
         async with self._lock:
             version_key = (user_id, endpoint)
             self._cache_versions[version_key] = (
@@ -801,6 +818,7 @@ class AuthManager:
                 self._cache.pop(key)
 
     async def invalidate_user_cache(self, user_id: str) -> None:
+        snapshots.invalidate(user_id)
         async with self._lock:
             version_keys = [
                 key for key in self._cache_versions if key[0] == user_id
@@ -873,6 +891,24 @@ async def fetch_and_store_user_data(user_id: str, school_id: str, username: str)
 # --- FastAPI App ---
 
 app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
+app.router.route_class = OutageCacheRoute
+
+
+async def local_auth_dependency(
+    x_session_token: str = Header(..., alias="X-Session-Token"),
+) -> AuthSession:
+    """Validate LANIS identity and persisted session without contacting Schulportal."""
+    payload = sessions.decode_access_token(x_session_token)
+    user_id = canonicalize_user_id(payload["sub"])
+    stored = await get_refresh_token_by_user_id(user_id)
+    if not stored:
+        raise HTTPException(status_code=401, detail="No valid session found — please log in again")
+    return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"])
+
+
+@app.get("/cache/status")
+async def cache_status(auth: AuthSession = Depends(local_auth_dependency)):
+    return snapshots.status(auth.user_id)
 
 
 async def client_dependency(
@@ -1004,7 +1040,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
+    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At"],
 )
 
 app.include_router(documentation_router)
@@ -1181,7 +1217,7 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
 
 @app.post("/logout")
 async def logout_endpoint(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, str]:
     await delete_user_tokens(auth.user_id)
     await delete_user_push_subscriptions(auth.user_id)
@@ -1746,7 +1782,7 @@ async def get_timetable_view(
 
 @app.get("/settings/preferences")
 async def get_account_preferences(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     preferences, stored = await get_user_preferences(auth.user_id)
     return {
@@ -1759,7 +1795,7 @@ async def get_account_preferences(
 @app.patch("/settings/preferences")
 async def update_account_preferences(
     payload: UserPreferencesRequest,
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     updates = (
         payload.model_dump(exclude_none=True)
@@ -2558,7 +2594,8 @@ async def meinunterricht_homework_done(
     result = await run_in_threadpool(
         auth.client.meinunterricht_set_homework_done, course_id, entry_id, done
     )
-    await sessions.invalidate_user_cache(auth.user_id)
+    if result.get("success"):
+        await sessions.invalidate_user_cache(auth.user_id)
     return result
 
 
