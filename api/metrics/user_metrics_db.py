@@ -413,6 +413,41 @@ class UserMetricsDB:
             cursor = await db.execute("SELECT COUNT(*) FROM users")
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+    async def get_homepage_adoption(
+        self, minimum: int = 1
+    ) -> tuple[int, int, list[str]]:
+        """Return global adoption totals and school IDs above a privacy floor."""
+        if minimum < 1:
+            raise ValueError("minimum must be at least 1")
+        await self.initialize()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                WITH school_counts AS (
+                    SELECT school_id, COUNT(*) AS account_count
+                    FROM users
+                    GROUP BY school_id
+                )
+                SELECT
+                    school_id,
+                    account_count,
+                    SUM(account_count) OVER () AS total_users,
+                    COUNT(*) OVER () AS known_schools
+                FROM school_counts
+                ORDER BY school_id
+                """
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                return 0, 0, []
+            qualifying_schools = [
+                normalize_school_id(str(row[0]))
+                for row in rows
+                if int(row[1]) >= minimum
+            ]
+            return int(rows[0][2]), int(rows[0][3]), qualifying_schools
     
     async def get_users_by_school(self, school_id: str) -> List[UserRecord]:
         """Get all users from a specific school."""

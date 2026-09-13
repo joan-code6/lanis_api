@@ -108,3 +108,41 @@ def test_activity_heartbeats_and_admin_audit_are_persisted(tmp_path):
         assert audit[0]["target_user_id"] == "5201:student"
 
     asyncio.run(scenario())
+
+
+def test_homepage_adoption_is_complete_above_five_thousand_users(tmp_path):
+    database = UserMetricsDB(tmp_path / "user_metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        assert await database.get_homepage_adoption(minimum=5) == (0, 0, [])
+        async with aiosqlite.connect(database.db_path) as db:
+            rows = [
+                (
+                    "large-school",
+                    f"student-{index}",
+                    "hash",
+                    "{}",
+                )
+                for index in range(5001)
+            ]
+            rows.extend(
+                ("small-school", f"student-{index}", "hash", "{}")
+                for index in range(4)
+            )
+            await db.executemany(
+                """
+                INSERT INTO users (school_id, login, data_hash, user_data)
+                VALUES (?, ?, ?, ?)
+                """,
+                rows,
+            )
+            await db.commit()
+
+        assert await database.get_homepage_adoption(minimum=5) == (
+            5005,
+            2,
+            ["large-school"],
+        )
+
+    asyncio.run(scenario())
