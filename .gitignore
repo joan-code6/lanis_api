@@ -23,6 +23,9 @@ deploy_docker.log
 .deploy_docker.lock
 
 data/user_metrics.db
+data/school_locations.db
+data/school_locations.db-shm
+data/school_locations.db-wal
 data/files/
 
 */__pycache__/*

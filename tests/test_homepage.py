@@ -1,5 +1,7 @@
 import asyncio
 
+from fastapi import BackgroundTasks
+
 from api import homepage as homepage_module
 
 
@@ -38,7 +40,7 @@ def test_homepage_map_exposes_only_thresholded_directory_pins(monkeypatch):
         if route.path == "/homepage/user-map"
     )
     assert route.dependant.dependencies == []
-    response = asyncio.run(homepage_module.homepage_user_map())
+    response = asyncio.run(homepage_module.homepage_user_map(BackgroundTasks()))
 
     assert response["known_users"] == 11
     assert response["known_schools"] == 3
@@ -76,12 +78,14 @@ def test_homepage_map_tolerates_an_unavailable_directory(monkeypatch):
     )
     monkeypatch.setattr(homepage_module, "city_coordinates", lambda _location: None)
 
-    response = asyncio.run(homepage_module.homepage_user_map())
+    background_tasks = BackgroundTasks()
+    response = asyncio.run(homepage_module.homepage_user_map(background_tasks))
 
     assert response["known_users"] == 11
     assert response["known_schools"] == 3
     assert response["mapped_schools"] == 0
     assert response["schools"] == []
+    assert background_tasks.tasks == []
 
 
 def test_homepage_map_skips_directory_fetch_without_qualifying_schools(monkeypatch):
@@ -98,7 +102,7 @@ def test_homepage_map_skips_directory_fetch_without_qualifying_schools(monkeypat
         homepage_module, "get_school_directory", unexpected_directory_fetch
     )
 
-    response = asyncio.run(homepage_module.homepage_user_map())
+    response = asyncio.run(homepage_module.homepage_user_map(BackgroundTasks()))
 
     assert response["known_users"] == 4
     assert response["known_schools"] == 1

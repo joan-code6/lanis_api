@@ -6,13 +6,14 @@ from datetime import datetime, timezone
 from math import isfinite
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 
 from .metrics import user_metrics_db
 from .school_locations import (
     city_coordinates,
     get_cached_school_coordinates,
     get_school_directory,
+    populate_school_coordinates,
 )
 
 router = APIRouter(prefix="/homepage", tags=["homepage"])
@@ -41,7 +42,7 @@ def _coordinates_for_school(
 
 
 @router.get("/user-map")
-async def homepage_user_map() -> dict[str, Any]:
+async def homepage_user_map(background_tasks: BackgroundTasks) -> dict[str, Any]:
     """Return global adoption totals and privacy-thresholded school pins.
 
     School pins contain directory metadata only and appear once at least five
@@ -56,21 +57,29 @@ async def homepage_user_map() -> dict[str, Any]:
     directory = await get_school_directory() if qualifying_schools else {}
 
     schools: list[dict[str, Any]] = []
+    missing_coordinates: list[tuple[str, str, str]] = []
     for school_id in qualifying_schools:
         school = directory.get(school_id, {})
+        if not school:
+            continue
+        name = str(school.get("name") or school_id)
         location = str(school.get("location") or "")
         coordinates = _coordinates_for_school(school_id, location)
         if coordinates is None:
+            missing_coordinates.append((school_id, name, location))
             continue
         schools.append(
             {
                 "school_id": school_id,
-                "name": str(school.get("name") or school_id),
+                "name": name,
                 "city": location,
                 "latitude": coordinates[0],
                 "longitude": coordinates[1],
             }
         )
+
+    if missing_coordinates:
+        background_tasks.add_task(populate_school_coordinates, missing_coordinates)
 
     schools.sort(key=lambda school: (school["name"].casefold(), school["school_id"]))
     return {

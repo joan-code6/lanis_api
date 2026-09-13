@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -62,8 +64,14 @@ _school_directory_cache: dict[str, Any] = {"data": None, "created_at": None}
 _school_directory_lock = asyncio.Lock()
 _school_geocode_cache: dict[str, dict[str, Any]] = {}
 _school_geocode_lock = threading.Lock()
-_school_geocode_last_request = 0.0
+_coordinate_db_init_lock = threading.Lock()
+_initialized_coordinate_dbs: set[Path] = set()
 _SCHOOL_GEOCODE_CACHE_TTL = timedelta(days=30)
+_SCHOOL_GEOCODE_CLAIM_TTL = timedelta(minutes=2)
+_MAX_BACKGROUND_GEOCODES = 5
+_SCHOOL_GEOCODE_DB_PATH = (
+    Path(__file__).parent.parent / "data" / "school_locations.db"
+)
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _NOMINATIM_USER_AGENT = "LANIS Admin Portal map/1.0 (private admin tool)"
 
@@ -124,7 +132,7 @@ def city_coordinates(location: str) -> tuple[float, float] | None:
 
 
 def get_cached_school_coordinates(school_id: str) -> tuple[float, float] | None:
-    """Return fresh cached geocoding without performing network I/O."""
+    """Return fresh process-local or persisted geocoding without network I/O."""
     is_cached, coordinates = _cached_school_coordinates(school_id)
     return coordinates if is_cached else None
 
@@ -133,16 +141,205 @@ def _cached_school_coordinates(
     school_id: str,
 ) -> tuple[bool, tuple[float, float] | None]:
     """Return both cache presence and its possibly empty coordinate value."""
-    cached = _school_geocode_cache.get(normalize_school_id(school_id))
-    if not cached:
-        return False, None
-    created_at = cached.get("created_at")
-    if not isinstance(created_at, datetime):
-        return False, None
+    school_id = normalize_school_id(school_id)
+    cached = _school_geocode_cache.get(school_id)
+    if not cached or not isinstance(cached.get("created_at"), datetime):
+        persisted = _persisted_school_coordinates(school_id)
+        if persisted is None:
+            return False, None
+        created_at, coordinates = persisted
+        _school_geocode_cache[school_id] = {
+            "created_at": created_at,
+            "coordinates": coordinates,
+        }
+        return True, coordinates
+    created_at = cached["created_at"]
     if datetime.now(timezone.utc) - created_at >= _SCHOOL_GEOCODE_CACHE_TTL:
-        return False, None
+        persisted = _persisted_school_coordinates(school_id)
+        if persisted is None:
+            return False, None
+        created_at, coordinates = persisted
+        _school_geocode_cache[school_id] = {
+            "created_at": created_at,
+            "coordinates": coordinates,
+        }
+        return True, coordinates
     coordinates = cached.get("coordinates")
     return True, coordinates if isinstance(coordinates, tuple) else None
+
+
+def _connect_coordinate_db() -> sqlite3.Connection:
+    """Open the process-shared coordinate store used by every API worker."""
+    database_path = _SCHOOL_GEOCODE_DB_PATH
+    if database_path not in _initialized_coordinate_dbs:
+        with _coordinate_db_init_lock:
+            if database_path not in _initialized_coordinate_dbs:
+                database_path.parent.mkdir(parents=True, exist_ok=True)
+                with sqlite3.connect(database_path, timeout=5) as database:
+                    database.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS school_coordinates (
+                            school_id TEXT PRIMARY KEY,
+                            latitude REAL,
+                            longitude REAL,
+                            created_at TEXT,
+                            claim_until TEXT
+                        )
+                        """
+                    )
+                    database.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS school_geocode_state (
+                            id INTEGER PRIMARY KEY CHECK (id = 1),
+                            next_request_at TEXT
+                        )
+                        """
+                    )
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO school_geocode_state (id, next_request_at)
+                        VALUES (1, NULL)
+                        """
+                    )
+                    database.commit()
+                _initialized_coordinate_dbs.add(database_path)
+    return sqlite3.connect(database_path, timeout=5)
+
+
+def _persisted_school_coordinates(
+    school_id: str,
+) -> tuple[datetime, tuple[float, float] | None] | None:
+    """Read a fresh coordinate result shared by all processes."""
+    try:
+        with _connect_coordinate_db() as database:
+            row = database.execute(
+                """
+                SELECT latitude, longitude, created_at
+                FROM school_coordinates
+                WHERE school_id = ?
+                """,
+                (school_id,),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        logger.warning("Could not read the persisted school-coordinate cache", exc_info=True)
+        return None
+    if not row or not row[2]:
+        return None
+    try:
+        created_at = datetime.fromisoformat(str(row[2]))
+    except ValueError:
+        return None
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - created_at >= _SCHOOL_GEOCODE_CACHE_TTL:
+        return None
+    coordinates = (
+        (float(row[0]), float(row[1]))
+        if row[0] is not None and row[1] is not None
+        else None
+    )
+    return created_at, coordinates
+
+
+def _claim_school_geocode(school_id: str) -> bool:
+    """Claim an expired/missing lookup so separate workers do not duplicate it."""
+    now = datetime.now(timezone.utc)
+    claim_until = now + _SCHOOL_GEOCODE_CLAIM_TTL
+    try:
+        with _connect_coordinate_db() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT created_at, claim_until FROM school_coordinates WHERE school_id = ?",
+                (school_id,),
+            ).fetchone()
+            if row:
+                if row[0]:
+                    created_at = datetime.fromisoformat(str(row[0]))
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    if now - created_at < _SCHOOL_GEOCODE_CACHE_TTL:
+                        return False
+                if row[1]:
+                    existing_claim = datetime.fromisoformat(str(row[1]))
+                    if existing_claim.tzinfo is None:
+                        existing_claim = existing_claim.replace(tzinfo=timezone.utc)
+                    if existing_claim > now:
+                        return False
+            database.execute(
+                """
+                INSERT INTO school_coordinates (school_id, claim_until)
+                VALUES (?, ?)
+                ON CONFLICT(school_id) DO UPDATE SET claim_until = excluded.claim_until
+                """,
+                (school_id, claim_until.isoformat()),
+            )
+            database.commit()
+            return True
+    except (OSError, sqlite3.Error, ValueError):
+        logger.warning("Could not claim a persisted school-coordinate lookup", exc_info=True)
+        return True
+
+
+def _persist_school_coordinates(
+    school_id: str, coordinates: tuple[float, float] | None
+) -> None:
+    """Store a positive or negative lookup result for all API workers."""
+    created_at = datetime.now(timezone.utc)
+    try:
+        with _connect_coordinate_db() as database:
+            database.execute(
+                """
+                INSERT INTO school_coordinates (
+                    school_id, latitude, longitude, created_at, claim_until
+                ) VALUES (?, ?, ?, ?, NULL)
+                ON CONFLICT(school_id) DO UPDATE SET
+                    latitude = excluded.latitude,
+                    longitude = excluded.longitude,
+                    created_at = excluded.created_at,
+                    claim_until = NULL
+                """,
+                (
+                    school_id,
+                    coordinates[0] if coordinates else None,
+                    coordinates[1] if coordinates else None,
+                    created_at.isoformat(),
+                ),
+            )
+            database.commit()
+    except (OSError, sqlite3.Error):
+        logger.warning("Could not persist school coordinates", exc_info=True)
+    _school_geocode_cache[school_id] = {
+        "created_at": created_at,
+        "coordinates": coordinates,
+    }
+
+
+def _wait_for_geocode_slot() -> None:
+    """Reserve a global one-request-per-second Nominatim slot across workers."""
+    now = datetime.now(timezone.utc)
+    try:
+        with _connect_coordinate_db() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT next_request_at FROM school_geocode_state WHERE id = 1"
+            ).fetchone()
+            next_request_at = now
+            if row and row[0]:
+                stored = datetime.fromisoformat(str(row[0]))
+                if stored.tzinfo is None:
+                    stored = stored.replace(tzinfo=timezone.utc)
+                next_request_at = max(now, stored)
+            database.execute(
+                "UPDATE school_geocode_state SET next_request_at = ? WHERE id = 1",
+                ((next_request_at + timedelta(seconds=1)).isoformat(),),
+            )
+            database.commit()
+        wait_seconds = (next_request_at - now).total_seconds()
+    except (OSError, sqlite3.Error, ValueError):
+        logger.warning("Could not reserve a persisted Nominatim rate-limit slot", exc_info=True)
+        wait_seconds = 1.0
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
 
 
 def geocode_school(
@@ -151,7 +348,6 @@ def geocode_school(
     location: str,
 ) -> tuple[float, float] | None:
     """Resolve and cache a school coordinate for private admin endpoints."""
-    global _school_geocode_last_request
     school_id = normalize_school_id(school_id)
     now = datetime.now(timezone.utc)
     is_cached, cached = _cached_school_coordinates(school_id)
@@ -171,9 +367,10 @@ def geocode_school(
         is_cached, cached = _cached_school_coordinates(school_id)
         if is_cached:
             return cached
-        wait_seconds = 1.0 - (time.monotonic() - _school_geocode_last_request)
-        if wait_seconds > 0:
-            time.sleep(wait_seconds)
+        if not _claim_school_geocode(school_id):
+            persisted = _persisted_school_coordinates(school_id)
+            return persisted[1] if persisted else None
+        _wait_for_geocode_slot()
         try:
             query_parameters = urlencode(
                 {
@@ -188,7 +385,6 @@ def geocode_school(
                 headers={"User-Agent": _NOMINATIM_USER_AGENT},
                 timeout=8,
             )
-            _school_geocode_last_request = time.monotonic()
             response.raise_for_status()
             results = response.json()
             result = results[0] if isinstance(results, list) and results else None
@@ -207,8 +403,18 @@ def geocode_school(
             logger.warning("Could not geocode school %s with OpenStreetMap", school_id)
             coordinates = None
 
-        _school_geocode_cache[school_id] = {
-            "created_at": datetime.now(timezone.utc),
-            "coordinates": coordinates,
-        }
+        _persist_school_coordinates(school_id, coordinates)
         return coordinates
+
+
+def populate_school_coordinates(schools: list[tuple[str, str, str]]) -> None:
+    """Populate a bounded number of missing coordinates after the response."""
+    lookups = 0
+    for school_id, name, location in schools:
+        is_cached, _ = _cached_school_coordinates(school_id)
+        if is_cached:
+            continue
+        if lookups >= _MAX_BACKGROUND_GEOCODES:
+            break
+        geocode_school(school_id, name, location)
+        lookups += 1
