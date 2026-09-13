@@ -7,11 +7,11 @@ from api import homepage as homepage_module
 
 class _MetricsStub:
     async def get_homepage_adoption(self, minimum=1):
-        assert minimum == 5
+        assert minimum == 1
         return 11, 3, ["1000", "2000", "3000"]
 
 
-def test_homepage_map_exposes_only_thresholded_directory_pins(monkeypatch):
+def test_homepage_map_exposes_all_known_directory_pins(monkeypatch):
     async def directory():
         return {
             "1000": {"name": "Alpha-Schule", "location": "Frankfurt"},
@@ -95,14 +95,14 @@ def test_homepage_map_tolerates_an_unavailable_directory(monkeypatch):
     assert background_tasks.tasks == []
 
 
-def test_homepage_map_skips_directory_fetch_without_qualifying_schools(monkeypatch):
+def test_homepage_map_skips_directory_fetch_without_known_schools(monkeypatch):
     class EmptyMetricsStub:
         async def get_homepage_adoption(self, minimum=1):
-            assert minimum == 5
+            assert minimum == 1
             return 4, 1, []
 
     async def unexpected_directory_fetch():
-        raise AssertionError("school directory fetched without qualifying schools")
+        raise AssertionError("school directory fetched without known schools")
 
     monkeypatch.setattr(homepage_module, "user_metrics_db", EmptyMetricsStub())
     monkeypatch.setattr(

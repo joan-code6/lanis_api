@@ -18,9 +18,6 @@ from .school_locations import (
 
 router = APIRouter(prefix="/homepage", tags=["homepage"])
 
-_MINIMUM_ACCOUNTS_PER_PIN = 5
-
-
 def _coordinates_for_school(
     school_id: str, location: str
 ) -> tuple[float, float] | None:
@@ -43,22 +40,19 @@ def _coordinates_for_school(
 
 @router.get("/user-map")
 async def homepage_user_map(background_tasks: BackgroundTasks) -> dict[str, Any]:
-    """Return global adoption totals and privacy-thresholded school pins.
+    """Return global adoption totals and all known school pins.
 
-    School pins contain directory metadata only and appear once at least five
-    accounts exist for the school. Account and activity counts are never
-    attached to an individual school in this public response.
+    School pins contain directory metadata only. Account and activity counts
+    are never attached to an individual school in this public response.
     """
-    known_users, known_schools, qualifying_schools = (
-        await user_metrics_db.get_homepage_adoption(
-            minimum=_MINIMUM_ACCOUNTS_PER_PIN
-        )
+    known_users, known_schools, school_ids = (
+        await user_metrics_db.get_homepage_adoption(minimum=1)
     )
-    directory = await get_school_directory() if qualifying_schools else {}
+    directory = await get_school_directory() if school_ids else {}
 
     schools: list[dict[str, Any]] = []
     missing_coordinates: list[tuple[str, str, str]] = []
-    for school_id in qualifying_schools:
+    for school_id in school_ids:
         school = directory.get(school_id, {})
         if not school:
             continue
