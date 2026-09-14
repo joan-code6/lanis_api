@@ -36,6 +36,20 @@ X-Session-Token: {token}
 
 ## Endpoints
 
+### Video rooms (Videokonferenz)
+
+#### GET `/videokonferenz`
+
+Returns the authenticated student's current native Schulportal video rooms.
+Each room includes its learning group, teachers, `open`, `waiting`, `closed`, or
+`unknown` state, and an HTTPS join link when the portal provides one. Responses
+are intentionally never cached because join links may be short-lived and bound
+to the current user. Cookies, raw HTML, and Schulportal session tokens are not
+included in the response.
+
+The optional `refresh` query parameter is accepted for consistency with other
+module endpoints; video rooms are fetched fresh on every request regardless.
+
 ### Authentication
 
 #### POST `/login`
