@@ -375,6 +375,7 @@ class SidebarPreferencesRequest(BaseModel):
 
 class TimetablePreferencesRequest(BaseModel):
     view_mode: Optional[Literal["rolling", "week"]] = None
+    layout_mode: Optional[Literal["cards", "compact"]] = None
     show_homework: Optional[bool] = None
     show_exams: Optional[bool] = None
 
