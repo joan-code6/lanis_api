@@ -266,21 +266,29 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
 
     defaults, _ = asyncio.run(auth_db.get_user_preferences(session.user_id))
     assert defaults["timetable"] == {
-        "view_mode": "rolling", "show_homework": True, "show_exams": True,
+        "view_mode": "rolling", "layout_mode": "cards",
+        "show_homework": True, "show_exams": True,
     }
 
-    for patch in ({"show_homework": False}, {"show_exams": False}, {"view_mode": "week"}):
+    for patch in (
+        {"show_homework": False},
+        {"show_exams": False},
+        {"view_mode": "week"},
+        {"layout_mode": "compact"},
+    ):
         asyncio.run(update_account_preferences(UserPreferencesRequest(timetable=patch), session))
 
     loaded, stored = asyncio.run(auth_db.get_user_preferences(session.user_id))
     assert stored is True
     assert loaded["timetable"] == {
-        "view_mode": "week", "show_homework": False, "show_exams": False,
+        "view_mode": "week", "layout_mode": "compact",
+        "show_homework": False, "show_exams": False,
     }
 
     result = asyncio.run(update_account_preferences(
         UserPreferencesRequest(timetable={"show_exams": True}), session,
     ))
     assert result["preferences"]["timetable"] == {
-        "view_mode": "week", "show_homework": False, "show_exams": True,
+        "view_mode": "week", "layout_mode": "compact",
+        "show_homework": False, "show_exams": True,
     }
