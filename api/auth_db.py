@@ -1783,6 +1783,17 @@ async def sync_dashboard_notifications(
         and str(item.get("source") or "").strip()
     ]
     if not normalized_items:
+        async with _lock:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    """
+                    DELETE FROM dashboard_notifications
+                    WHERE user_id = ?
+                      AND last_seen_at < datetime('now', '-45 days')
+                    """,
+                    (user_id,),
+                )
+                await db.commit()
         return []
 
     active_ids = list(dict.fromkeys(str(item["id"]) for item in normalized_items))
@@ -1882,8 +1893,8 @@ async def mark_dashboard_notifications_read(
                 cursor = await db.execute(
                     """
                     UPDATE dashboard_notifications
-                    SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
-                    WHERE user_id = ?
+                    SET read_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND read_at IS NULL
                     """,
                     (user_id,),
                 )
@@ -1894,8 +1905,10 @@ async def mark_dashboard_notifications_read(
                 cursor = await db.execute(
                     f"""
                     UPDATE dashboard_notifications
-                    SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
-                    WHERE user_id = ? AND notification_id IN ({placeholders})
+                    SET read_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                      AND read_at IS NULL
+                      AND notification_id IN ({placeholders})
                     """,
                     (user_id, *ids),
                 )

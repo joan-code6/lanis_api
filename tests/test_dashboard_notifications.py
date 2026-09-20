@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 
 from api import api as api_module
@@ -124,6 +125,15 @@ def test_dashboard_notification_read_state_is_persisted(tmp_path, monkeypatch) -
     )
     assert updated == 1
     assert (
+        asyncio.run(
+            auth_db.mark_dashboard_notifications_read(
+                "5201:STUDENT", ["messages:stable"]
+            )
+        )
+        == 0
+    )
+    assert asyncio.run(auth_db.mark_dashboard_notifications_read("5201:STUDENT")) == 0
+    assert (
         asyncio.run(auth_db.sync_dashboard_notifications("5201:Student", [item])) == []
     )
 
@@ -133,6 +143,30 @@ def test_dashboard_notification_read_state_is_persisted(tmp_path, monkeypatch) -
     assert len(including_read) == 1
     assert including_read[0]["read"] is True
     assert including_read[0]["read_at"]
+
+
+def test_empty_inbox_still_removes_expired_rows(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_db, "DB_PATH", str(database_path))
+    asyncio.run(auth_db.initialize())
+    with sqlite3.connect(database_path) as db:
+        db.execute(
+            """
+            INSERT INTO dashboard_notifications
+                (user_id, notification_id, source, payload, last_seen_at)
+            VALUES (?, ?, ?, ?, datetime('now', '-46 days'))
+            """,
+            ("user-a", "expired", "messages", "{}"),
+        )
+        db.commit()
+
+    assert asyncio.run(auth_db.sync_dashboard_notifications("user-a", [])) == []
+    with sqlite3.connect(database_path) as db:
+        count = db.execute(
+            "SELECT COUNT(*) FROM dashboard_notifications WHERE user_id = ?",
+            ("user-a",),
+        ).fetchone()[0]
+    assert count == 0
 
 
 def test_new_revision_gets_fresh_unread_state(tmp_path, monkeypatch) -> None:
@@ -173,7 +207,6 @@ def test_dashboard_inbox_aggregates_enabled_backend_sources(monkeypatch) -> None
             "modules": [
                 {"name": "Nachrichten", "url": "/nachrichten.php"},
                 {"name": "Vertretungsplan", "url": "/vertretungsplan.php"},
-                {"name": "DSBmobile", "url": "/dsb.php"},
             ],
         }
 
@@ -232,11 +265,14 @@ def test_dashboard_inbox_aggregates_enabled_backend_sources(monkeypatch) -> None
     monkeypatch.setattr(api_module, "get_message_headers", messages)
     monkeypatch.setattr(api_module, "get_vertretungsplan", native)
     monkeypatch.setattr(api_module, "get_school_dsb_plan", dsb)
+    monkeypatch.setattr(
+        api_module, "_school_dsb_credentials", lambda school_id: ("user", "password")
+    )
     monkeypatch.setattr(api_module, "sync_dashboard_notifications", sync)
 
     result = asyncio.run(
         api_module.get_dashboard_notification_inbox(
-            auth=SimpleNamespace(user_id="5201:student")
+            auth=SimpleNamespace(user_id="5201:student", school_id="5201")
         )
     )
     assert result["success"] is True
@@ -297,7 +333,7 @@ def test_dashboard_inbox_counts_all_active_items_before_display_limit(
 
     result = asyncio.run(
         api_module.get_dashboard_notification_inbox(
-            auth=SimpleNamespace(user_id="5201:student")
+            auth=SimpleNamespace(user_id="5201:student", school_id="5201")
         )
     )
     assert len(result["notifications"]) == 5

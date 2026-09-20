@@ -2268,7 +2268,7 @@ async def get_dashboard_notification_inbox(
                     "vertretungsplan" in value and "dsb" not in value
                     for value in descriptors
                 ),
-                "dsb": any("dsb" in value for value in descriptors),
+                "dsb": _school_dsb_credentials(auth.school_id) is not None,
             }
             source_preferences = {
                 source: bool(enabled and available_sources[source])
