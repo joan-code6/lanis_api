@@ -746,6 +746,9 @@ class UserMetricsDB:
                 )
 
             cohorts: dict[str, dict[str, Any]] = {}
+            mature_users: dict[str, dict[int, int]] = defaultdict(
+                lambda: {1: 0, 7: 0, 30: 0}
+            )
             for user in users:
                 first_seen = _parse_optional_datetime(user["first_seen"])
                 if first_seen is None:
@@ -769,18 +772,19 @@ class UserMetricsDB:
                 active_days = activity.get((user["school_id"], user["login"]), set())
                 for threshold in (1, 7, 30):
                     if days_old >= threshold:
+                        mature_users[cohort_day.isoformat()][threshold] += 1
                         target_day = (first_seen.date() + timedelta(days=threshold)).isoformat()
                         if target_day in active_days:
                             cohort[f"retained_{threshold}d"] += 1
 
             result = []
             for cohort in sorted(cohorts.values(), key=lambda item: item["cohort"]):
-                age_days = (now.date() - datetime.fromisoformat(cohort["cohort"]).date()).days
                 for threshold in (1, 7, 30):
                     count = cohort.pop(f"retained_{threshold}d")
+                    denominator = mature_users[cohort["cohort"]][threshold]
                     cohort[f"retention_{threshold}d"] = (
-                        round(count / cohort["new_users"] * 100, 1)
-                        if age_days >= threshold and cohort["new_users"]
+                        round(count / denominator * 100, 1)
+                        if denominator
                         else None
                     )
                 result.append(cohort)

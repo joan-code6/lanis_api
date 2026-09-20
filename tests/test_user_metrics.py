@@ -135,6 +135,62 @@ def test_analytics_aggregates_activity_and_module_launches(tmp_path):
     asyncio.run(scenario())
 
 
+def test_retention_uses_only_mature_users_in_each_cohort(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        async with aiosqlite.connect(database.db_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO users
+                    (school_id, login, data_hash, user_data, first_seen, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "5201",
+                        "early",
+                        "hash",
+                        "{}",
+                        "2026-09-14T12:00:00",
+                        "2026-09-14T12:00:00",
+                    ),
+                    (
+                        "5201",
+                        "late",
+                        "hash",
+                        "{}",
+                        "2026-09-20T08:00:00",
+                        "2026-09-20T08:00:00",
+                    ),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO activity_events (event_type, school_id, login, occurred_at)
+                VALUES ('login', '5201', 'early', '2026-09-15T09:00:00')
+                """
+            )
+            await db.commit()
+
+        cohorts = await database.get_retention_cohorts(
+            datetime.fromisoformat("2026-09-01T00:00:00"),
+            now=datetime.fromisoformat("2026-09-20T12:00:00"),
+        )
+        assert cohorts == [
+            {
+                "cohort": "2026-09-14",
+                "new_users": 2,
+                "retention_1d": 100.0,
+                "retention_7d": None,
+                "retention_30d": None,
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_homepage_adoption_is_complete_above_five_thousand_users(tmp_path):
     database = UserMetricsDB(tmp_path / "user_metrics.db")
 

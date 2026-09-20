@@ -614,7 +614,7 @@ async def admin_audit(
     actor: str | None = Query(None, max_length=160),
     target: str | None = Query(None, max_length=160),
     since_days: int | None = Query(None, ge=1, le=3650),
-    principal: AdminPrincipal = Depends(admin_dependency),
+    _: AdminPrincipal = Depends(admin_dependency),
 ) -> dict[str, Any]:
     since = _utcnow() - timedelta(days=since_days) if since_days else None
     rows = await user_metrics_db.get_admin_audit(
@@ -631,7 +631,6 @@ async def admin_audit(
         target=target.strip() if target else None,
         since=since,
     )
-    await _record_admin_action(principal.user_id, "audit_view")
     return {
         "success": True,
         "events": rows,
