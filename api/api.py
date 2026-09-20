@@ -2294,6 +2294,12 @@ async def get_dashboard_notification_inbox(
         except Exception:
             logger.exception("Dashboard notification profile lookup failed")
 
+    if not target_class:
+        for source in ("native", "dsb"):
+            if source_preferences[source]:
+                errors[source] = "Die eigene Klasse konnte nicht ermittelt werden."
+                source_preferences[source] = False
+
     if source_preferences["messages"]:
         try:
             if refresh:
@@ -2331,18 +2337,21 @@ async def get_dashboard_notification_inbox(
             logger.exception("Dashboard DSB notifications failed")
             errors["dsb"] = "DSBmobile konnte nicht geladen werden."
 
-    notifications = await sync_dashboard_notifications(
+    active_notifications = await sync_dashboard_notifications(
         auth.user_id,
         items,
         include_read=bool(dashboard_preferences.get("notification_show_read", False)),
-        limit=int(dashboard_preferences.get("notification_limit", 20)),
+        limit=600,
     )
+    notification_limit = int(dashboard_preferences.get("notification_limit", 20))
     return {
         "success": True,
         "enabled": True,
-        "notifications": notifications,
-        "unread_count": sum(not item.get("read", False) for item in notifications),
-        "source_counts": source_counts(notifications),
+        "notifications": active_notifications[:notification_limit],
+        "unread_count": sum(
+            not item.get("read", False) for item in active_notifications
+        ),
+        "source_counts": source_counts(active_notifications),
         "errors": errors,
     }
 

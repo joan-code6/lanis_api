@@ -1795,7 +1795,7 @@ async def sync_dashboard_notifications(
         for item in normalized_items
     }
     placeholders = ",".join("?" for _ in active_ids)
-    safe_limit = max(1, min(int(limit), 50))
+    safe_limit = max(1, min(int(limit), 600))
 
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:

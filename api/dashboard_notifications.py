@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from html import unescape
 from typing import Any
 
+from .timetable_substitutions import class_tokens
+
 
 def _plain_text(value: Any) -> str:
     text = "" if value is None else str(value)
@@ -26,16 +28,9 @@ def _first_text(*values: Any) -> str:
     return ""
 
 
-def _normalized_class(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]", "", _plain_text(value).casefold())
-
-
 def _matches_class(value: Any, target_class: str) -> bool:
-    if not target_class:
-        return True
-    candidate = _normalized_class(value)
-    target = _normalized_class(target_class)
-    return bool(candidate and target and target in candidate)
+    target_tokens = class_tokens(target_class)
+    return bool(target_tokens and class_tokens(value) & target_tokens)
 
 
 def _stable_id(source: str, values: dict[str, Any]) -> str:
@@ -142,7 +137,16 @@ def native_plan_items(
             if not isinstance(entry, dict):
                 continue
             class_name = _first_text(entry.get("klasse"), entry.get("klasse_alt"))
-            if not _matches_class(class_name, target_class):
+            class_scope = " ".join(
+                filter(
+                    None,
+                    (
+                        _plain_text(entry.get("klasse")),
+                        _plain_text(entry.get("klasse_alt")),
+                    ),
+                )
+            )
+            if not _matches_class(class_scope, target_class):
                 continue
             identity = {
                 "date": entry.get("tag_en") or entry.get("tag") or day.get("date"),
@@ -191,13 +195,18 @@ def native_plan_items(
 
 
 def _table_value(headers: list[Any], row: Any, patterns: Iterable[str]) -> str:
-    normalized_patterns = tuple(_normalized_class(pattern) for pattern in patterns)
+    normalized_patterns = tuple(
+        re.sub(r"[^a-z0-9]", "", _plain_text(pattern).casefold())
+        for pattern in patterns
+    )
     index = next(
         (
             position
             for position, header in enumerate(headers)
             if any(
-                pattern in _normalized_class(header) for pattern in normalized_patterns
+                pattern
+                in re.sub(r"[^a-z0-9]", "", _plain_text(header).casefold())
+                for pattern in normalized_patterns
             )
         ),
         -1,

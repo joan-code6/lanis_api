@@ -78,6 +78,30 @@ def test_builders_return_only_unread_and_class_relevant_items() -> None:
     assert dsb[0]["detail"].startswith("10A · 4. Std.")
 
 
+def test_class_filter_requires_exact_tokens_and_checks_previous_class() -> None:
+    result = {
+        "days": [
+            {
+                "date": "20.09.2026",
+                "substitutions": [
+                    {"klasse": "11 A", "fach": "Falsch", "art": "Vertretung"},
+                    {
+                        "klasse": "10 B",
+                        "klasse_alt": "1 A",
+                        "fach": "Richtig",
+                        "art": "Vertretung",
+                    },
+                ],
+            }
+        ]
+    }
+
+    assert [item["title"] for item in native_plan_items(result, "1A")] == [
+        "Vertretung · Richtig"
+    ]
+    assert native_plan_items(result, "") == []
+
+
 def test_dashboard_notification_read_state_is_persisted(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
     asyncio.run(auth_db.initialize())
@@ -221,5 +245,61 @@ def test_dashboard_inbox_aggregates_enabled_backend_sources(monkeypatch) -> None
     assert captured == {
         "user_id": "5201:student",
         "include_read": False,
-        "limit": 10,
+        "limit": 600,
     }
+
+
+def test_dashboard_inbox_counts_all_active_items_before_display_limit(
+    monkeypatch,
+) -> None:
+    async def preferences(_user_id):
+        return (
+            {
+                "dashboard": {
+                    "notifications_enabled": True,
+                    "notification_messages_enabled": True,
+                    "notification_native_enabled": False,
+                    "notification_dsb_enabled": False,
+                    "notification_show_read": False,
+                    "notification_limit": 5,
+                },
+                "vertretungsplan": {"class_override": ""},
+            },
+            True,
+        )
+
+    async def modules(auth):
+        del auth
+        return {
+            "success": True,
+            "modules": [{"name": "Nachrichten", "url": "/nachrichten.php"}],
+        }
+
+    async def messages(get_type, last, auth):
+        del get_type, last, auth
+        return {"success": True, "conversations": []}
+
+    async def sync(user_id, items, include_read, limit):
+        del user_id, items, include_read, limit
+        return [
+            {
+                "id": f"messages:{index}",
+                "source": "messages",
+                "read": False,
+            }
+            for index in range(12)
+        ]
+
+    monkeypatch.setattr(api_module, "get_user_preferences", preferences)
+    monkeypatch.setattr(api_module, "get_modules", modules)
+    monkeypatch.setattr(api_module, "get_message_headers", messages)
+    monkeypatch.setattr(api_module, "sync_dashboard_notifications", sync)
+
+    result = asyncio.run(
+        api_module.get_dashboard_notification_inbox(
+            auth=SimpleNamespace(user_id="5201:student")
+        )
+    )
+    assert len(result["notifications"]) == 5
+    assert result["unread_count"] == 12
+    assert result["source_counts"] == {"messages": 12, "native": 0, "dsb": 0}
