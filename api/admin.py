@@ -694,7 +694,9 @@ async def admin_metrics_analytics(
     """Return operational analytics derived from persisted account activity."""
     now = _utcnow()
     since = now - timedelta(days=days)
-    baseline_since = now - timedelta(days=days + 7)
+    baseline_since = since.replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ) - timedelta(days=7)
     await user_metrics_db.initialize()
     growth, heatmap, modules, retention, login_series = await asyncio.gather(
         user_metrics_db.get_growth_series(since),
@@ -712,10 +714,22 @@ async def admin_metrics_analytics(
         day = (since.date() + timedelta(days=offset)).isoformat()
         complete_login_series.append({"day": day, "logins": values.get(day, 0)})
 
+    # Compare requested days against seven complete preceding days. The current
+    # UTC day is intentionally excluded from anomaly detection because its
+    # partial traffic is not comparable to completed days.
+    analysis_start = baseline_since.date()
+    analysis_end = (now - timedelta(days=1)).date()
+    analysis_login_series = []
+    for offset in range((analysis_end - analysis_start).days + 1):
+        day = (analysis_start + timedelta(days=offset)).isoformat()
+        analysis_login_series.append({"day": day, "logins": values.get(day, 0)})
+
     anomalies = []
-    for index in range(7, len(complete_login_series)):
-        current = complete_login_series[index]
-        previous = [item["logins"] for item in complete_login_series[index - 7 : index]]
+    for index in range(7, len(analysis_login_series)):
+        current = analysis_login_series[index]
+        if current["day"] < since.date().isoformat():
+            continue
+        previous = [item["logins"] for item in analysis_login_series[index - 7 : index]]
         baseline = sum(previous) / len(previous)
         if baseline >= 3 and current["logins"] >= max(5, baseline * 1.8):
             anomalies.append(

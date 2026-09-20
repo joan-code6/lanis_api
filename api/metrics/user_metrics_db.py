@@ -768,10 +768,10 @@ class UserMetricsDB:
                     },
                 )
                 cohort["new_users"] += 1
-                days_old = (now.date() - first_seen.date()).days
+                age_seconds = (now - first_seen).total_seconds()
                 active_days = activity.get((user["school_id"], user["login"]), set())
                 for threshold in (1, 7, 30):
-                    if days_old >= threshold:
+                    if age_seconds >= threshold * 24 * 60 * 60:
                         mature_users[cohort_day.isoformat()][threshold] += 1
                         target_day = (first_seen.date() + timedelta(days=threshold)).isoformat()
                         if target_day in active_days:

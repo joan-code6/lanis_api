@@ -191,6 +191,44 @@ def test_retention_uses_only_mature_users_in_each_cohort(tmp_path):
     asyncio.run(scenario())
 
 
+def test_retention_maturity_uses_elapsed_time(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        async with aiosqlite.connect(database.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO users
+                    (school_id, login, data_hash, user_data, first_seen, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "5201",
+                    "student",
+                    "hash",
+                    "{}",
+                    "2026-09-19T23:59:00",
+                    "2026-09-19T23:59:00",
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO activity_events (event_type, school_id, login, occurred_at)
+                VALUES ('login', '5201', 'student', '2026-09-20T00:00:00')
+                """
+            )
+            await db.commit()
+
+        cohorts = await database.get_retention_cohorts(
+            datetime.fromisoformat("2026-09-01T00:00:00"),
+            now=datetime.fromisoformat("2026-09-20T00:01:00"),
+        )
+        assert cohorts[0]["retention_1d"] is None
+
+    asyncio.run(scenario())
+
+
 def test_homepage_adoption_is_complete_above_five_thousand_users(tmp_path):
     database = UserMetricsDB(tmp_path / "user_metrics.db")
 
