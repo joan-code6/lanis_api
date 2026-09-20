@@ -1014,6 +1014,7 @@ class UserMetricsDB:
         limit: int = 100,
         offset: int = 0,
         action: Optional[str] = None,
+        query: Optional[str] = None,
         actor: Optional[str] = None,
         target: Optional[str] = None,
         since: Optional[datetime] = None,
@@ -1027,6 +1028,12 @@ class UserMetricsDB:
             if action:
                 clauses.append("action = ?")
                 parameters.append(action)
+            if query:
+                clauses.append(
+                    "(actor_user_id LIKE ? OR target_user_id LIKE ? OR action LIKE ?)"
+                )
+                query_value = f"%{query}%"
+                parameters.extend((query_value, query_value, query_value))
             if actor:
                 clauses.append("actor_user_id LIKE ?")
                 parameters.append(f"%{actor}%")
@@ -1051,6 +1058,7 @@ class UserMetricsDB:
     async def get_admin_audit_count(
         self,
         action: Optional[str] = None,
+        query: Optional[str] = None,
         actor: Optional[str] = None,
         target: Optional[str] = None,
         since: Optional[datetime] = None,
@@ -1063,6 +1071,12 @@ class UserMetricsDB:
             if action:
                 clauses.append("action = ?")
                 parameters.append(action)
+            if query:
+                clauses.append(
+                    "(actor_user_id LIKE ? OR target_user_id LIKE ? OR action LIKE ?)"
+                )
+                query_value = f"%{query}%"
+                parameters.extend((query_value, query_value, query_value))
             if actor:
                 clauses.append("actor_user_id LIKE ?")
                 parameters.append(f"%{actor}%")

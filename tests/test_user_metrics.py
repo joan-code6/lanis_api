@@ -107,6 +107,8 @@ def test_activity_heartbeats_and_admin_audit_are_persisted(tmp_path):
         audit = await database.get_admin_audit()
         assert audit[0]["action"] == "credential_reveal"
         assert audit[0]["target_user_id"] == "5201:student"
+        assert len(await database.get_admin_audit(query="student")) == 1
+        assert await database.get_admin_audit_count(query="student") == 1
 
     asyncio.run(scenario())
 

@@ -611,6 +611,7 @@ async def admin_audit(
     limit: int = Query(100, ge=1, le=200),
     offset: int = Query(0, ge=0),
     action: str | None = Query(None, max_length=80),
+    query: str | None = Query(None, max_length=160),
     actor: str | None = Query(None, max_length=160),
     target: str | None = Query(None, max_length=160),
     since_days: int | None = Query(None, ge=1, le=3650),
@@ -621,12 +622,14 @@ async def admin_audit(
         limit=limit,
         offset=offset,
         action=action.strip() if action else None,
+        query=query.strip() if query else None,
         actor=actor.strip() if actor else None,
         target=target.strip() if target else None,
         since=since,
     )
     total = await user_metrics_db.get_admin_audit_count(
         action=action.strip() if action else None,
+        query=query.strip() if query else None,
         actor=actor.strip() if actor else None,
         target=target.strip() if target else None,
         since=since,
@@ -698,17 +701,16 @@ async def admin_metrics_analytics(
     baseline_since = since.replace(
         hour=0, minute=0, second=0, microsecond=0
     ) - timedelta(days=7)
+    retention_since = (now - timedelta(days=max(days, 90))).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    retention_since -= timedelta(days=retention_since.weekday())
     await user_metrics_db.initialize()
     growth, heatmap, modules, retention, login_series = await asyncio.gather(
         user_metrics_db.get_growth_series(range_since),
         user_metrics_db.get_usage_heatmap(range_since),
         user_metrics_db.get_module_usage(range_since),
-        user_metrics_db.get_retention_cohorts(
-            (now - timedelta(days=max(days, 90))).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ),
-            now=now,
-        ),
+        user_metrics_db.get_retention_cohorts(retention_since, now=now),
         user_metrics_db.get_login_series(baseline_since),
     )
 
