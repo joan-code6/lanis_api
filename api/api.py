@@ -2250,6 +2250,7 @@ async def get_dashboard_notification_inbox(
             "notifications": [],
             "unread_count": 0,
             "source_counts": {"messages": 0, "native": 0, "dsb": 0},
+            "unread_source_counts": {"messages": 0, "native": 0, "dsb": 0},
             "errors": {},
         }
 
@@ -2360,6 +2361,9 @@ async def get_dashboard_notification_inbox(
             not item.get("read", False) for item in active_notifications
         ),
         "source_counts": source_counts(active_notifications),
+        "unread_source_counts": source_counts(
+            [item for item in active_notifications if not item.get("read", False)]
+        ),
         "errors": errors,
     }
 

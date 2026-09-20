@@ -108,15 +108,21 @@ def message_items(result: dict[str, Any]) -> list[dict[str, Any]]:
         )
         if not conversation_id:
             continue
-        identity = {
-            "conversation_id": conversation_id,
-            "date": conversation.get("date") or conversation.get("Datum"),
-            "last_message_id": conversation.get("last_message_id")
-            or conversation.get("lastMessageId")
-            or conversation.get("Id"),
-            "sender": conversation.get("Sender") or conversation.get("sender"),
-            "subject": conversation.get("Betreff") or conversation.get("subject"),
-        }
+        last_message_id = _first_text(
+            conversation.get("last_message_id"),
+            conversation.get("lastMessageId"),
+            conversation.get("Id"),
+        )
+        identity = {"conversation_id": conversation_id}
+        if last_message_id:
+            identity["last_message_id"] = last_message_id
+        else:
+            raw_date = conversation.get("date") or conversation.get("Datum")
+            identity.update(
+                activity_at=_sortable_datetime(raw_date) or _plain_text(raw_date),
+                sender=conversation.get("Sender") or conversation.get("sender"),
+                subject=conversation.get("Betreff") or conversation.get("subject"),
+            )
         items.append(
             {
                 "id": _stable_id("messages", identity),

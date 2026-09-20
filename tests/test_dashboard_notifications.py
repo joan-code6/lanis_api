@@ -17,6 +17,21 @@ def test_portal_datetime_sorting_preserves_clock_time() -> None:
     assert _sortable_datetime("10:16").endswith("10:16:00+00:00")
 
 
+def test_message_revision_id_ignores_date_display_format() -> None:
+    base = {
+        "Uniquid": "conversation-one",
+        "Id": "message-one",
+        "Betreff": "Neu",
+        "Sender": "A",
+        "unread": 1,
+    }
+    time_only = message_items({"conversations": [{**base, "date": "10:16"}]})
+    full_date = message_items(
+        {"conversations": [{**base, "date": "20.09.2026 10:16"}]}
+    )
+    assert time_only[0]["id"] == full_date[0]["id"]
+
+
 def test_builders_return_only_unread_and_class_relevant_items() -> None:
     messages = message_items(
         {
@@ -311,6 +326,11 @@ def test_dashboard_inbox_aggregates_enabled_backend_sources(monkeypatch) -> None
     assert result["success"] is True
     assert result["unread_count"] == 3
     assert result["source_counts"] == {"messages": 1, "native": 1, "dsb": 1}
+    assert result["unread_source_counts"] == {
+        "messages": 1,
+        "native": 1,
+        "dsb": 1,
+    }
     assert captured == {
         "user_id": "5201:student",
         "include_read": False,
@@ -372,3 +392,8 @@ def test_dashboard_inbox_counts_all_active_items_before_display_limit(
     assert len(result["notifications"]) == 5
     assert result["unread_count"] == 12
     assert result["source_counts"] == {"messages": 12, "native": 0, "dsb": 0}
+    assert result["unread_source_counts"] == {
+        "messages": 12,
+        "native": 0,
+        "dsb": 0,
+    }
