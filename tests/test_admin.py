@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -64,3 +65,27 @@ def test_admin_token_is_invalidated_when_identity_is_removed(monkeypatch):
         asyncio.run(admin_dependency(token))
 
     assert exc_info.value.status_code == 403
+
+
+def test_activity_state_becomes_inactive_after_seven_days(monkeypatch):
+    now = datetime.fromisoformat("2026-09-19T12:00:00")
+    monkeypatch.setattr(admin_module, "_utcnow", lambda: now)
+
+    def summary(last_seen):
+        return admin_module._summary_from_row(
+            {
+                "school_id": "5201",
+                "login": "student",
+                "first_seen": last_seen,
+                "last_login": last_seen,
+                "last_seen": last_seen,
+                "user_data_json": "{}",
+            }
+        )
+
+    assert summary((now - timedelta(days=7)).isoformat()).activity_state == "active"
+    assert (
+        summary((now - timedelta(days=7, seconds=1)).isoformat()).activity_state
+        == "inactive"
+    )
+    assert summary((now - timedelta(days=30, seconds=1)).isoformat()).activity_state == "dormant"
