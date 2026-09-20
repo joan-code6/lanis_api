@@ -11,15 +11,16 @@ Features:
 - Provides async methods for all database operations
 """
 
-import aiosqlite
-import json
 import hashlib
+import json
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import aiosqlite
 
 from ..identity import normalize_school_id, normalize_username
 
@@ -590,6 +591,201 @@ class UserMetricsDB:
             )
             return [dict(row) for row in await cursor.fetchall()]
 
+    async def get_growth_series(self, since: datetime) -> List[Dict[str, Any]]:
+        """Return daily new-user and active-account growth aggregates."""
+        await self.initialize()
+        since_value = since.isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async def rows(query: str) -> list[dict[str, Any]]:
+                cursor = await db.execute(query, (since_value,))
+                return [dict(row) for row in await cursor.fetchall()]
+
+            new_users = await rows(
+                """
+                SELECT substr(first_seen, 1, 10) AS day, COUNT(*) AS new_users
+                FROM users
+                WHERE first_seen >= ?
+                GROUP BY day
+                """
+            )
+            active = await rows(
+                """
+                SELECT substr(occurred_at, 1, 10) AS day,
+                       COUNT(DISTINCT school_id || ':' || login) AS active_users,
+                       COUNT(DISTINCT school_id) AS active_schools
+                FROM activity_events
+                WHERE event_type IN ('login', 'activity', 'module_open')
+                  AND occurred_at >= ?
+                GROUP BY day
+                """
+            )
+            logins = await rows(
+                """
+                SELECT substr(occurred_at, 1, 10) AS day, COUNT(*) AS logins
+                FROM activity_events
+                WHERE event_type = 'login' AND occurred_at >= ?
+                GROUP BY day
+                """
+            )
+            by_day: dict[str, dict[str, Any]] = {}
+            for row in new_users:
+                by_day.setdefault(row["day"], {}).update(new_users=int(row["new_users"]))
+            for row in active:
+                by_day.setdefault(row["day"], {}).update(
+                    active_users=int(row["active_users"]),
+                    active_schools=int(row["active_schools"]),
+                )
+            for row in logins:
+                by_day.setdefault(row["day"], {}).update(logins=int(row["logins"]))
+            return [
+                {
+                    "day": day,
+                    "new_users": int(values.get("new_users", 0)),
+                    "active_users": int(values.get("active_users", 0)),
+                    "active_schools": int(values.get("active_schools", 0)),
+                    "logins": int(values.get("logins", 0)),
+                }
+                for day, values in sorted(by_day.items())
+            ]
+
+    async def get_usage_heatmap(self, since: datetime) -> List[Dict[str, Any]]:
+        """Return account activity grouped by weekday and UTC hour."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT CAST(strftime('%w', occurred_at) AS INTEGER) AS sqlite_weekday,
+                       CAST(strftime('%H', occurred_at) AS INTEGER) AS hour,
+                       COUNT(*) AS events,
+                       COUNT(DISTINCT school_id || ':' || login) AS unique_users
+                FROM activity_events
+                WHERE event_type IN ('login', 'activity', 'module_open')
+                  AND occurred_at >= ?
+                GROUP BY sqlite_weekday, hour
+                """,
+                (since.isoformat(),),
+            )
+            values = {
+                ((int(row["sqlite_weekday"]) + 6) % 7, int(row["hour"])): {
+                    "events": int(row["events"]),
+                    "unique_users": int(row["unique_users"]),
+                }
+                for row in await cursor.fetchall()
+            }
+            return [
+                {
+                    "weekday": weekday,
+                    "hour": hour,
+                    **values.get((weekday, hour), {"events": 0, "unique_users": 0}),
+                }
+                for weekday in range(7)
+                for hour in range(24)
+            ]
+
+    async def get_module_usage(self, since: datetime) -> List[Dict[str, Any]]:
+        """Return module launches recorded by the app launch endpoint."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT COALESCE(action, 'Unbekannt') AS module,
+                       COUNT(*) AS launches,
+                       COUNT(DISTINCT school_id || ':' || login) AS unique_users
+                FROM activity_events
+                WHERE event_type = 'module_open' AND occurred_at >= ?
+                GROUP BY module
+                ORDER BY launches DESC, module COLLATE NOCASE
+                LIMIT 100
+                """,
+                (since.isoformat(),),
+            )
+            return [
+                {
+                    "module": row["module"],
+                    "launches": int(row["launches"]),
+                    "unique_users": int(row["unique_users"]),
+                }
+                for row in await cursor.fetchall()
+            ]
+
+    async def get_retention_cohorts(
+        self, since: datetime, now: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Return weekly cohorts with exact-day return rates."""
+        await self.initialize()
+        now = now or datetime.utcnow()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT school_id, login, first_seen
+                FROM users
+                WHERE first_seen >= ? AND first_seen <= ?
+                """,
+                (since.isoformat(), now.isoformat()),
+            )
+            users = [dict(row) for row in await cursor.fetchall()]
+            if not users:
+                return []
+            event_cursor = await db.execute(
+                """
+                SELECT school_id, login, occurred_at
+                FROM activity_events
+                WHERE event_type IN ('login', 'activity', 'module_open')
+                  AND occurred_at >= ? AND occurred_at <= ?
+                """,
+                (since.isoformat(), now.isoformat()),
+            )
+            activity: dict[tuple[str, str], set[str]] = defaultdict(set)
+            for row in await event_cursor.fetchall():
+                activity[(row["school_id"], row["login"])].add(
+                    str(row["occurred_at"])[:10]
+                )
+
+            cohorts: dict[str, dict[str, Any]] = {}
+            for user in users:
+                first_seen = _parse_optional_datetime(user["first_seen"])
+                if first_seen is None:
+                    continue
+                cohort_day = first_seen.date()
+                cohort_day = cohort_day.fromordinal(
+                    cohort_day.toordinal() - cohort_day.weekday()
+                )
+                cohort = cohorts.setdefault(
+                    cohort_day.isoformat(),
+                    {
+                        "cohort": cohort_day.isoformat(),
+                        "new_users": 0,
+                        "retained_1d": 0,
+                        "retained_7d": 0,
+                        "retained_30d": 0,
+                    },
+                )
+                cohort["new_users"] += 1
+                days_old = (now.date() - first_seen.date()).days
+                active_days = activity.get((user["school_id"], user["login"]), set())
+                for threshold in (1, 7, 30):
+                    if days_old >= threshold:
+                        target_day = (first_seen.date() + timedelta(days=threshold)).isoformat()
+                        if target_day in active_days:
+                            cohort[f"retained_{threshold}d"] += 1
+
+            result = []
+            for cohort in sorted(cohorts.values(), key=lambda item: item["cohort"]):
+                age_days = (now.date() - datetime.fromisoformat(cohort["cohort"]).date()).days
+                for threshold in (1, 7, 30):
+                    count = cohort.pop(f"retained_{threshold}d")
+                    cohort[f"retention_{threshold}d"] = (
+                        round(count / cohort["new_users"] * 100, 1)
+                        if age_days >= threshold and cohort["new_users"]
+                        else None
+                    )
+                result.append(cohort)
+            return result
+
     async def record_uptime_check(self, check: Dict[str, Any]) -> None:
         """Persist one authenticated Schulportal synthetic check."""
         await self.initialize()
@@ -807,21 +1003,98 @@ class UserMetricsDB:
             )
             await db.commit()
 
-    async def get_admin_audit(self, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_admin_audit(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        target: Optional[str] = None,
+        since: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
         """Return recent privileged-operation audit records."""
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            clauses = ["event_type = 'admin_action'"]
+            parameters: list[Any] = []
+            if action:
+                clauses.append("action = ?")
+                parameters.append(action)
+            if actor:
+                clauses.append("actor_user_id LIKE ?")
+                parameters.append(f"%{actor}%")
+            if target:
+                clauses.append("target_user_id LIKE ?")
+                parameters.append(f"%{target}%")
+            if since:
+                clauses.append("occurred_at >= ?")
+                parameters.append(since.isoformat())
+            parameters.extend((limit, offset))
             cursor = await db.execute(
-                """
-                SELECT occurred_at, actor_user_id, target_user_id, action
+                f"""
+                SELECT id, occurred_at, actor_user_id, target_user_id, action
                 FROM activity_events
-                WHERE event_type = 'admin_action'
-                ORDER BY occurred_at DESC LIMIT ?
+                WHERE {' AND '.join(clauses)}
+                ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?
                 """,
-                (limit,),
+                parameters,
             )
             return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_admin_audit_count(
+        self,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        target: Optional[str] = None,
+        since: Optional[datetime] = None,
+    ) -> int:
+        """Return the number of audit records matching the supplied filters."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            clauses = ["event_type = 'admin_action'"]
+            parameters: list[Any] = []
+            if action:
+                clauses.append("action = ?")
+                parameters.append(action)
+            if actor:
+                clauses.append("actor_user_id LIKE ?")
+                parameters.append(f"%{actor}%")
+            if target:
+                clauses.append("target_user_id LIKE ?")
+                parameters.append(f"%{target}%")
+            if since:
+                clauses.append("occurred_at >= ?")
+                parameters.append(since.isoformat())
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM activity_events WHERE {' AND '.join(clauses)}",
+                parameters,
+            )
+            row = await cursor.fetchone()
+            return int(row[0] or 0)
+
+    async def record_module_open(
+        self, school_id: str, login: str, module_name: str
+    ) -> None:
+        """Record an authenticated launch of a Schulportal module."""
+        await self.initialize()
+        now = datetime.utcnow().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO activity_events (
+                    event_type, school_id, login, occurred_at, action
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    "module_open",
+                    normalize_school_id(school_id),
+                    normalize_username(login),
+                    now,
+                    module_name[:160],
+                ),
+            )
+            await db.commit()
 
     async def record_activity(self, school_id: str, login: str) -> None:
         """Update an activity heartbeat, counting only bounded active intervals."""

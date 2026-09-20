@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 
 import aiosqlite
 
@@ -106,6 +107,30 @@ def test_activity_heartbeats_and_admin_audit_are_persisted(tmp_path):
         audit = await database.get_admin_audit()
         assert audit[0]["action"] == "credential_reveal"
         assert audit[0]["target_user_id"] == "5201:student"
+
+    asyncio.run(scenario())
+
+
+def test_analytics_aggregates_activity_and_module_launches(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.record_login("5201", "student")
+        await database.record_module_open("5201", "student", "Kalender")
+        since = datetime.utcnow() - timedelta(days=1)
+
+        growth = await database.get_growth_series(since)
+        assert growth[-1]["new_users"] == 1
+        assert growth[-1]["active_users"] == 1
+        assert growth[-1]["logins"] == 1
+
+        heatmap = await database.get_usage_heatmap(since)
+        assert len(heatmap) == 7 * 24
+        assert sum(cell["events"] for cell in heatmap) == 2
+
+        assert await database.get_module_usage(since) == [
+            {"module": "Kalender", "launches": 1, "unique_users": 1}
+        ]
 
     asyncio.run(scenario())
 

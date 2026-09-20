@@ -7,6 +7,7 @@ admin secret in configuration or returned by normal user-list endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -22,7 +23,6 @@ from pydantic import BaseModel, Field
 from schulportal_hessen.base import SchulportalHessenAPI
 
 from .auth_db import (
-    get_admin_audit,
     get_class_link_overrides,
     get_custom_lessons,
     get_notification_preferences,
@@ -434,7 +434,7 @@ async def admin_users(
 @router.get("/users/{user_id:path}")
 async def admin_user_detail(
     user_id: str,
-    _: AdminPrincipal = Depends(admin_dependency),
+    principal: AdminPrincipal = Depends(admin_dependency),
 ) -> dict[str, Any]:
     school_id, separator, username = user_id.partition(":")
     if not separator or not school_id or not username:
@@ -444,6 +444,7 @@ async def admin_user_detail(
         raise HTTPException(status_code=404, detail="User not found")
     summary = _summary_from_row(row)
     storage_user_id = make_user_id(school_id, username)
+    await _record_admin_action(principal.user_id, "user_view", storage_user_id)
     credentials = await get_refresh_token_by_user_id(storage_user_id)
     preferences, _ = await get_user_preferences(storage_user_id)
     return {
@@ -506,7 +507,7 @@ async def reveal_user_password(
 @router.get("/schools/{school_id:path}")
 async def admin_school_detail(
     school_id: str,
-    _: AdminPrincipal = Depends(admin_dependency),
+    principal: AdminPrincipal = Depends(admin_dependency),
 ) -> dict[str, Any]:
     """Return the public school directory record and every known LANIS user."""
     normalized_school_id = normalize_school_id(school_id)
@@ -526,6 +527,8 @@ async def admin_school_detail(
     ]
     if not rows and not directory_entry:
         raise HTTPException(status_code=404, detail="School not found")
+
+    await _record_admin_action(principal.user_id, "school_view", normalized_school_id)
 
     summaries = [_summary_from_row(row) for row in rows]
     summaries.sort(key=lambda row: row.last_seen or row.first_seen or "", reverse=True)
@@ -606,10 +609,36 @@ async def admin_school_detail(
 @router.get("/audit")
 async def admin_audit(
     limit: int = Query(100, ge=1, le=200),
-    _: AdminPrincipal = Depends(admin_dependency),
+    offset: int = Query(0, ge=0),
+    action: str | None = Query(None, max_length=80),
+    actor: str | None = Query(None, max_length=160),
+    target: str | None = Query(None, max_length=160),
+    since_days: int | None = Query(None, ge=1, le=3650),
+    principal: AdminPrincipal = Depends(admin_dependency),
 ) -> dict[str, Any]:
-    rows = await get_admin_audit(limit)
-    return {"success": True, "events": rows}
+    since = _utcnow() - timedelta(days=since_days) if since_days else None
+    rows = await user_metrics_db.get_admin_audit(
+        limit=limit,
+        offset=offset,
+        action=action.strip() if action else None,
+        actor=actor.strip() if actor else None,
+        target=target.strip() if target else None,
+        since=since,
+    )
+    total = await user_metrics_db.get_admin_audit_count(
+        action=action.strip() if action else None,
+        actor=actor.strip() if actor else None,
+        target=target.strip() if target else None,
+        since=since,
+    )
+    await _record_admin_action(principal.user_id, "audit_view")
+    return {
+        "success": True,
+        "events": rows,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/metrics/overview")
@@ -655,6 +684,79 @@ async def admin_metrics_overview(
         },
         "login_series": series,
         "runtime": runtime,
+    }
+
+
+@router.get("/metrics/analytics")
+async def admin_metrics_analytics(
+    days: int = Query(90, ge=7, le=365),
+    _: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    """Return operational analytics derived from persisted account activity."""
+    now = _utcnow()
+    since = now - timedelta(days=days)
+    baseline_since = now - timedelta(days=days + 7)
+    await user_metrics_db.initialize()
+    growth, heatmap, modules, retention, login_series = await asyncio.gather(
+        user_metrics_db.get_growth_series(since),
+        user_metrics_db.get_usage_heatmap(since),
+        user_metrics_db.get_module_usage(since),
+        user_metrics_db.get_retention_cohorts(
+            now - timedelta(days=max(days, 90)), now=now
+        ),
+        user_metrics_db.get_login_series(baseline_since),
+    )
+
+    values = {str(item["day"]): int(item["logins"]) for item in login_series}
+    complete_login_series = []
+    for offset in range(days + 1):
+        day = (since.date() + timedelta(days=offset)).isoformat()
+        complete_login_series.append({"day": day, "logins": values.get(day, 0)})
+
+    anomalies = []
+    for index in range(7, len(complete_login_series)):
+        current = complete_login_series[index]
+        previous = [item["logins"] for item in complete_login_series[index - 7 : index]]
+        baseline = sum(previous) / len(previous)
+        if baseline >= 3 and current["logins"] >= max(5, baseline * 1.8):
+            anomalies.append(
+                {
+                    "day": current["day"],
+                    "metric": "logins",
+                    "value": current["logins"],
+                    "baseline": round(baseline, 1),
+                    "direction": "spike",
+                    "severity": "high" if current["logins"] >= baseline * 3 else "medium",
+                }
+            )
+        elif baseline >= 5 and current["logins"] <= baseline * 0.4:
+            anomalies.append(
+                {
+                    "day": current["day"],
+                    "metric": "logins",
+                    "value": current["logins"],
+                    "baseline": round(baseline, 1),
+                    "direction": "drop",
+                    "severity": "high" if current["logins"] <= baseline * 0.2 else "medium",
+                }
+            )
+
+    return {
+        "success": True,
+        "generated_at": now.isoformat() + "Z",
+        "range_days": days,
+        "growth": growth,
+        "login_series": complete_login_series,
+        "heatmap": heatmap,
+        "module_usage": modules,
+        "anomalies": list(reversed(anomalies[-25:])),
+        "retention": retention,
+        "definitions": {
+            "heatmap": "Erfasste authentifizierte Aktivität nach Wochentag und UTC-Stunde.",
+            "modules": "Erfolgreiche App-Starts seit Beginn der Aufzeichnung; ältere Starts sind nicht rückwirkend verfügbar.",
+            "anomalies": "Ein Tag wird markiert, wenn die Anmeldungen deutlich vom Durchschnitt der sieben vorherigen Tage abweichen.",
+            "retention": "Anteil einer wöchentlichen Erstnutzungs-Kohorte, die exakt am 1., 7. oder 30. Tag wieder aktiv war.",
+        },
     }
 
 

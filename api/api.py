@@ -2824,6 +2824,15 @@ async def app_launch(
     if not module:
         raise HTTPException(status_code=404, detail=f"App '{app_name}' not found")
 
+    try:
+        await user_metrics_db.record_module_open(
+            session_data.school_id,
+            session_data.username,
+            str(module.get("name") or app_name),
+        )
+    except Exception:
+        logger.warning("Could not record module usage", exc_info=True)
+
     portal_url = module.get("url", "")
     if not portal_url:
         raise HTTPException(status_code=404, detail="No portal URL")
