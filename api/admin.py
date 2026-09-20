@@ -47,6 +47,8 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 ADMIN_TOKEN_EXPIRE_MINUTES = 30
 STEP_UP_EXPIRE_MINUTES = 5
+ACTIVE_STATE_DAYS = 7
+DORMANT_STATE_DAYS = 30
 
 
 def _utcnow() -> datetime:
@@ -372,9 +374,9 @@ def _summary_from_row(row: Any) -> AdminUserSummary:
     )
     last_seen = _parse_iso(values["last_seen"])
     now = _utcnow()
-    if not last_seen or now - last_seen > timedelta(days=30):
+    if not last_seen or now - last_seen > timedelta(days=DORMANT_STATE_DAYS):
         values["activity_state"] = "dormant"
-    elif now - last_seen > timedelta(days=1):
+    elif now - last_seen > timedelta(days=ACTIVE_STATE_DAYS):
         values["activity_state"] = "inactive"
     else:
         values["activity_state"] = "active"
@@ -637,8 +639,8 @@ async def admin_metrics_overview(
                 "are excluded."
             ),
             "active_state": (
-                "Active means seen within 24 hours; inactive within 30 days; dormant "
-                "after that."
+                "Active means seen within 7 days; inactive within 30 days; dormant "
+                "after that. The separate 24-hour metric shows very recent activity."
             ),
         },
         "summary": {
