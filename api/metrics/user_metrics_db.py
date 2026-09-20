@@ -768,13 +768,15 @@ class UserMetricsDB:
                     },
                 )
                 cohort["new_users"] += 1
-                age_seconds = (now - first_seen).total_seconds()
                 active_days = activity.get((user["school_id"], user["login"]), set())
                 for threshold in (1, 7, 30):
-                    if age_seconds >= threshold * 24 * 60 * 60:
+                    target_day = first_seen.date() + timedelta(days=threshold)
+                    # Retention is measured by calendar day, so wait until the
+                    # complete target day has elapsed before adding this user
+                    # to the denominator.
+                    if now.date() > target_day:
                         mature_users[cohort_day.isoformat()][threshold] += 1
-                        target_day = (first_seen.date() + timedelta(days=threshold)).isoformat()
-                        if target_day in active_days:
+                        if target_day.isoformat() in active_days:
                             cohort[f"retained_{threshold}d"] += 1
 
             result = []

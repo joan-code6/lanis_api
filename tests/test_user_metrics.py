@@ -208,8 +208,8 @@ def test_retention_maturity_uses_elapsed_time(tmp_path):
                     "student",
                     "hash",
                     "{}",
-                    "2026-09-19T23:59:00",
-                    "2026-09-19T23:59:00",
+                    "2026-09-19T12:00:00",
+                    "2026-09-19T12:00:00",
                 ),
             )
             await db.execute(
@@ -222,7 +222,7 @@ def test_retention_maturity_uses_elapsed_time(tmp_path):
 
         cohorts = await database.get_retention_cohorts(
             datetime.fromisoformat("2026-09-01T00:00:00"),
-            now=datetime.fromisoformat("2026-09-20T00:01:00"),
+            now=datetime.fromisoformat("2026-09-20T23:59:00"),
         )
         assert cohorts[0]["retention_1d"] is None
 
