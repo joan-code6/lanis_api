@@ -119,6 +119,12 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
         "pinned_modules": [],
         "hidden_modules": [],
         "view_mode": "grid",
+        "notifications_enabled": True,
+        "notification_messages_enabled": True,
+        "notification_native_enabled": True,
+        "notification_dsb_enabled": True,
+        "notification_show_read": False,
+        "notification_limit": 20,
     },
     "timetable": {
         "view_mode": "rolling",
@@ -292,6 +298,7 @@ async def _migrate_user_ids(db: aiosqlite.Connection) -> None:
         ("class_link_overrides", ("user_id", "course_id")),
         ("message_notification_state", ("user_id",)),
         ("vertretungsplan_notification_state", ("user_id",)),
+        ("dashboard_notifications", ("user_id", "notification_id")),
         ("user_preferences", ("user_id",)),
         ("whatsapp_links", ("user_id",)),
         ("whatsapp_ai_conversations", ("user_id",)),
@@ -434,6 +441,26 @@ async def initialize() -> None:
                 snapshot TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_notifications (
+                user_id TEXT NOT NULL,
+                notification_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                read_at TIMESTAMP,
+                PRIMARY KEY (user_id, notification_id)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_dashboard_notifications_user
+            ON dashboard_notifications(user_id, last_seen_at DESC)
             """
         )
         await db.execute(
@@ -1738,3 +1765,139 @@ async def save_vertretungsplan_notification_state(
                 (user_id, json.dumps(snapshot, ensure_ascii=False, sort_keys=True)),
             )
             await db.commit()
+
+
+async def sync_dashboard_notifications(
+    user_id: str,
+    items: List[Dict[str, Any]],
+    *,
+    include_read: bool = False,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """Persist the current notification inbox and return its active rows."""
+    user_id = _canonical_user_id(user_id)
+    normalized_items = [
+        item for item in items
+        if isinstance(item, dict)
+        and str(item.get("id") or "").strip()
+        and str(item.get("source") or "").strip()
+    ]
+    if not normalized_items:
+        return []
+
+    active_ids = list(dict.fromkeys(str(item["id"]) for item in normalized_items))
+    payload_by_id = {
+        str(item["id"]): json.dumps(item, ensure_ascii=False, sort_keys=True)
+        for item in normalized_items
+    }
+    source_by_id = {
+        str(item["id"]): str(item["source"])
+        for item in normalized_items
+    }
+    placeholders = ",".join("?" for _ in active_ids)
+    safe_limit = max(1, min(int(limit), 50))
+
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.executemany(
+                """
+                INSERT INTO dashboard_notifications
+                    (user_id, notification_id, source, payload)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, notification_id) DO UPDATE SET
+                    source = excluded.source,
+                    payload = excluded.payload,
+                    last_seen_at = CURRENT_TIMESTAMP
+                """,
+                [
+                    (
+                        user_id,
+                        notification_id,
+                        source_by_id[notification_id],
+                        payload_by_id[notification_id],
+                    )
+                    for notification_id in active_ids
+                ],
+            )
+            await db.execute(
+                """
+                DELETE FROM dashboard_notifications
+                WHERE user_id = ? AND last_seen_at < datetime('now', '-45 days')
+                """,
+                (user_id,),
+            )
+            read_filter = "" if include_read else "AND read_at IS NULL"
+            query = f"""
+                SELECT notification_id, payload, first_seen_at, read_at
+                FROM dashboard_notifications
+                WHERE user_id = ?
+                  AND notification_id IN ({placeholders})
+                  {read_filter}
+                ORDER BY first_seen_at DESC, notification_id ASC
+            """
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                query,
+                (user_id, *active_ids),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            await db.commit()
+
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        result.append({
+            **payload,
+            "created_at": str(row["first_seen_at"]),
+            "read": row["read_at"] is not None,
+            "read_at": str(row["read_at"]) if row["read_at"] is not None else None,
+        })
+    result.sort(
+        key=lambda item: (
+            str(item.get("occurred_at") or ""),
+            str(item.get("created_at") or ""),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    return result[:safe_limit]
+
+
+async def mark_dashboard_notifications_read(
+    user_id: str, notification_ids: Optional[List[str]] = None
+) -> int:
+    """Mark selected dashboard notifications, or the whole inbox, as read."""
+    user_id = _canonical_user_id(user_id)
+    ids = list(dict.fromkeys(
+        str(value).strip() for value in (notification_ids or []) if str(value).strip()
+    ))
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            if notification_ids is None:
+                cursor = await db.execute(
+                    """
+                    UPDATE dashboard_notifications
+                    SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
+                    WHERE user_id = ?
+                    """,
+                    (user_id,),
+                )
+            elif not ids:
+                return 0
+            else:
+                placeholders = ",".join("?" for _ in ids)
+                cursor = await db.execute(
+                    f"""
+                    UPDATE dashboard_notifications
+                    SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
+                    WHERE user_id = ? AND notification_id IN ({placeholders})
+                    """,
+                    (user_id, *ids),
+                )
+            await db.commit()
+            return max(cursor.rowcount, 0)
