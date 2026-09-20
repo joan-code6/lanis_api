@@ -732,7 +732,7 @@ class UserMetricsDB:
                 return []
             event_cursor = await db.execute(
                 """
-                SELECT school_id, login, occurred_at
+                SELECT DISTINCT school_id, login, substr(occurred_at, 1, 10) AS occurred_day
                 FROM activity_events
                 WHERE event_type IN ('login', 'activity', 'module_open')
                   AND occurred_at >= ? AND occurred_at <= ?
@@ -742,7 +742,7 @@ class UserMetricsDB:
             activity: dict[tuple[str, str], set[str]] = defaultdict(set)
             for row in await event_cursor.fetchall():
                 activity[(row["school_id"], row["login"])].add(
-                    str(row["occurred_at"])[:10]
+                    str(row["occurred_day"])
                 )
 
             cohorts: dict[str, dict[str, Any]] = {}

@@ -694,16 +694,20 @@ async def admin_metrics_analytics(
     """Return operational analytics derived from persisted account activity."""
     now = _utcnow()
     since = now - timedelta(days=days)
+    range_since = since.replace(hour=0, minute=0, second=0, microsecond=0)
     baseline_since = since.replace(
         hour=0, minute=0, second=0, microsecond=0
     ) - timedelta(days=7)
     await user_metrics_db.initialize()
     growth, heatmap, modules, retention, login_series = await asyncio.gather(
-        user_metrics_db.get_growth_series(since),
-        user_metrics_db.get_usage_heatmap(since),
-        user_metrics_db.get_module_usage(since),
+        user_metrics_db.get_growth_series(range_since),
+        user_metrics_db.get_usage_heatmap(range_since),
+        user_metrics_db.get_module_usage(range_since),
         user_metrics_db.get_retention_cohorts(
-            now - timedelta(days=max(days, 90)), now=now
+            (now - timedelta(days=max(days, 90))).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ),
+            now=now,
         ),
         user_metrics_db.get_login_series(baseline_since),
     )
