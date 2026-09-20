@@ -4,7 +4,17 @@ from types import SimpleNamespace
 
 from api import api as api_module
 from api import auth_db
-from api.dashboard_notifications import dsb_plan_items, message_items, native_plan_items
+from api.dashboard_notifications import (
+    _sortable_datetime,
+    dsb_plan_items,
+    message_items,
+    native_plan_items,
+)
+
+
+def test_portal_datetime_sorting_preserves_clock_time() -> None:
+    assert _sortable_datetime("20.09.2026 10:16").endswith("10:16:00+00:00")
+    assert _sortable_datetime("10:16").endswith("10:16:00+00:00")
 
 
 def test_builders_return_only_unread_and_class_relevant_items() -> None:
@@ -143,6 +153,29 @@ def test_dashboard_notification_read_state_is_persisted(tmp_path, monkeypatch) -
     assert len(including_read) == 1
     assert including_read[0]["read"] is True
     assert including_read[0]["read_at"]
+
+
+def test_read_all_can_be_scoped_to_enabled_sources(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    asyncio.run(auth_db.initialize())
+    items = [
+        {"id": "messages:one", "source": "messages", "title": "One"},
+        {"id": "native:one", "source": "native", "title": "Two"},
+    ]
+    asyncio.run(auth_db.sync_dashboard_notifications("user-a", items))
+
+    assert (
+        asyncio.run(
+            auth_db.mark_dashboard_notifications_read(
+                "user-a", sources=["messages"]
+            )
+        )
+        == 1
+    )
+    remaining = asyncio.run(
+        auth_db.sync_dashboard_notifications("user-a", items, include_read=True)
+    )
+    assert [item["id"] for item in remaining if not item["read"]] == ["native:one"]
 
 
 def test_empty_inbox_still_removes_expired_rows(tmp_path, monkeypatch) -> None:

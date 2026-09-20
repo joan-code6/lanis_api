@@ -1887,7 +1887,9 @@ async def sync_dashboard_notifications(
 
 
 async def mark_dashboard_notifications_read(
-    user_id: str, notification_ids: Optional[List[str]] = None
+    user_id: str,
+    notification_ids: Optional[List[str]] = None,
+    sources: Optional[List[str]] = None,
 ) -> int:
     """Mark selected dashboard notifications, or the whole inbox, as read."""
     user_id = _canonical_user_id(user_id)
@@ -1897,14 +1899,30 @@ async def mark_dashboard_notifications_read(
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             if notification_ids is None:
-                cursor = await db.execute(
-                    """
-                    UPDATE dashboard_notifications
-                    SET read_at = CURRENT_TIMESTAMP
-                    WHERE user_id = ? AND read_at IS NULL
-                    """,
-                    (user_id,),
-                )
+                source_ids = list(dict.fromkeys(
+                    str(value).strip() for value in (sources or []) if str(value).strip()
+                ))
+                if source_ids:
+                    source_placeholders = ",".join("?" for _ in source_ids)
+                    cursor = await db.execute(
+                        f"""
+                        UPDATE dashboard_notifications
+                        SET read_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ?
+                          AND read_at IS NULL
+                          AND source IN ({source_placeholders})
+                        """,
+                        (user_id, *source_ids),
+                    )
+                else:
+                    cursor = await db.execute(
+                        """
+                        UPDATE dashboard_notifications
+                        SET read_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND read_at IS NULL
+                        """,
+                        (user_id,),
+                    )
             elif not ids:
                 return 0
             else:

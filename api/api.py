@@ -363,6 +363,12 @@ class DashboardNotificationReadRequest(BaseModel):
         return cleaned
 
 
+class DashboardNotificationReadAllRequest(BaseModel):
+    sources: List[Literal["messages", "native", "dsb"]] = Field(
+        default_factory=list
+    )
+
+
 SidebarItemId = Literal[
     "search",
     "dashboard",
@@ -2371,9 +2377,12 @@ async def read_dashboard_notifications(
 
 @app.post("/dashboard/notifications/read-all")
 async def read_all_dashboard_notifications(
+    payload: DashboardNotificationReadAllRequest,
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
-    updated = await mark_dashboard_notifications_read(auth.user_id)
+    updated = await mark_dashboard_notifications_read(
+        auth.user_id, sources=payload.sources
+    )
     return {"success": True, "updated": updated}
 
 
