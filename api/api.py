@@ -75,6 +75,7 @@ from .auth_db import (
     save_notification_preferences,
     get_user_preferences,
     save_user_preferences,
+    purge_expired_dashboard_notifications,
     sync_dashboard_notifications,
     mark_dashboard_notifications_read,
     save_push_subscription,
@@ -2236,6 +2237,7 @@ async def get_dashboard_notification_inbox(
     preferences, _ = await get_user_preferences(auth.user_id)
     dashboard_preferences = preferences.get("dashboard") or {}
     if not dashboard_preferences.get("notifications_enabled", True):
+        await purge_expired_dashboard_notifications(auth.user_id)
         return {
             "success": True,
             "enabled": False,

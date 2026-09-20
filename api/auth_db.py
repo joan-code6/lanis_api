@@ -1767,6 +1767,23 @@ async def save_vertretungsplan_notification_state(
             await db.commit()
 
 
+async def purge_expired_dashboard_notifications(user_id: str) -> int:
+    """Delete stale dashboard inbox rows even when no current items exist."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM dashboard_notifications
+                WHERE user_id = ?
+                  AND last_seen_at < datetime('now', '-45 days')
+                """,
+                (user_id,),
+            )
+            await db.commit()
+            return max(cursor.rowcount, 0)
+
+
 async def sync_dashboard_notifications(
     user_id: str,
     items: List[Dict[str, Any]],
@@ -1783,17 +1800,7 @@ async def sync_dashboard_notifications(
         and str(item.get("source") or "").strip()
     ]
     if not normalized_items:
-        async with _lock:
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute(
-                    """
-                    DELETE FROM dashboard_notifications
-                    WHERE user_id = ?
-                      AND last_seen_at < datetime('now', '-45 days')
-                    """,
-                    (user_id,),
-                )
-                await db.commit()
+        await purge_expired_dashboard_notifications(user_id)
         return []
 
     active_ids = list(dict.fromkeys(str(item["id"]) for item in normalized_items))
