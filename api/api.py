@@ -2298,6 +2298,7 @@ async def get_dashboard_notification_inbox(
         logger.exception("Dashboard notification module lookup failed")
     items: List[Dict[str, Any]] = []
     errors: Dict[str, str] = {}
+    refreshed_sources: List[str] = []
 
     class_override = str(
         (preferences.get("vertretungsplan") or {}).get("class_override") or ""
@@ -2326,6 +2327,7 @@ async def get_dashboard_notification_inbox(
                 await _invalidate_message_caches(auth.user_id)
             result = await get_message_headers(get_type="All", last=0, auth=auth)
             if result.get("success"):
+                refreshed_sources.append("messages")
                 items.extend(message_items(result)[:200])
             else:
                 errors["messages"] = str(result.get("error") or "Nachrichten konnten nicht geladen werden.")
@@ -2339,6 +2341,7 @@ async def get_dashboard_notification_inbox(
                 include_raw=False, refresh=refresh, auth=auth
             )
             if result.get("success"):
+                refreshed_sources.append("native")
                 items.extend(native_plan_items(result, target_class)[:200])
             else:
                 errors["native"] = str(result.get("error") or "Vertretungsplan konnte nicht geladen werden.")
@@ -2350,6 +2353,7 @@ async def get_dashboard_notification_inbox(
         try:
             result = await get_school_dsb_plan(refresh=refresh, auth=auth)
             if result.get("success"):
+                refreshed_sources.append("dsb")
                 items.extend(dsb_plan_items(result, target_class)[:200])
             else:
                 errors["dsb"] = str(result.get("error") or "DSBmobile konnte nicht geladen werden.")
@@ -2366,6 +2370,7 @@ async def get_dashboard_notification_inbox(
             else show_read
         ),
         limit=600,
+        active_sources=refreshed_sources,
     )
     notification_limit = int(dashboard_preferences.get("notification_limit", 20))
     return {

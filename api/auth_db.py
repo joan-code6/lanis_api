@@ -1777,19 +1777,37 @@ async def save_vertretungsplan_notification_state(
             await db.commit()
 
 
-async def deactivate_and_purge_dashboard_notifications(user_id: str) -> int:
+async def deactivate_and_purge_dashboard_notifications(
+    user_id: str, sources: Optional[List[str]] = None
+) -> int:
     """Deactivate the current inbox and delete expired persisted rows."""
     user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                """
-                UPDATE dashboard_notifications
-                SET is_active = 0
-                WHERE user_id = ? AND is_active = 1
-                """,
-                (user_id,),
-            )
+            source_ids = list(dict.fromkeys(
+                str(value).strip() for value in (sources or []) if str(value).strip()
+            ))
+            if source_ids:
+                placeholders = ",".join("?" for _ in source_ids)
+                await db.execute(
+                    f"""
+                    UPDATE dashboard_notifications
+                    SET is_active = 0
+                    WHERE user_id = ?
+                      AND is_active = 1
+                      AND source IN ({placeholders})
+                    """,
+                    (user_id, *source_ids),
+                )
+            else:
+                await db.execute(
+                    """
+                    UPDATE dashboard_notifications
+                    SET is_active = 0
+                    WHERE user_id = ? AND is_active = 1
+                    """,
+                    (user_id,),
+                )
             cursor = await db.execute(
                 """
                 DELETE FROM dashboard_notifications
@@ -1808,6 +1826,7 @@ async def sync_dashboard_notifications(
     *,
     include_read: bool = False,
     limit: int = 20,
+    active_sources: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Persist the current notification inbox and return its active rows."""
     user_id = _canonical_user_id(user_id)
@@ -1818,7 +1837,7 @@ async def sync_dashboard_notifications(
         and str(item.get("source") or "").strip()
     ]
     if not normalized_items:
-        await deactivate_and_purge_dashboard_notifications(user_id)
+        await deactivate_and_purge_dashboard_notifications(user_id, active_sources)
         return []
 
     active_ids = list(dict.fromkeys(str(item["id"]) for item in normalized_items))
@@ -1835,14 +1854,32 @@ async def sync_dashboard_notifications(
 
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                """
-                UPDATE dashboard_notifications
-                SET is_active = 0
-                WHERE user_id = ? AND is_active = 1
-                """,
-                (user_id,),
-            )
+            source_ids = list(dict.fromkeys(
+                str(value).strip()
+                for value in (active_sources or [])
+                if str(value).strip()
+            ))
+            if source_ids:
+                source_placeholders = ",".join("?" for _ in source_ids)
+                await db.execute(
+                    f"""
+                    UPDATE dashboard_notifications
+                    SET is_active = 0
+                    WHERE user_id = ?
+                      AND is_active = 1
+                      AND source IN ({source_placeholders})
+                    """,
+                    (user_id, *source_ids),
+                )
+            else:
+                await db.execute(
+                    """
+                    UPDATE dashboard_notifications
+                    SET is_active = 0
+                    WHERE user_id = ? AND is_active = 1
+                    """,
+                    (user_id,),
+                )
             await db.executemany(
                 """
                 INSERT INTO dashboard_notifications

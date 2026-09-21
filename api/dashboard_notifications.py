@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .timetable_substitutions import class_tokens
 
@@ -63,17 +64,18 @@ def _sortable_datetime(value: Any) -> str:
             return ""
     time_only = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", text)
     if time_only:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(ZoneInfo("Europe/Berlin"))
         try:
-            return datetime(
+            local_time = datetime(
                 now.year,
                 now.month,
                 now.day,
                 int(time_only.group(1)),
                 int(time_only.group(2)),
                 int(time_only.group(3)) if time_only.group(3) else 0,
-                tzinfo=timezone.utc,
-            ).isoformat()
+                tzinfo=now.tzinfo,
+            )
+            return local_time.astimezone(timezone.utc).isoformat()
         except ValueError:
             return ""
     try:

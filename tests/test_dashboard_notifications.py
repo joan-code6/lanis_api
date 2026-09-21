@@ -1,6 +1,8 @@
 import asyncio
 import sqlite3
+from datetime import datetime, timezone
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from api import api as api_module
 from api import auth_db
@@ -14,7 +16,10 @@ from api.dashboard_notifications import (
 
 def test_portal_datetime_sorting_preserves_clock_time() -> None:
     assert _sortable_datetime("20.09.2026 10:16").endswith("10:16:00+00:00")
-    assert _sortable_datetime("10:16").endswith("10:16:00+00:00")
+    expected = datetime.now(ZoneInfo("Europe/Berlin")).replace(
+        hour=10, minute=16, second=0, microsecond=0
+    ).astimezone(timezone.utc).isoformat()
+    assert _sortable_datetime("10:16") == expected
 
 
 def test_message_revision_id_ignores_date_display_format() -> None:
@@ -199,7 +204,16 @@ def test_read_all_ignores_rows_missing_from_current_inbox(tmp_path, monkeypatch)
     message = {"id": "messages:one", "source": "messages", "title": "One"}
     native = {"id": "native:one", "source": "native", "title": "Two"}
     asyncio.run(auth_db.sync_dashboard_notifications("user-a", [message, native]))
-    asyncio.run(auth_db.sync_dashboard_notifications("user-a", [native]))
+    asyncio.run(
+        auth_db.sync_dashboard_notifications(
+            "user-a", [], active_sources=["messages"]
+        )
+    )
+    asyncio.run(
+        auth_db.sync_dashboard_notifications(
+            "user-a", [native], active_sources=["native"]
+        )
+    )
 
     assert (
         asyncio.run(
@@ -322,8 +336,13 @@ def test_dashboard_inbox_aggregates_enabled_backend_sources(monkeypatch) -> None
 
     captured = {}
 
-    async def sync(user_id, items, include_read, limit):
-        captured.update(user_id=user_id, include_read=include_read, limit=limit)
+    async def sync(user_id, items, include_read, limit, active_sources):
+        captured.update(
+            user_id=user_id,
+            include_read=include_read,
+            limit=limit,
+            active_sources=active_sources,
+        )
         return [
             {**item, "created_at": "2026-09-20", "read": False, "read_at": None}
             for item in items
@@ -357,6 +376,7 @@ def test_dashboard_inbox_aggregates_enabled_backend_sources(monkeypatch) -> None
         "user_id": "5201:student",
         "include_read": False,
         "limit": 600,
+        "active_sources": ["messages", "native", "dsb"],
     }
 
 
@@ -390,8 +410,8 @@ def test_dashboard_inbox_counts_all_active_items_before_display_limit(
         del get_type, last, auth
         return {"success": True, "conversations": []}
 
-    async def sync(user_id, items, include_read, limit):
-        del user_id, items, include_read, limit
+    async def sync(user_id, items, include_read, limit, active_sources):
+        del user_id, items, include_read, limit, active_sources
         return [
             {
                 "id": f"messages:{index}",
