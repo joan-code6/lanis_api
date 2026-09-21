@@ -75,6 +75,9 @@ from .auth_db import (
     save_notification_preferences,
     get_user_preferences,
     save_user_preferences,
+    deactivate_and_purge_dashboard_notifications,
+    sync_dashboard_notifications,
+    mark_dashboard_notifications_read,
     save_push_subscription,
     get_class_link_overrides,
     save_class_link,
@@ -130,6 +133,12 @@ from .message_notifications import (
     is_trusted_push_endpoint,
     validate_notification_preferences,
     vertretungsplan_notification_options,
+)
+from .dashboard_notifications import (
+    dsb_plan_items,
+    message_items,
+    native_plan_items,
+    source_counts,
 )
 from .whatsapp import (
     IncomingWhatsAppMessage,
@@ -327,12 +336,37 @@ class DashboardPreferencesRequest(BaseModel):
     pinned_modules: Optional[List[str]] = None
     hidden_modules: Optional[List[str]] = None
     view_mode: Optional[Literal["grid", "list"]] = None
+    notifications_enabled: Optional[bool] = None
+    notification_messages_enabled: Optional[bool] = None
+    notification_native_enabled: Optional[bool] = None
+    notification_dsb_enabled: Optional[bool] = None
+    notification_show_read: Optional[bool] = None
+    notification_limit: Optional[Literal[5, 10, 20, 50]] = None
 
     @field_validator("pinned_modules", "hidden_modules")
     def validate_module_preferences(cls, value):
         if value is not None and len(value) > 50:
             raise ValueError("At most 50 modules are allowed in a dashboard preference")
         return value
+
+
+class DashboardNotificationReadRequest(BaseModel):
+    notification_ids: List[str] = Field(default_factory=list)
+
+    @field_validator("notification_ids")
+    def validate_notification_ids(cls, value):
+        if len(value) > 100:
+            raise ValueError("At most 100 dashboard notifications can be updated")
+        cleaned = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        if any(len(item) > 100 for item in cleaned):
+            raise ValueError("Dashboard notification ID is too long")
+        return cleaned
+
+
+class DashboardNotificationReadAllRequest(BaseModel):
+    sources: List[Literal["messages", "native", "dsb"]] = Field(
+        default_factory=list
+    )
 
 
 SidebarItemId = Literal[
@@ -2198,6 +2232,188 @@ async def get_message_headers(
         auth.user_id, endpoint, result, cache_params, cache_version
     )
     return result
+
+
+@app.get("/dashboard/notifications")
+async def get_dashboard_notification_inbox(
+    refresh: bool = False,
+    sources: Optional[str] = None,
+    show_read: Optional[bool] = None,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return the persisted, user-scoped dashboard notification inbox."""
+    preferences, _ = await get_user_preferences(auth.user_id)
+    dashboard_preferences = preferences.get("dashboard") or {}
+    if not dashboard_preferences.get("notifications_enabled", True):
+        await deactivate_and_purge_dashboard_notifications(auth.user_id)
+        return {
+            "success": True,
+            "enabled": False,
+            "notifications": [],
+            "unread_count": 0,
+            "source_counts": {"messages": 0, "native": 0, "dsb": 0},
+            "unread_source_counts": {"messages": 0, "native": 0, "dsb": 0},
+            "errors": {},
+        }
+
+    source_preferences = {
+        "messages": dashboard_preferences.get("notification_messages_enabled", True),
+        "native": dashboard_preferences.get("notification_native_enabled", True),
+        "dsb": dashboard_preferences.get("notification_dsb_enabled", True),
+    }
+    if sources is not None:
+        requested_sources = {
+            source.strip() for source in sources.split(",")
+            if source.strip() in {"messages", "native", "dsb"}
+        }
+        source_preferences = {
+            source: bool(enabled and source in requested_sources)
+            for source, enabled in source_preferences.items()
+        }
+    try:
+        modules_result = await get_modules(auth=auth)
+        if modules_result.get("success"):
+            descriptors = [
+                " ".join((
+                    str(module.get("name") or ""),
+                    str(module.get("url") or ""),
+                    str(module.get("direct_url") or ""),
+                )).casefold()
+                for module in modules_result.get("modules") or []
+                if isinstance(module, dict)
+            ]
+            available_sources = {
+                "messages": any("nachrichten" in value for value in descriptors),
+                "native": any(
+                    "vertretungsplan" in value and "dsb" not in value
+                    for value in descriptors
+                ),
+                "dsb": _school_dsb_credentials(auth.school_id) is not None,
+            }
+            source_preferences = {
+                source: bool(enabled and available_sources[source])
+                for source, enabled in source_preferences.items()
+            }
+    except Exception:
+        logger.exception("Dashboard notification module lookup failed")
+    items: List[Dict[str, Any]] = []
+    errors: Dict[str, str] = {}
+    refreshed_sources: List[str] = []
+
+    class_override = str(
+        (preferences.get("vertretungsplan") or {}).get("class_override") or ""
+    ).strip()
+    target_class = class_override
+    if not target_class and (source_preferences["native"] or source_preferences["dsb"]):
+        try:
+            profile_result = await get_user_data(auth=auth)
+            profile = profile_result.get("data") if profile_result.get("success") else {}
+            profile = profile if isinstance(profile, dict) else {}
+            target_class = str(
+                profile.get("klasse") or profile.get("class") or profile.get("Klasse") or ""
+            ).strip()
+        except Exception:
+            logger.exception("Dashboard notification profile lookup failed")
+
+    if not target_class:
+        for source in ("native", "dsb"):
+            if source_preferences[source]:
+                errors[source] = "Die eigene Klasse konnte nicht ermittelt werden."
+                source_preferences[source] = False
+
+    if source_preferences["messages"]:
+        try:
+            if refresh:
+                await _invalidate_message_caches(auth.user_id)
+            result = await get_message_headers(get_type="All", last=0, auth=auth)
+            if result.get("success"):
+                refreshed_sources.append("messages")
+                items.extend(message_items(result)[:200])
+            else:
+                errors["messages"] = str(result.get("error") or "Nachrichten konnten nicht geladen werden.")
+        except Exception:
+            logger.exception("Dashboard message notifications failed")
+            errors["messages"] = "Nachrichten konnten nicht geladen werden."
+
+    if source_preferences["native"]:
+        try:
+            result = await get_vertretungsplan(
+                include_raw=False, refresh=refresh, auth=auth
+            )
+            if result.get("success"):
+                refreshed_sources.append("native")
+                items.extend(native_plan_items(result, target_class)[:200])
+            else:
+                errors["native"] = str(result.get("error") or "Vertretungsplan konnte nicht geladen werden.")
+        except Exception:
+            logger.exception("Dashboard native plan notifications failed")
+            errors["native"] = "Vertretungsplan konnte nicht geladen werden."
+
+    if source_preferences["dsb"]:
+        try:
+            result = await get_school_dsb_plan(refresh=refresh, auth=auth)
+            if result.get("success"):
+                refreshed_sources.append("dsb")
+                items.extend(dsb_plan_items(result, target_class)[:200])
+            else:
+                errors["dsb"] = str(result.get("error") or "DSBmobile konnte nicht geladen werden.")
+        except Exception:
+            logger.exception("Dashboard DSB notifications failed")
+            errors["dsb"] = "DSBmobile konnte nicht geladen werden."
+
+    active_notifications = await sync_dashboard_notifications(
+        auth.user_id,
+        items,
+        include_read=True,
+        limit=600,
+        active_sources=refreshed_sources,
+    )
+    show_read_items = (
+        bool(dashboard_preferences.get("notification_show_read", False))
+        if show_read is None
+        else show_read
+    )
+    visible_notifications = (
+        active_notifications
+        if show_read_items
+        else [item for item in active_notifications if not item.get("read", False)]
+    )
+    notification_limit = int(dashboard_preferences.get("notification_limit", 20))
+    return {
+        "success": True,
+        "enabled": True,
+        "notifications": visible_notifications[:notification_limit],
+        "unread_count": sum(
+            not item.get("read", False) for item in active_notifications
+        ),
+        "source_counts": source_counts(active_notifications),
+        "unread_source_counts": source_counts(
+            [item for item in active_notifications if not item.get("read", False)]
+        ),
+        "errors": errors,
+    }
+
+
+@app.post("/dashboard/notifications/read")
+async def read_dashboard_notifications(
+    payload: DashboardNotificationReadRequest,
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Dict[str, object]:
+    updated = await mark_dashboard_notifications_read(
+        auth.user_id, payload.notification_ids
+    )
+    return {"success": True, "updated": updated}
+
+
+@app.post("/dashboard/notifications/read-all")
+async def read_all_dashboard_notifications(
+    payload: DashboardNotificationReadAllRequest,
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Dict[str, object]:
+    updated = await mark_dashboard_notifications_read(
+        auth.user_id, sources=payload.sources
+    )
+    return {"success": True, "updated": updated}
 
 
 @app.get("/nachrichten/search")

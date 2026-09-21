@@ -44,6 +44,9 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
     assert defaults["sidebar"] == {"order": auth_db.DEFAULT_SIDEBAR_ORDER, "hidden_items": []}
     assert defaults["dashboard"]["pinned_modules"] == []
     assert defaults["dashboard"]["hidden_modules"] == []
+    assert defaults["dashboard"]["notifications_enabled"] is True
+    assert defaults["dashboard"]["notification_show_read"] is False
+    assert defaults["dashboard"]["notification_limit"] == 20
     assert defaults["homework"] == {"completed_display": "green"}
     assert defaults["vertretungsplan"] == {"class_override": ""}
     assert defaults["onboarding"]["status"] == "not_started"
@@ -65,6 +68,12 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "pinned_modules": ["Nachrichten"],
         "hidden_modules": [],
         "view_mode": "grid",
+        "notifications_enabled": True,
+        "notification_messages_enabled": True,
+        "notification_native_enabled": True,
+        "notification_dsb_enabled": True,
+        "notification_show_read": False,
+        "notification_limit": 20,
     }
 
     loaded, stored = asyncio.run(auth_db.get_user_preferences("5201:STUDENT"))
