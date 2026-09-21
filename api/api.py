@@ -412,6 +412,20 @@ class TimetablePreferencesRequest(BaseModel):
     layout_mode: Optional[Literal["cards", "compact"]] = None
     show_homework: Optional[bool] = None
     show_exams: Optional[bool] = None
+    class_colors: Optional[Dict[str, str]] = None
+
+    @field_validator("class_colors")
+    def validate_class_colors(cls, value):
+        if value is None:
+            return value
+        if len(value) > 100:
+            raise ValueError("At most 100 timetable class colors are allowed")
+        for class_key, color in value.items():
+            if not class_key or len(class_key) > 180:
+                raise ValueError("Timetable class color keys must be 1 to 180 characters")
+            if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                raise ValueError("Timetable class colors must use six-digit hex values")
+        return {class_key: color.lower() for class_key, color in value.items()}
 
 
 class HomeworkPreferencesRequest(BaseModel):
