@@ -485,8 +485,33 @@ class SchulportalHessenAPI:
         """Fetch the Mein Unterricht submissions/assignments view.
 
         Returns:
-            Dict containing the HTML response for the submissions page.
+            Dict containing typed submission summaries.
         """
+        ...
+
+    def meinunterricht_get_submission(self, detail_ref: str) -> Dict[str, Any]:
+        """Fetch and parse one student submission page."""
+        ...
+
+    def meinunterricht_upload_files(
+        self,
+        course_id: str,
+        entry_id: str,
+        upload_id: str,
+        files: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Upload one to five files to a student submission."""
+        ...
+
+    def meinunterricht_delete_uploaded_file(
+        self,
+        course_id: str,
+        entry_id: str,
+        upload_id: str,
+        file_index: str,
+        password: str,
+    ) -> Dict[str, Any]:
+        """Delete one uploaded file after portal password confirmation."""
         ...
 
     def meinunterricht_set_homework_done(
@@ -514,6 +539,10 @@ class SchulportalHessenAPI:
         Returns:
             Dict containing filename metadata and binary content.
         """
+        ...
+
+    def meinunterricht_download_submission_file(self, file_ref: str) -> Dict[str, Any]:
+        """Download a file referenced by a parsed student submission."""
         ...
 
     def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
@@ -762,10 +791,16 @@ from .applets.mein_unterricht.api import (
     meinunterricht_get_course,
     meinunterricht_get_entry_details,
     meinunterricht_get_weekly_view,
-    meinunterricht_get_submissions,
     meinunterricht_set_homework_done,
     meinunterricht_download_file,
     meinunterricht_get_attendance_overview,
+)
+from .applets.mein_unterricht.submissions import (
+    meinunterricht_get_submissions,
+    meinunterricht_get_submission,
+    meinunterricht_upload_files,
+    meinunterricht_delete_uploaded_file,
+    meinunterricht_download_submission_file,
 )
 
 SchulportalHessenAPI.meinunterricht_get_overview = meinunterricht_get_overview
@@ -773,6 +808,10 @@ SchulportalHessenAPI.meinunterricht_get_course = meinunterricht_get_course
 SchulportalHessenAPI.meinunterricht_get_entry_details = meinunterricht_get_entry_details
 SchulportalHessenAPI.meinunterricht_get_weekly_view = meinunterricht_get_weekly_view
 SchulportalHessenAPI.meinunterricht_get_submissions = meinunterricht_get_submissions
+SchulportalHessenAPI.meinunterricht_get_submission = meinunterricht_get_submission
+SchulportalHessenAPI.meinunterricht_upload_files = meinunterricht_upload_files
+SchulportalHessenAPI.meinunterricht_delete_uploaded_file = meinunterricht_delete_uploaded_file
+SchulportalHessenAPI.meinunterricht_download_submission_file = meinunterricht_download_submission_file
 SchulportalHessenAPI.meinunterricht_set_homework_done = meinunterricht_set_homework_done
 SchulportalHessenAPI.meinunterricht_download_file = meinunterricht_download_file
 SchulportalHessenAPI.meinunterricht_get_attendance_overview = meinunterricht_get_attendance_overview
