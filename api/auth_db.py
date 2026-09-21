@@ -1375,9 +1375,13 @@ async def save_user_preferences(
             current = _decode_user_preferences(row[0], user_id) if row else (
                 _merge_nested_preferences(DEFAULT_USER_PREFERENCES, {})
             )
-            merged = _normalize_user_preferences(
-                _merge_nested_preferences(current, updates)
-            )
+            merged = _merge_nested_preferences(current, updates)
+            timetable_updates = updates.get("timetable")
+            if isinstance(timetable_updates, dict) and "class_colors" in timetable_updates:
+                merged.setdefault("timetable", {})["class_colors"] = json.loads(
+                    json.dumps(timetable_updates["class_colors"])
+                )
+            merged = _normalize_user_preferences(merged)
             serialized = json.dumps(merged, ensure_ascii=False, sort_keys=True)
             await db.execute(
                 """

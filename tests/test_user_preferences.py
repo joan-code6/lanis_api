@@ -298,6 +298,16 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
         "class_colors": {"course:math-1": "#2563eb"},
     }
 
+    replaced = asyncio.run(update_account_preferences(
+        UserPreferencesRequest(timetable={"class_colors": {"course:physics-1": "#abcdef"}}), session,
+    ))
+    assert replaced["preferences"]["timetable"]["class_colors"] == {"course:physics-1": "#abcdef"}
+
+    cleared = asyncio.run(update_account_preferences(
+        UserPreferencesRequest(timetable={"class_colors": {}}), session,
+    ))
+    assert cleared["preferences"]["timetable"]["class_colors"] == {}
+
 
 def test_timetable_class_colors_validate_keys_values_and_limit() -> None:
     accepted = TimetablePreferencesRequest(
