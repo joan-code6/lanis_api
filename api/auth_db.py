@@ -453,10 +453,20 @@ async def initialize() -> None:
                 first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 read_at TIMESTAMP,
+                is_active INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (user_id, notification_id)
             )
             """
         )
+        async with db.execute("PRAGMA table_info(dashboard_notifications)") as cursor:
+            dashboard_notification_columns = {row[1] for row in await cursor.fetchall()}
+        if "is_active" not in dashboard_notification_columns:
+            await db.execute(
+                """
+                ALTER TABLE dashboard_notifications
+                ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0
+                """
+            )
         await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_dashboard_notifications_user
@@ -1767,11 +1777,19 @@ async def save_vertretungsplan_notification_state(
             await db.commit()
 
 
-async def purge_expired_dashboard_notifications(user_id: str) -> int:
-    """Delete stale dashboard inbox rows even when no current items exist."""
+async def deactivate_and_purge_dashboard_notifications(user_id: str) -> int:
+    """Deactivate the current inbox and delete expired persisted rows."""
     user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                UPDATE dashboard_notifications
+                SET is_active = 0
+                WHERE user_id = ? AND is_active = 1
+                """,
+                (user_id,),
+            )
             cursor = await db.execute(
                 """
                 DELETE FROM dashboard_notifications
@@ -1800,7 +1818,7 @@ async def sync_dashboard_notifications(
         and str(item.get("source") or "").strip()
     ]
     if not normalized_items:
-        await purge_expired_dashboard_notifications(user_id)
+        await deactivate_and_purge_dashboard_notifications(user_id)
         return []
 
     active_ids = list(dict.fromkeys(str(item["id"]) for item in normalized_items))
@@ -1817,15 +1835,24 @@ async def sync_dashboard_notifications(
 
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                UPDATE dashboard_notifications
+                SET is_active = 0
+                WHERE user_id = ? AND is_active = 1
+                """,
+                (user_id,),
+            )
             await db.executemany(
                 """
                 INSERT INTO dashboard_notifications
-                    (user_id, notification_id, source, payload)
-                VALUES (?, ?, ?, ?)
+                    (user_id, notification_id, source, payload, is_active)
+                VALUES (?, ?, ?, ?, 1)
                 ON CONFLICT(user_id, notification_id) DO UPDATE SET
                     source = excluded.source,
                     payload = excluded.payload,
-                    last_seen_at = CURRENT_TIMESTAMP
+                    last_seen_at = CURRENT_TIMESTAMP,
+                    is_active = 1
                 """,
                 [
                     (
@@ -1910,6 +1937,7 @@ async def mark_dashboard_notifications_read(
                         SET read_at = CURRENT_TIMESTAMP
                         WHERE user_id = ?
                           AND read_at IS NULL
+                          AND is_active = 1
                           AND source IN ({source_placeholders})
                         """,
                         (user_id, *source_ids),
@@ -1919,7 +1947,7 @@ async def mark_dashboard_notifications_read(
                         """
                         UPDATE dashboard_notifications
                         SET read_at = CURRENT_TIMESTAMP
-                        WHERE user_id = ? AND read_at IS NULL
+                        WHERE user_id = ? AND read_at IS NULL AND is_active = 1
                         """,
                         (user_id,),
                     )

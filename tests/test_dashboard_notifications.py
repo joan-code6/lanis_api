@@ -193,6 +193,28 @@ def test_read_all_can_be_scoped_to_enabled_sources(tmp_path, monkeypatch) -> Non
     assert [item["id"] for item in remaining if not item["read"]] == ["native:one"]
 
 
+def test_read_all_ignores_rows_missing_from_current_inbox(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    asyncio.run(auth_db.initialize())
+    message = {"id": "messages:one", "source": "messages", "title": "One"}
+    native = {"id": "native:one", "source": "native", "title": "Two"}
+    asyncio.run(auth_db.sync_dashboard_notifications("user-a", [message, native]))
+    asyncio.run(auth_db.sync_dashboard_notifications("user-a", [native]))
+
+    assert (
+        asyncio.run(
+            auth_db.mark_dashboard_notifications_read(
+                "user-a", sources=["messages"]
+            )
+        )
+        == 0
+    )
+    current = asyncio.run(
+        auth_db.sync_dashboard_notifications("user-a", [message, native])
+    )
+    assert {item["id"] for item in current} == {"messages:one", "native:one"}
+
+
 def test_empty_inbox_still_removes_expired_rows(tmp_path, monkeypatch) -> None:
     database_path = tmp_path / "auth.db"
     monkeypatch.setattr(auth_db, "DB_PATH", str(database_path))

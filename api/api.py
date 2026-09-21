@@ -75,7 +75,7 @@ from .auth_db import (
     save_notification_preferences,
     get_user_preferences,
     save_user_preferences,
-    purge_expired_dashboard_notifications,
+    deactivate_and_purge_dashboard_notifications,
     sync_dashboard_notifications,
     mark_dashboard_notifications_read,
     save_push_subscription,
@@ -2237,13 +2237,15 @@ async def get_message_headers(
 @app.get("/dashboard/notifications")
 async def get_dashboard_notification_inbox(
     refresh: bool = False,
+    sources: Optional[str] = None,
+    show_read: Optional[bool] = None,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     """Return the persisted, user-scoped dashboard notification inbox."""
     preferences, _ = await get_user_preferences(auth.user_id)
     dashboard_preferences = preferences.get("dashboard") or {}
     if not dashboard_preferences.get("notifications_enabled", True):
-        await purge_expired_dashboard_notifications(auth.user_id)
+        await deactivate_and_purge_dashboard_notifications(auth.user_id)
         return {
             "success": True,
             "enabled": False,
@@ -2259,6 +2261,15 @@ async def get_dashboard_notification_inbox(
         "native": dashboard_preferences.get("notification_native_enabled", True),
         "dsb": dashboard_preferences.get("notification_dsb_enabled", True),
     }
+    if sources is not None:
+        requested_sources = {
+            source.strip() for source in sources.split(",")
+            if source.strip() in {"messages", "native", "dsb"}
+        }
+        source_preferences = {
+            source: bool(enabled and source in requested_sources)
+            for source, enabled in source_preferences.items()
+        }
     try:
         modules_result = await get_modules(auth=auth)
         if modules_result.get("success"):
@@ -2349,7 +2360,11 @@ async def get_dashboard_notification_inbox(
     active_notifications = await sync_dashboard_notifications(
         auth.user_id,
         items,
-        include_read=bool(dashboard_preferences.get("notification_show_read", False)),
+        include_read=(
+            bool(dashboard_preferences.get("notification_show_read", False))
+            if show_read is None
+            else show_read
+        ),
         limit=600,
     )
     notification_limit = int(dashboard_preferences.get("notification_limit", 20))
