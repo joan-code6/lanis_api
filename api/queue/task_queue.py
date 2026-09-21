@@ -74,6 +74,7 @@ class Task:
     created_at: datetime = field(default_factory=datetime.utcnow, compare=True)
     task_id: str = field(default_factory=lambda: uuid4().hex, compare=False)
     name: str = field(default="unnamed_task", compare=False)
+    user_id: Optional[str] = field(default=None, compare=False)
     func: Callable[..., Coroutine[Any, Any, Any]] = field(default=None, compare=False)
     args: tuple = field(default_factory=tuple, compare=False)
     kwargs: Dict[str, Any] = field(default_factory=dict, compare=False)
@@ -118,6 +119,7 @@ class TaskQueue:
         self._running = False
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._cancelled_users: set[str] = set()
     
     async def start(self) -> None:
         """Start the task queue workers."""
@@ -182,6 +184,16 @@ class TaskQueue:
         await self._queue.put(task)
         logger.debug(f"Task added: {task.name} (id={task.task_id}, priority={task.priority})")
         return task.task_id
+
+    async def cancel_user_tasks(self, user_id: str) -> None:
+        """Skip pending user-scoped work after an account is deleted."""
+        async with self._lock:
+            self._cancelled_users.add(user_id)
+
+    async def allow_user_tasks(self, user_id: str) -> None:
+        """Re-enable user-scoped work after a fresh login."""
+        async with self._lock:
+            self._cancelled_users.discard(user_id)
     
     async def _worker(self, worker_id: int) -> None:
         """Worker coroutine that processes tasks from the queue."""
@@ -193,6 +205,12 @@ class TaskQueue:
                 try:
                     task = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
+                    continue
+
+                if task.user_id and task.user_id in self._cancelled_users:
+                    task.status = TaskStatus.COMPLETED
+                    task.completed_at = datetime.utcnow()
+                    self._queue.task_done()
                     continue
                 
                 await self._execute_task(task, worker_id)

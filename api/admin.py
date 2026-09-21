@@ -472,38 +472,6 @@ async def admin_user_detail(
     }
 
 
-@router.post("/users/{user_id:path}/credentials/reveal")
-async def reveal_user_password(
-    user_id: str,
-    principal: AdminPrincipal = Depends(admin_dependency),
-    step_up_principal: AdminPrincipal = Depends(step_up_dependency),
-) -> dict[str, Any]:
-    if principal.user_id != step_up_principal.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Step-up session belongs to a different admin",
-        )
-    school_id, separator, username = user_id.partition(":")
-    if not separator or not school_id or not username:
-        raise HTTPException(status_code=404, detail="User not found")
-    storage_user_id = make_user_id(school_id, username)
-    credentials = await get_refresh_token_by_user_id(storage_user_id)
-    if not credentials:
-        raise HTTPException(
-            status_code=404, detail="No active stored credential for this user"
-        )
-    target_user_id = make_user_id(school_id, username)
-    await _record_admin_action(principal.user_id, "credential_reveal", target_user_id)
-    logger.warning("Admin credential reveal for %s", target_user_id)
-    return {
-        "success": True,
-        "school_id": school_id,
-        "username": username,
-        "password": credentials["password"],
-        "expires_at": credentials.get("expires_at"),
-    }
-
-
 @router.get("/schools/{school_id:path}")
 async def admin_school_detail(
     school_id: str,
