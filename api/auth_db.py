@@ -125,6 +125,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
         "layout_mode": "cards",
         "show_homework": True,
         "show_exams": True,
+        "class_colors": {},
     },
     "homework": {
         "completed_display": "green",

@@ -11,6 +11,7 @@ from api.api import (
     DashboardPreferencesRequest,
     HomeworkPreferencesRequest,
     SidebarPreferencesRequest,
+    TimetablePreferencesRequest,
     UserPreferencesRequest,
     VertretungsplanPreferencesRequest,
     get_account_preferences,
@@ -268,6 +269,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     assert defaults["timetable"] == {
         "view_mode": "rolling", "layout_mode": "cards",
         "show_homework": True, "show_exams": True,
+        "class_colors": {},
     }
 
     for patch in (
@@ -275,6 +277,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
         {"show_exams": False},
         {"view_mode": "week"},
         {"layout_mode": "compact"},
+        {"class_colors": {"course:math-1": "#2563EB"}},
     ):
         asyncio.run(update_account_preferences(UserPreferencesRequest(timetable=patch), session))
 
@@ -283,6 +286,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     assert loaded["timetable"] == {
         "view_mode": "week", "layout_mode": "compact",
         "show_homework": False, "show_exams": False,
+        "class_colors": {"course:math-1": "#2563eb"},
     }
 
     result = asyncio.run(update_account_preferences(
@@ -291,4 +295,21 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     assert result["preferences"]["timetable"] == {
         "view_mode": "week", "layout_mode": "compact",
         "show_homework": False, "show_exams": True,
+        "class_colors": {"course:math-1": "#2563eb"},
     }
+
+
+def test_timetable_class_colors_validate_keys_values_and_limit() -> None:
+    accepted = TimetablePreferencesRequest(
+        class_colors={"course:math-1": "#AABBCC"},
+    )
+    assert accepted.class_colors == {"course:math-1": "#aabbcc"}
+
+    for invalid in ({"": "#aabbcc"}, {"course:math-1": "blue"}):
+        with pytest.raises(ValidationError):
+            TimetablePreferencesRequest(class_colors=invalid)
+
+    with pytest.raises(ValidationError):
+        TimetablePreferencesRequest(
+            class_colors={f"course:{index}": "#aabbcc" for index in range(101)},
+        )
