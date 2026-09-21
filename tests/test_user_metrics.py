@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 
 import aiosqlite
 
@@ -106,6 +107,126 @@ def test_activity_heartbeats_and_admin_audit_are_persisted(tmp_path):
         audit = await database.get_admin_audit()
         assert audit[0]["action"] == "credential_reveal"
         assert audit[0]["target_user_id"] == "5201:student"
+        assert len(await database.get_admin_audit(query="student")) == 1
+        assert await database.get_admin_audit_count(query="student") == 1
+
+    asyncio.run(scenario())
+
+
+def test_analytics_aggregates_activity_and_module_launches(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.record_login("5201", "student")
+        await database.record_module_open("5201", "student", "Kalender")
+        since = datetime.utcnow() - timedelta(days=1)
+
+        growth = await database.get_growth_series(since)
+        assert growth[-1]["new_users"] == 1
+        assert growth[-1]["active_users"] == 1
+        assert growth[-1]["logins"] == 1
+
+        heatmap = await database.get_usage_heatmap(since)
+        assert len(heatmap) == 7 * 24
+        assert sum(cell["events"] for cell in heatmap) == 2
+
+        assert await database.get_module_usage(since) == [
+            {"module": "Kalender", "launches": 1, "unique_users": 1}
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_retention_uses_only_mature_users_in_each_cohort(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        async with aiosqlite.connect(database.db_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO users
+                    (school_id, login, data_hash, user_data, first_seen, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "5201",
+                        "early",
+                        "hash",
+                        "{}",
+                        "2026-09-14T12:00:00",
+                        "2026-09-14T12:00:00",
+                    ),
+                    (
+                        "5201",
+                        "late",
+                        "hash",
+                        "{}",
+                        "2026-09-20T08:00:00",
+                        "2026-09-20T08:00:00",
+                    ),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO activity_events (event_type, school_id, login, occurred_at)
+                VALUES ('login', '5201', 'early', '2026-09-15T09:00:00')
+                """
+            )
+            await db.commit()
+
+        cohorts = await database.get_retention_cohorts(
+            datetime.fromisoformat("2026-09-01T00:00:00"),
+            now=datetime.fromisoformat("2026-09-20T12:00:00"),
+        )
+        assert cohorts == [
+            {
+                "cohort": "2026-09-14",
+                "new_users": 2,
+                "retention_1d": 100.0,
+                "retention_7d": None,
+                "retention_30d": None,
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_retention_maturity_uses_elapsed_time(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        async with aiosqlite.connect(database.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO users
+                    (school_id, login, data_hash, user_data, first_seen, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "5201",
+                    "student",
+                    "hash",
+                    "{}",
+                    "2026-09-19T12:00:00",
+                    "2026-09-19T12:00:00",
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO activity_events (event_type, school_id, login, occurred_at)
+                VALUES ('login', '5201', 'student', '2026-09-20T00:00:00')
+                """
+            )
+            await db.commit()
+
+        cohorts = await database.get_retention_cohorts(
+            datetime.fromisoformat("2026-09-01T00:00:00"),
+            now=datetime.fromisoformat("2026-09-20T23:59:00"),
+        )
+        assert cohorts[0]["retention_1d"] is None
 
     asyncio.run(scenario())
 

@@ -2833,6 +2833,15 @@ async def app_launch(
     if not launch_data:
         raise HTTPException(status_code=502, detail="Failed to build launch URLs")
 
+    try:
+        await user_metrics_db.record_module_open(
+            session_data.school_id,
+            session_data.username,
+            str(module.get("name") or app_name),
+        )
+    except Exception:
+        logger.warning("Could not record module usage", exc_info=True)
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{app_name}</title></head>
 <body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#f5f5f5">
