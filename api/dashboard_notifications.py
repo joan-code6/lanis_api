@@ -51,15 +51,16 @@ def _sortable_datetime(value: Any) -> str:
             year += 2000
         try:
             time_match = re.search(r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b", text)
-            return datetime(
+            local_value = datetime(
                 year,
                 int(german_date.group(2)),
                 int(german_date.group(1)),
                 int(time_match.group(1)) if time_match else 0,
                 int(time_match.group(2)) if time_match else 0,
                 int(time_match.group(3)) if time_match and time_match.group(3) else 0,
-                tzinfo=timezone.utc,
-            ).isoformat()
+                tzinfo=ZoneInfo("Europe/Berlin"),
+            )
+            return local_value.astimezone(timezone.utc).isoformat()
         except ValueError:
             return ""
     time_only = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", text)

@@ -15,7 +15,8 @@ from api.dashboard_notifications import (
 
 
 def test_portal_datetime_sorting_preserves_clock_time() -> None:
-    assert _sortable_datetime("20.09.2026 10:16").endswith("10:16:00+00:00")
+    expected = datetime(2026, 9, 20, 10, 16, tzinfo=ZoneInfo("Europe/Berlin"))
+    assert _sortable_datetime("20.09.2026 10:16") == expected.astimezone(timezone.utc).isoformat()
     expected = datetime.now(ZoneInfo("Europe/Berlin")).replace(
         hour=10, minute=16, second=0, microsecond=0
     ).astimezone(timezone.utc).isoformat()

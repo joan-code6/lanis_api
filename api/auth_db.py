@@ -1787,7 +1787,7 @@ async def deactivate_and_purge_dashboard_notifications(
             source_ids = list(dict.fromkeys(
                 str(value).strip() for value in (sources or []) if str(value).strip()
             ))
-            if source_ids:
+            if sources is not None and source_ids:
                 placeholders = ",".join("?" for _ in source_ids)
                 await db.execute(
                     f"""
@@ -1799,7 +1799,7 @@ async def deactivate_and_purge_dashboard_notifications(
                     """,
                     (user_id, *source_ids),
                 )
-            else:
+            elif sources is None:
                 await db.execute(
                     """
                     UPDATE dashboard_notifications
@@ -1859,7 +1859,7 @@ async def sync_dashboard_notifications(
                 for value in (active_sources or [])
                 if str(value).strip()
             ))
-            if source_ids:
+            if active_sources is not None and source_ids:
                 source_placeholders = ",".join("?" for _ in source_ids)
                 await db.execute(
                     f"""
@@ -1871,7 +1871,7 @@ async def sync_dashboard_notifications(
                     """,
                     (user_id, *source_ids),
                 )
-            else:
+            elif active_sources is None:
                 await db.execute(
                     """
                     UPDATE dashboard_notifications
