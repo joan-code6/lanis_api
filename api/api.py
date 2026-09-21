@@ -67,6 +67,7 @@ from .auth_db import (
     store_refresh_token,
     get_refresh_token,
     get_refresh_token_by_user_id,
+    get_refresh_token_by_session_id,
     delete_refresh_token,
     delete_user_tokens,
     delete_push_subscription,
@@ -101,6 +102,11 @@ from .auth_db import (
     whatsapp_link_matches_sync,
 )
 from .outage_cache import OutageCacheRoute, snapshots
+from .account_data import (
+    account_lifecycle_lock,
+    build_account_export,
+    delete_account_data,
+)
 from schulportal_hessen.tools.transport import observation
 
 from .file_cache import (
@@ -113,6 +119,7 @@ from .file_cache import (
     save_file,
     get_meta,
     get_content_path,
+    purge_expired_files,
 )
 from .timetable_enrichment import enrich_timetable
 from .timetable_substitutions import (
@@ -186,6 +193,27 @@ _whatsapp_dispatch_lock = asyncio.Lock()
 _whatsapp_pending_messages = 0
 
 
+async def clear_whatsapp_user_queue(user_id: str) -> None:
+    """Remove queued WhatsApp messages belonging to a LANIS account."""
+    global _whatsapp_pending_messages
+    candidates: set[str] = set()
+    async with _whatsapp_dispatch_lock:
+        for sender_queue in _whatsapp_sender_queues.values():
+            candidates.update(message.sender_id for message in sender_queue.messages)
+    owned_senders = set()
+    for sender_id in candidates:
+        link = await get_whatsapp_link_for_sender(sender_id)
+        if link and link.get("user_id") == canonicalize_user_id(user_id):
+            owned_senders.add(hashlib.sha256(sender_id.encode()).hexdigest())
+    if not owned_senders:
+        return
+    async with _whatsapp_dispatch_lock:
+        for sender_key in list(owned_senders):
+            sender_queue = _whatsapp_sender_queues.pop(sender_key, None)
+            if sender_queue is not None:
+                _whatsapp_pending_messages -= len(sender_queue.messages)
+
+
 SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive Schulportal sessions after 1 hour
 CACHE_TTL_SECONDS = 10 * 60  # cache responses for 10 minutes
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
@@ -253,6 +281,10 @@ class TokenRefreshRequest(BaseModel):
 class TokenRefreshResponse(BaseModel):
     access_token: str
     expires_in: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60
+
+
+class AccountDeleteRequest(BaseModel):
+    confirmation: str
 
 
 class NotificationPreferencesRequest(BaseModel):
@@ -532,7 +564,13 @@ class AuthManager:
 
     # -- JWT helpers -------------------------------------------------
 
-    def create_access_token(self, user_id: str, school_id: str, username: str) -> str:
+    def create_access_token(
+        self,
+        user_id: str,
+        school_id: str,
+        username: str,
+        session_id: Optional[str] = None,
+    ) -> str:
         user_id = canonicalize_user_id(user_id)
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         payload = {
@@ -542,6 +580,8 @@ class AuthManager:
             "iat": datetime.utcnow(),
             "exp": expire,
         }
+        if session_id:
+            payload["jti"] = session_id
         return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
     def decode_access_token(self, token: str) -> dict:
@@ -560,6 +600,37 @@ class AuthManager:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid access token",
             )
+
+    async def export_user_cache(self, user_id: str) -> list[dict]:
+        """Return JSON-safe runtime cache entries for one user."""
+        user_id = canonicalize_user_id(user_id)
+        await self._purge_expired_cache()
+        async with self._lock:
+            entries = [
+                {
+                    "endpoint": entry.endpoint,
+                    "params": entry.params,
+                    "created_at": entry.created_at.isoformat() + "Z",
+                    "data": copy.deepcopy(entry.data),
+                }
+                for entry in self._cache.values()
+                if entry.user_id == user_id
+            ]
+        entries.extend(snapshots.export_user_data(user_id))
+        return entries
+
+    async def delete_user_runtime_data(self, user_id: str) -> Dict[str, int]:
+        """Close the upstream client and remove every in-memory user cache."""
+        user_id = canonicalize_user_id(user_id)
+        async with self._lock:
+            cache_count = sum(
+                1 for entry in self._cache.values() if entry.user_id == user_id
+            )
+        snapshot_count = sum(1 for key in snapshots.entries if key[0] == user_id)
+        await self.drop_schulportal_session(user_id)
+        async with self._lock:
+            self._schulportal_restore_locks.pop(user_id, None)
+        return {"cache_entries": cache_count, "snapshot_entries": snapshot_count}
 
     # -- Schulportal client cache ------------------------------------
 
@@ -888,7 +959,10 @@ _dsb_scheduler_task = None
 _message_notification_task = None
 _uptime_scheduler_task = None
 _whatsapp_history_cleanup_task = None
+_file_cache_cleanup_task = None
 _whatsapp_unlink_confirmation_tasks: set[asyncio.Task] = set()
+_account_export_last: Dict[str, datetime] = {}
+_account_export_lock = asyncio.Lock()
 
 
 async def _run_whatsapp_history_cleanup() -> None:
@@ -900,43 +974,54 @@ async def _run_whatsapp_history_cleanup() -> None:
         await asyncio.sleep(3600)
 
 
+async def _run_file_cache_cleanup() -> None:
+    while True:
+        try:
+            await run_in_threadpool(purge_expired_files)
+        except Exception:
+            logger.warning("File cache cleanup failed", exc_info=True)
+        await asyncio.sleep(3600)
+
+
 # --- Background Tasks ---
 
 
-async def fetch_and_store_user_data(user_id: str, school_id: str, username: str) -> None:
-    """Background task: fetch user profile and store in metrics DB."""
+async def fetch_and_store_user_data(
+    user_id: str, school_id: str, username: str, session_id: str
+) -> None:
+    """Fetch profile data only while the login session still exists."""
     user_id = canonicalize_user_id(user_id)
     school_id = normalize_school_id(school_id)
     username = normalize_username(username)
-    try:
-        session_data = await sessions._get_or_create_schulportal_client(user_id)
-        client = session_data.client
-
-        result = await run_in_threadpool(client.benutzer_get_data)
-
-        if not result.get("success"):
-            logger.warning(
-                f"Failed to fetch user data for {username}@{school_id}: {result.get('error')}"
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock:
+        try:
+            if not await get_refresh_token_by_session_id(session_id):
+                return
+            session_data = await sessions._get_or_create_schulportal_client(user_id)
+            result = await run_in_threadpool(session_data.client.benutzer_get_data)
+            if not result.get("success"):
+                logger.warning(
+                    f"Failed to fetch user data for {username}@{school_id}: {result.get('error')}"
+                )
+                return
+            if not await get_refresh_token_by_session_id(session_id):
+                return
+            is_new, was_updated = await user_metrics_db.upsert_user(
+                school_id=school_id,
+                login=username,
+                user_data=result.get("data", {}),
             )
-            return
-
-        user_data = result.get("data", {})
-
-        is_new, was_updated = await user_metrics_db.upsert_user(
-            school_id=school_id, login=username, user_data=user_data
-        )
-
-        if is_new:
-            logger.info(f"New user recorded in metrics: {username}@{school_id}")
-        elif was_updated:
-            logger.info(f"User data updated in metrics: {username}@{school_id}")
-        else:
-            logger.debug(f"User data unchanged: {username}@{school_id}")
-
-    except HTTPException:
-        logger.warning(f"Session gone for {username}@{school_id}, skipping metrics")
-    except Exception as e:
-        logger.error(f"Error storing user metrics for {username}@{school_id}: {e}")
+            if is_new:
+                logger.info(f"New user recorded in metrics: {username}@{school_id}")
+            elif was_updated:
+                logger.info(f"User data updated in metrics: {username}@{school_id}")
+            else:
+                logger.debug(f"User data unchanged: {username}@{school_id}")
+        except HTTPException:
+            logger.warning(f"Session gone for {username}@{school_id}, skipping metrics")
+        except Exception as e:
+            logger.error(f"Error storing user metrics for {username}@{school_id}: {e}")
 
 
 # --- FastAPI App ---
@@ -951,7 +1036,14 @@ async def local_auth_dependency(
     """Validate LANIS identity and persisted session without contacting Schulportal."""
     payload = sessions.decode_access_token(x_session_token)
     user_id = canonicalize_user_id(payload["sub"])
-    stored = await get_refresh_token_by_user_id(user_id)
+    if payload.get("jti"):
+        stored = await get_refresh_token_by_session_id(payload["jti"])
+        if stored and canonicalize_user_id(stored["user_id"]) != user_id:
+            stored = None
+    else:
+        # Access tokens issued before session-bound JWTs remain readable during
+        # the migration; all newly issued tokens contain jti.
+        stored = await get_refresh_token_by_user_id(user_id)
     if not stored:
         raise HTTPException(status_code=401, detail="No valid session found — please log in again")
     return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"])
@@ -969,8 +1061,8 @@ async def client_dependency(
     """Validate access token (JWT) and return the AuthSession with a live Schulportal client."""
     identity = getattr(request.state, "lanis_auth", None)
     if identity is None:
-        payload = sessions.decode_access_token(x_session_token)
-        user_id = canonicalize_user_id(payload["sub"])
+        identity = await local_auth_dependency(x_session_token)
+        user_id = identity.user_id
     else:
         user_id = identity.user_id
     session_data = await sessions._get_or_create_schulportal_client(user_id)
@@ -1107,7 +1199,7 @@ app.include_router(homepage_router)
 @app.on_event("startup")
 async def _startup() -> None:
     """Initialize stores and start the API's background schedulers."""
-    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task
+    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
     await auth_db_initialize()
     await purge_expired_whatsapp_ai_history()
     await user_metrics_db.initialize()
@@ -1122,6 +1214,7 @@ async def _startup() -> None:
     )
     _uptime_scheduler_task = await run_uptime_scheduler()
     _whatsapp_history_cleanup_task = asyncio.create_task(_run_whatsapp_history_cleanup())
+    _file_cache_cleanup_task = asyncio.create_task(_run_file_cache_cleanup())
     logger.info(
         "API started with task queue, databases, DSB snapshot scheduler, "
         "message notification scheduler, and Schulportal uptime monitor"
@@ -1131,7 +1224,7 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _cleanup_sessions() -> None:
     """Cancel background schedulers and close active sessions cleanly."""
-    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task
+    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
     if _dsb_scheduler_task:
         _dsb_scheduler_task.cancel()
     if _message_notification_task:
@@ -1140,6 +1233,8 @@ async def _cleanup_sessions() -> None:
         _uptime_scheduler_task.cancel()
     if _whatsapp_history_cleanup_task:
         _whatsapp_history_cleanup_task.cancel()
+    if _file_cache_cleanup_task:
+        _file_cache_cleanup_task.cancel()
     await task_queue.stop(wait=True, timeout=10.0)
     await whatsapp_task_queue.stop(wait=True, timeout=10.0)
     if _whatsapp_unlink_confirmation_tasks:
@@ -1206,12 +1301,18 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
         username=username,
         password=payload.password,
     )
+    refresh_data = await get_refresh_token(refresh_token)
+    if not refresh_data or not refresh_data.get("session_id"):
+        raise HTTPException(status_code=500, detail="Could not initialize login session")
+    session_id = refresh_data["session_id"]
+    await task_queue.allow_user_tasks(user_id)
 
     # 3. Issue short-term access token (JWT)
     access_token = sessions.create_access_token(
         user_id=user_id,
         school_id=school_id,
         username=username,
+        session_id=session_id,
     )
 
     # 4. Read encryption state
@@ -1241,7 +1342,8 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
     user_data_task = Task(
         name=f"fetch_user_data:{username}@{school_id}",
         func=fetch_and_store_user_data,
-        args=(user_id, school_id, normalize_username(username)),
+        args=(user_id, school_id, normalize_username(username), session_id),
+        user_id=user_id,
         priority=TaskPriority.LOW,
         max_retries=2,
     )
@@ -1269,11 +1371,14 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
     # Schulportal.  A backend restart or temporary SPH outage must not turn a
     # valid persisted login into a permanent authentication failure.  The live
     # Schulportal client is restored lazily by the next protected data request.
-    access_token = sessions.create_access_token(
-        user_id=rt_data["user_id"],
-        school_id=rt_data["school_id"],
-        username=rt_data["username"],
-    )
+    token_kwargs = {
+        "user_id": rt_data["user_id"],
+        "school_id": rt_data["school_id"],
+        "username": rt_data["username"],
+    }
+    if rt_data.get("session_id"):
+        token_kwargs["session_id"] = rt_data["session_id"]
+    access_token = sessions.create_access_token(**token_kwargs)
 
     return TokenRefreshResponse(access_token=access_token)
 
@@ -1287,6 +1392,49 @@ async def logout_endpoint(
     await delete_whatsapp_link(auth.user_id)
     await sessions.drop_schulportal_session(auth.user_id)
     return {"status": "logged_out"}
+
+
+@app.get("/account/export")
+async def export_account_endpoint(
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Response:
+    """Download the LANIS-held account data without authentication secrets."""
+    now = datetime.utcnow()
+    async with _account_export_lock:
+        previous = _account_export_last.get(auth.user_id)
+        if previous and (now - previous).total_seconds() < 600:
+            raise HTTPException(status_code=429, detail="Export is limited to once every 10 minutes")
+        _account_export_last[auth.user_id] = now
+    export = await build_account_export(auth.user_id)
+    return Response(
+        content=json.dumps(export, ensure_ascii=False),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": 'attachment; filename="lanis-account-export.json"',
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@app.delete("/account")
+async def delete_account_endpoint(
+    payload: AccountDeleteRequest,
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Dict[str, Any]:
+    """Permanently delete LANIS-held data for the authenticated account."""
+    if payload.confirmation != "DELETE":
+        raise HTTPException(status_code=400, detail='confirmation must be exactly "DELETE"')
+    try:
+        report = await delete_account_data(auth.user_id)
+    except Exception:
+        logger.exception("Account deletion failed for %s", auth.user_id)
+        raise HTTPException(status_code=500, detail="Account deletion failed")
+    return {
+        "success": report.success,
+        "deleted": report.deleted,
+        "upstream_sph_data_deleted": report.upstream_sph_data_deleted,
+    }
 
 
 # --- DSB Endpoints ---
@@ -2726,6 +2874,7 @@ async def meinunterricht_course(
                         name=f"download_file:{file_hash[:12]}",
                         func=_download_course_file,
                         args=(auth.user_id, original_url, file_hash),
+                        user_id=auth.user_id,
                         priority=TaskPriority.LOW,
                         max_retries=2,
                     )
@@ -2758,8 +2907,8 @@ async def meinunterricht_file(
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
-        payload = sessions.decode_access_token(x_session_token)
-        user_id = payload["sub"]
+        identity = await local_auth_dependency(x_session_token)
+        user_id = identity.user_id
         session_data = await sessions._get_or_create_schulportal_client(user_id)
         client = session_data.client
     except HTTPException:
@@ -3034,8 +3183,8 @@ async def app_launch(
         raise HTTPException(status_code=401, detail="X-Session-Token header or token query parameter required")
 
     try:
-        payload = sessions.decode_access_token(session_token)
-        user_id = payload["sub"]
+        identity = await local_auth_dependency(session_token)
+        user_id = identity.user_id
         session_data = await sessions._get_or_create_schulportal_client(user_id)
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or expired token")

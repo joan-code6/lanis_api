@@ -178,6 +178,27 @@ class SnapshotStore:
             "retention_seconds": RETENTION_SECONDS,
         }
 
+    def export_user_data(self, user_id):
+        """Return JSON-safe private outage snapshots for account export."""
+        self.purge()
+        result = []
+        for key, entry in self.entries.items():
+            if key[0] != user_id:
+                continue
+            try:
+                body = json.loads(entry.body)
+            except (TypeError, ValueError):
+                continue
+            result.append(
+                {
+                    "endpoint": key[1],
+                    "params": list(key[2]),
+                    "fetched_at": utc_timestamp(entry.fetched_at),
+                    "data": body,
+                }
+            )
+        return result
+
 
 snapshots = SnapshotStore()
 
