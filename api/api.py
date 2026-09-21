@@ -2364,19 +2364,25 @@ async def get_dashboard_notification_inbox(
     active_notifications = await sync_dashboard_notifications(
         auth.user_id,
         items,
-        include_read=(
-            bool(dashboard_preferences.get("notification_show_read", False))
-            if show_read is None
-            else show_read
-        ),
+        include_read=True,
         limit=600,
         active_sources=refreshed_sources,
+    )
+    show_read_items = (
+        bool(dashboard_preferences.get("notification_show_read", False))
+        if show_read is None
+        else show_read
+    )
+    visible_notifications = (
+        active_notifications
+        if show_read_items
+        else [item for item in active_notifications if not item.get("read", False)]
     )
     notification_limit = int(dashboard_preferences.get("notification_limit", 20))
     return {
         "success": True,
         "enabled": True,
-        "notifications": active_notifications[:notification_limit],
+        "notifications": visible_notifications[:notification_limit],
         "unread_count": sum(
             not item.get("read", False) for item in active_notifications
         ),

@@ -375,7 +375,7 @@ def test_dashboard_inbox_aggregates_enabled_backend_sources(monkeypatch) -> None
     }
     assert captured == {
         "user_id": "5201:student",
-        "include_read": False,
+        "include_read": True,
         "limit": 600,
         "active_sources": ["messages", "native", "dsb"],
     }
