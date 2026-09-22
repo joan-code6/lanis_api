@@ -1053,7 +1053,9 @@ app.router.route_class = OutageCacheRoute
 @app.middleware("http")
 async def serialize_account_requests(request: Request, call_next):
     """Serialize authenticated requests with login and account deletion."""
-    if request.method == "DELETE" and request.url.path == "/account":
+    if request.url.path == "/login" or (
+        request.method == "DELETE" and request.url.path == "/account"
+    ):
         return await call_next(request)
     token = request.headers.get("X-Session-Token")
     if not token:
