@@ -20,8 +20,9 @@ from api.api import (
 )
 
 
-def test_appearance_preferences_accept_coral_theme() -> None:
-    assert AppearancePreferencesRequest(theme_color="coral").theme_color == "coral"
+@pytest.mark.parametrize("theme_color", ["coral", "blush"])
+def test_appearance_preferences_accept_new_themes(theme_color: str) -> None:
+    assert AppearancePreferencesRequest(theme_color=theme_color).theme_color == theme_color
 
 
 def test_dashboard_preferences_limit_module_lists() -> None:
