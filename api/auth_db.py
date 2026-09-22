@@ -1335,6 +1335,7 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     whatsapp = await get_whatsapp_link_for_user(user_id)
     message_state = await get_message_notification_state(user_id)
     vertretungsplan_state = await get_vertretungsplan_notification_state(user_id)
+    dashboard_notifications = await get_dashboard_notifications(user_id)
     return {
         "account": {
             "school_id": credential["school_id"] if credential else None,
@@ -1359,8 +1360,45 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
         "notification_state": {
             "messages": message_state,
             "vertretungsplan": vertretungsplan_state,
+            "dashboard_notifications": dashboard_notifications,
         },
     }
+
+
+async def get_dashboard_notifications(user_id: str) -> List[Dict[str, Any]]:
+    """Return retained dashboard notification payloads and read state for export."""
+    user_id = _canonical_user_id(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT notification_id, source, payload, first_seen_at, last_seen_at,
+                   read_at, is_active
+            FROM dashboard_notifications
+            WHERE user_id = ?
+            ORDER BY first_seen_at ASC, notification_id ASC
+            """,
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    notifications = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            payload = None
+        notifications.append(
+            {
+                "notification_id": row["notification_id"],
+                "source": row["source"],
+                "payload": payload,
+                "first_seen_at": row["first_seen_at"],
+                "last_seen_at": row["last_seen_at"],
+                "read_at": row["read_at"],
+                "is_active": bool(row["is_active"]),
+            }
+        )
+    return notifications
 
 
 async def delete_user_data(user_id: str) -> Dict[str, int]:
@@ -1374,6 +1412,7 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
         "push_subscriptions",
         "message_notification_state",
         "vertretungsplan_notification_state",
+        "dashboard_notifications",
         "user_preferences",
         "whatsapp_pairing_codes",
         "whatsapp_links",

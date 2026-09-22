@@ -111,9 +111,12 @@ def purge_expired_files() -> int:
     cutoff = time.time() - FILE_CACHE_RETENTION_SECONDS
     deleted = 0
     for path in FILE_CACHE_DIR.iterdir():
-        if path.name.split(".meta", 1)[0] in _pending_downloads or path.stat().st_mtime >= cutoff:
-            continue
         try:
+            if (
+                path.name.split(".meta", 1)[0] in _pending_downloads
+                or path.stat().st_mtime >= cutoff
+            ):
+                continue
             path.unlink()
             deleted += 1
         except OSError:

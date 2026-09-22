@@ -436,13 +436,24 @@ class UserMetricsDB:
                 (school_id, login),
             )
             user_rows = max(cursor.rowcount, 0)
+            await db.execute(
+                """
+                UPDATE activity_events
+                SET actor_user_id = NULL
+                WHERE event_type = 'admin_action' AND actor_user_id = ?
+                """,
+                (user_id,),
+            )
             cursor = await db.execute(
                 """
                 DELETE FROM activity_events
-                WHERE (school_id = ? AND login = ?)
-                   OR actor_user_id = ? OR target_user_id = ?
+                WHERE (
+                    event_type <> 'admin_action'
+                    AND school_id = ? AND login = ?
+                )
+                   OR target_user_id = ?
                 """,
-                (school_id, login, user_id, user_id),
+                (school_id, login, user_id),
             )
             event_rows = max(cursor.rowcount, 0)
             await db.commit()

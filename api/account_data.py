@@ -1,6 +1,7 @@
 """Self-service account export and deletion orchestration."""
 
 import asyncio
+import weakref
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict
@@ -17,12 +18,14 @@ class DeletionReport:
     upstream_sph_data_deleted: bool = False
 
 
-_lifecycle_locks: dict[str, asyncio.Lock] = {}
+_lifecycle_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
 _lifecycle_guard = asyncio.Lock()
 
 
 async def account_lifecycle_lock(user_id: str) -> asyncio.Lock:
-    """Return the per-account lock shared by deletion and background writes."""
+    """Return the per-account lock shared by requests and background writes."""
     user_id = canonicalize_user_id(user_id)
     async with _lifecycle_guard:
         return _lifecycle_locks.setdefault(user_id, asyncio.Lock())

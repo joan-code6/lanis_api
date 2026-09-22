@@ -973,13 +973,16 @@ _whatsapp_history_cleanup_task = None
 _file_cache_cleanup_task = None
 _whatsapp_unlink_confirmation_tasks: set[asyncio.Task] = set()
 _account_export_last: Dict[str, datetime] = {}
+_account_export_in_flight: set[str] = set()
 _account_export_lock = asyncio.Lock()
 
 
 async def clear_account_export_state(user_id: str) -> None:
     """Remove the in-memory export rate-limit marker for a deleted account."""
     async with _account_export_lock:
-        _account_export_last.pop(canonicalize_user_id(user_id), None)
+        user_id = canonicalize_user_id(user_id)
+        _account_export_last.pop(user_id, None)
+        _account_export_in_flight.discard(user_id)
 
 
 async def _run_whatsapp_history_cleanup() -> None:
@@ -1045,6 +1048,25 @@ async def fetch_and_store_user_data(
 
 app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
 app.router.route_class = OutageCacheRoute
+
+
+@app.middleware("http")
+async def serialize_account_requests(request: Request, call_next):
+    """Serialize authenticated requests with login and account deletion."""
+    if request.method == "DELETE" and request.url.path == "/account":
+        return await call_next(request)
+    token = request.headers.get("X-Session-Token")
+    if not token:
+        return await call_next(request)
+    try:
+        payload = sessions.decode_access_token(token)
+        user_id = canonicalize_user_id(payload["sub"])
+    except Exception:
+        # Let the normal auth dependency return the appropriate error response.
+        return await call_next(request)
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock:
+        return await call_next(request)
 
 
 async def local_auth_dependency(
@@ -1428,22 +1450,37 @@ async def export_account_endpoint(
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Response:
     """Download the LANIS-held account data without authentication secrets."""
-    now = datetime.utcnow()
+    user_id = canonicalize_user_id(auth.user_id)
     async with _account_export_lock:
-        previous = _account_export_last.get(auth.user_id)
+        now = datetime.utcnow()
+        previous = _account_export_last.get(user_id)
         if previous and (now - previous).total_seconds() < 600:
             raise HTTPException(status_code=429, detail="Export is limited to once every 10 minutes")
-        _account_export_last[auth.user_id] = now
-    export = await build_account_export(auth.user_id)
-    return Response(
-        content=json.dumps(export, ensure_ascii=False),
-        media_type="application/json",
-        headers={
-            "Content-Disposition": 'attachment; filename="lanis-account-export.json"',
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-        },
-    )
+        if user_id in _account_export_in_flight:
+            raise HTTPException(status_code=429, detail="An export is already being prepared")
+        _account_export_in_flight.add(user_id)
+    succeeded = False
+    try:
+        export = await build_account_export(user_id)
+        content = json.dumps(export, ensure_ascii=False)
+        response = Response(
+            content=content,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": 'attachment; filename="lanis-account-export.json"',
+                "Cache-Control": "no-store",
+                "Pragma": "no-cache",
+            },
+        )
+        async with _account_export_lock:
+            _account_export_last[user_id] = datetime.utcnow()
+            _account_export_in_flight.discard(user_id)
+        succeeded = True
+        return response
+    finally:
+        if not succeeded:
+            async with _account_export_lock:
+                _account_export_in_flight.discard(user_id)
 
 
 @app.delete("/account")
