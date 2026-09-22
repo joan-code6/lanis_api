@@ -322,7 +322,7 @@ async def initialize() -> None:
                 school_id TEXT NOT NULL,
                 username TEXT NOT NULL,
                 password TEXT NOT NULL,
-                session_id TEXT,
+                session_id TEXT NOT NULL UNIQUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 expires_at TIMESTAMP NOT NULL
             )
@@ -344,6 +344,28 @@ async def initialize() -> None:
         await db.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_refresh_tokens_session_id "
             "ON refresh_tokens(session_id)"
+        )
+        # SQLite cannot add a NOT NULL constraint to an existing table in place.
+        # These triggers give upgraded databases the same invariant as fresh ones.
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS refresh_tokens_session_id_insert
+            BEFORE INSERT ON refresh_tokens
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'refresh token session_id is required');
+            END
+            """
+        )
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS refresh_tokens_session_id_update
+            BEFORE UPDATE OF session_id ON refresh_tokens
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'refresh token session_id is required');
+            END
+            """
         )
         await db.execute(
             """
@@ -1278,7 +1300,7 @@ def _notification_preferences_from_row(row: Any) -> Dict[str, Any]:
 
 
 async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
-    """Return the non-expired refresh-token row owning a JWT session ID."""
+    """Return non-secret metadata for the session owning a JWT ID."""
     if not session_id:
         return None
     await _revoke_expired_sessions()
@@ -1292,11 +1314,9 @@ async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
     if not row:
         return None
     return {
-        "token": row["token"],
         "user_id": row["user_id"],
         "school_id": row["school_id"],
         "username": row["username"],
-        "password": _decrypt_password(row["password"]),
         "session_id": row["session_id"],
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
@@ -1307,7 +1327,7 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     """Return user-owned persisted data without exposing authentication secrets."""
     user_id = _canonical_user_id(user_id)
     credential = await get_refresh_token_by_user_id(user_id)
-    preferences = await get_user_preferences(user_id)
+    preferences, _ = await get_user_preferences(user_id)
     notification_preferences = await get_notification_preferences(user_id)
     custom_lessons = await get_custom_lessons(user_id)
     class_links = await get_class_link_overrides(user_id)

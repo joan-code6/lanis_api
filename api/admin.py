@@ -46,7 +46,6 @@ logger = logging.getLogger("admin")
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 ADMIN_TOKEN_EXPIRE_MINUTES = 30
-STEP_UP_EXPIRE_MINUTES = 5
 ACTIVE_STATE_DAYS = 7
 DORMANT_STATE_DAYS = 30
 
@@ -62,20 +61,11 @@ class AdminLoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
 
 
-class AdminStepUpRequest(BaseModel):
-    password: str = Field(..., min_length=1)
-
-
 class AdminTokenResponse(BaseModel):
     access_token: str
     expires_in: int
     school_id: str
     username: str
-
-
-class AdminStepUpResponse(BaseModel):
-    step_up_token: str
-    expires_in: int
 
 
 class AdminUserSummary(BaseModel):
@@ -139,14 +129,13 @@ def _admin_secret() -> str:
     return secret
 
 
-def _issue_token(principal: AdminPrincipal, *, step_up: bool = False) -> str:
+def _issue_token(principal: AdminPrincipal) -> str:
     secret = _admin_secret()
     if not secret:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Admin authentication is not configured",
         )
-    minutes = STEP_UP_EXPIRE_MINUTES if step_up else ADMIN_TOKEN_EXPIRE_MINUTES
     now = _utcnow()
     return jwt.encode(
         {
@@ -154,9 +143,9 @@ def _issue_token(principal: AdminPrincipal, *, step_up: bool = False) -> str:
             "school_id": principal.school_id,
             "username": principal.username,
             "aud": "lanis-admin",
-            "typ": "admin-step-up" if step_up else "admin",
+            "typ": "admin",
             "iat": now,
-            "exp": now + timedelta(minutes=minutes),
+            "exp": now + timedelta(minutes=ADMIN_TOKEN_EXPIRE_MINUTES),
         },
         secret,
         algorithm="HS256",
@@ -203,12 +192,6 @@ async def admin_dependency(
     x_admin_token: str = Header(..., alias="X-Admin-Token"),
 ) -> AdminPrincipal:
     return _decode_token(x_admin_token, "admin")
-
-
-async def step_up_dependency(
-    x_admin_step_up: str = Header(..., alias="X-Admin-Step-Up"),
-) -> AdminPrincipal:
-    return _decode_token(x_admin_step_up, "admin-step-up")
 
 
 async def _verify_sph_credentials(school_id: str, username: str, password: str) -> bool:
@@ -261,25 +244,6 @@ async def admin_login(payload: AdminLoginRequest) -> AdminTokenResponse:
         expires_in=ADMIN_TOKEN_EXPIRE_MINUTES * 60,
         school_id=school_id,
         username=normalize_username(username),
-    )
-
-
-@router.post("/auth/step-up", response_model=AdminStepUpResponse)
-async def admin_step_up(
-    payload: AdminStepUpRequest,
-    principal: AdminPrincipal = Depends(admin_dependency),
-) -> AdminStepUpResponse:
-    if not await _verify_sph_credentials(
-        principal.school_id, principal.username, payload.password
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Admin re-authentication failed",
-        )
-    await _record_admin_action(principal.user_id, "admin_step_up")
-    return AdminStepUpResponse(
-        step_up_token=_issue_token(principal, step_up=True),
-        expires_in=STEP_UP_EXPIRE_MINUTES * 60,
     )
 
 

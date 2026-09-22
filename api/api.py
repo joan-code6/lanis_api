@@ -559,6 +559,7 @@ class AuthManager:
         self._schulportal_restore_locks: Dict[str, asyncio.Lock] = {}
         self._cache: Dict[str, CacheEntry] = {}
         self._cache_versions: Dict[tuple[str, str], int] = {}
+        self._cache_generation = 0
         self._lock = asyncio.Lock()
         self._ttl = ttl_seconds
 
@@ -569,7 +570,7 @@ class AuthManager:
         user_id: str,
         school_id: str,
         username: str,
-        session_id: Optional[str] = None,
+        session_id: str,
     ) -> str:
         user_id = canonicalize_user_id(user_id)
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -580,8 +581,9 @@ class AuthManager:
             "iat": datetime.utcnow(),
             "exp": expire,
         }
-        if session_id:
-            payload["jti"] = session_id
+        if not session_id:
+            raise ValueError("session_id is required for access tokens")
+        payload["jti"] = session_id
         return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
     def decode_access_token(self, token: str) -> dict:
@@ -630,6 +632,9 @@ class AuthManager:
         await self.drop_schulportal_session(user_id)
         async with self._lock:
             self._schulportal_restore_locks.pop(user_id, None)
+            for key in [key for key in self._cache_versions if key[0] == user_id]:
+                self._cache_versions.pop(key, None)
+        snapshots.delete_user_data(user_id)
         return {"cache_entries": cache_count, "snapshot_entries": snapshot_count}
 
     # -- Schulportal client cache ------------------------------------
@@ -893,7 +898,11 @@ class AuthManager:
     async def get_cache_version(self, user_id: str, endpoint: str) -> int:
         """Return the current version for an endpoint's cache entries."""
         async with self._lock:
-            return self._cache_versions.setdefault((user_id, endpoint), 0)
+            key = (user_id, endpoint)
+            if key not in self._cache_versions:
+                self._cache_generation += 1
+                self._cache_versions[key] = self._cache_generation
+            return self._cache_versions[key]
 
     async def set_cache_if_current_version(
         self,
@@ -909,7 +918,7 @@ class AuthManager:
             return False
         async with self._lock:
             version_key = (user_id, endpoint)
-            if self._cache_versions.get(version_key, 0) != version:
+            if self._cache_versions.get(version_key) != version:
                 return False
 
             cache_key = self._make_cache_key(user_id, endpoint, params)
@@ -928,9 +937,11 @@ class AuthManager:
         snapshots.invalidate_endpoint(user_id, endpoint)
         async with self._lock:
             version_key = (user_id, endpoint)
-            self._cache_versions[version_key] = (
-                self._cache_versions.get(version_key, 0) + 1
-            )
+            if version_key in self._cache_versions:
+                self._cache_versions[version_key] += 1
+            else:
+                self._cache_generation += 1
+                self._cache_versions[version_key] = self._cache_generation
             expired = [
                 key
                 for key, entry in self._cache.items()
@@ -963,6 +974,12 @@ _file_cache_cleanup_task = None
 _whatsapp_unlink_confirmation_tasks: set[asyncio.Task] = set()
 _account_export_last: Dict[str, datetime] = {}
 _account_export_lock = asyncio.Lock()
+
+
+async def clear_account_export_state(user_id: str) -> None:
+    """Remove the in-memory export rate-limit marker for a deleted account."""
+    async with _account_export_lock:
+        _account_export_last.pop(canonicalize_user_id(user_id), None)
 
 
 async def _run_whatsapp_history_cleanup() -> None:
@@ -1036,14 +1053,12 @@ async def local_auth_dependency(
     """Validate LANIS identity and persisted session without contacting Schulportal."""
     payload = sessions.decode_access_token(x_session_token)
     user_id = canonicalize_user_id(payload["sub"])
-    if payload.get("jti"):
-        stored = await get_refresh_token_by_session_id(payload["jti"])
-        if stored and canonicalize_user_id(stored["user_id"]) != user_id:
-            stored = None
-    else:
-        # Access tokens issued before session-bound JWTs remain readable during
-        # the migration; all newly issued tokens contain jti.
-        stored = await get_refresh_token_by_user_id(user_id)
+    session_id = payload.get("jti")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Access token is not session-bound")
+    stored = await get_refresh_token_by_session_id(session_id)
+    if stored and canonicalize_user_id(stored["user_id"]) != user_id:
+        stored = None
     if not stored:
         raise HTTPException(status_code=401, detail="No valid session found — please log in again")
     return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"])
@@ -1288,6 +1303,16 @@ async def get_metrics_stats(
 async def login_endpoint(payload: LoginRequest) -> LoginResponse:
     school_id = normalize_school_id(payload.school_id)
     username = str(payload.username).strip()
+    user_id = make_user_id(school_id, username)
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock:
+        return await _login_account(payload, school_id, username)
+
+
+async def _login_account(
+    payload: LoginRequest, school_id: str, username: str
+) -> LoginResponse:
+    """Complete login while the caller holds the account lifecycle lock."""
 
     # 1. Log into Schulportal
     user_id = await sessions.create_schulportal_session(
@@ -1371,14 +1396,18 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
     # Schulportal.  A backend restart or temporary SPH outage must not turn a
     # valid persisted login into a permanent authentication failure.  The live
     # Schulportal client is restored lazily by the next protected data request.
-    token_kwargs = {
-        "user_id": rt_data["user_id"],
-        "school_id": rt_data["school_id"],
-        "username": rt_data["username"],
-    }
-    if rt_data.get("session_id"):
-        token_kwargs["session_id"] = rt_data["session_id"]
-    access_token = sessions.create_access_token(**token_kwargs)
+    session_id = rt_data.get("session_id")
+    if not session_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token is not session-bound",
+        )
+    access_token = sessions.create_access_token(
+        user_id=rt_data["user_id"],
+        school_id=rt_data["school_id"],
+        username=rt_data["username"],
+        session_id=session_id,
+    )
 
     return TokenRefreshResponse(access_token=access_token)
 
