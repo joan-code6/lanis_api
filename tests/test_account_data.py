@@ -2,6 +2,7 @@ import asyncio
 import json
 
 from api import account_data, auth_db
+from api.admin import router as admin_router
 from api.metrics.user_metrics_db import UserMetricsDB
 
 
@@ -26,6 +27,7 @@ def test_account_export_excludes_authentication_secrets(tmp_path, monkeypatch):
         serialized = json.dumps(exported)
 
         assert exported["profile"] == {"name": "Student"}
+        assert isinstance(exported["preferences"], dict)
         assert exported["notification_preferences"]["enabled"] is True
         assert "secret-password" not in serialized
         assert token not in serialized
@@ -57,3 +59,9 @@ def test_account_deletion_removes_auth_and_metrics_data(tmp_path, monkeypatch):
         assert await metrics.get_user("5201", "student") is None
 
     asyncio.run(scenario())
+
+
+def test_admin_cannot_reveal_credentials_or_request_step_up_tokens():
+    paths = {route.path for route in admin_router.routes}
+    assert "/admin/users/{user_id:path}/credentials/reveal" not in paths
+    assert "/admin/auth/step-up" not in paths
