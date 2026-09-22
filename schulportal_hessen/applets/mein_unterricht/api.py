@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 import json
 import os
 import re
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from schulportal_hessen.tools.cryptor import Cryptor
 from .submissions import extract_entry_uploads, meinunterricht_get_submissions as _get_submissions
@@ -19,7 +19,7 @@ def _extract_filename(content_disposition: Optional[str], fallback_url: str) -> 
     if content_disposition:
         match = re.search(r"filename\*=UTF-8''([^;]+)", content_disposition)
         if match:
-            return match.group(1)
+            return unquote(match.group(1))
         match = re.search(r'filename="?([^";]+)"?', content_disposition)
         if match:
             return match.group(1)

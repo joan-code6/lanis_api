@@ -269,9 +269,12 @@ def parse_submission_detail(
         ),
         soup,
     )
-    editable = requirements.select("span.editable")
-    start = editable[0].get_text(" ", strip=True).replace(" ab", "") if editable else None
     deadline_node = requirements.select_one("b span.editable")
+    start_node = next(
+        (node for node in requirements.select("span.editable") if node is not deadline_node),
+        None,
+    )
+    start = start_node.get_text(" ", strip=True).replace(" ab", "") if start_node else None
     deadline = (
         deadline_node.get_text(" ", strip=True).replace(" spätestens", "")
         if deadline_node
@@ -449,6 +452,15 @@ def meinunterricht_upload_files(
         statuses = parse_upload_statuses(response.text)
         if not statuses and response.text.strip() != "1":
             return {"success": False, "error": "Schulportal returned no upload status"}
+        if response.text.strip() == "1" and not statuses:
+            statuses = [
+                {
+                    "name": file.get("filename") or f"upload-{index}",
+                    "status": "erfolgreich",
+                    "message": None,
+                }
+                for index, file in enumerate(files, start=1)
+            ]
         return {
             "success": True,
             "files": statuses,
