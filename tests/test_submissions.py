@@ -1,6 +1,7 @@
 import io
 
 from schulportal_hessen.applets.mein_unterricht.submissions import (
+    _encode_ref,
     meinunterricht_get_submission,
     meinunterricht_get_submissions,
     meinunterricht_upload_files,
@@ -112,6 +113,32 @@ def test_submission_detail_parser_returns_rules_and_files() -> None:
     assert detail["own_files"][0]["index"] == "123"
     assert len(detail["public_files"]) == 1
     assert detail["public_files"][0]["person"] == "Frau Beispiel"
+
+
+def test_submission_detail_parser_handles_closed_page_without_upload_form() -> None:
+    source_url = "meinunterricht.php?a=sus_abgabe&b=42&e=7&id=9"
+    detail_ref = _encode_ref(source_url, BASE_URL)
+    detail = parse_submission_detail(
+        """
+        <div id="content">
+          <h1>Geschlossene Abgabe</h1>
+          <div class="row"><div class="col-md-12">
+            <span class="editable">Freitag, 5.9.26 23:59 spätestens</span>
+            <div class="alert alert-info">Die Abgabe ist geschlossen.</div>
+          </div></div>
+        </div>
+        """,
+        BASE_URL,
+        detail_ref,
+        source_url=source_url,
+    )
+
+    assert detail["success"] is True
+    assert detail["course_id"] == "42"
+    assert detail["entry_id"] == "7"
+    assert detail["upload_id"] == "9"
+    assert detail["status"] == "closed"
+    assert detail["can_upload"] is False
 
 
 def test_upload_status_parser_keeps_per_file_messages() -> None:

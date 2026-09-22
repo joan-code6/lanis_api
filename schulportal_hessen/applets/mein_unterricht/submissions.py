@@ -251,12 +251,14 @@ def parse_submission_detail(
             break
 
     reference_query = parse_qs(urlparse(source_url or "").query)
-    form_values = {
-        name: (form.select_one(f"input[name='{name}']") or {}).get(
-            "value", reference_query.get(name, [""])[0]
+    form_values = {}
+    for name in ("b", "e", "id"):
+        field = form.select_one(f"input[name='{name}']") if form else None
+        form_values[name] = (
+            field.get("value", "")
+            if field is not None
+            else reference_query.get(name, [""])[0]
         )
-        for name in ("b", "e", "id")
-    }
 
     groups = soup.select("#content div.row div.col-md-12")
     requirements = next(

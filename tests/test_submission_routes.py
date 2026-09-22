@@ -82,4 +82,5 @@ def test_submission_delete_invalidates_submission_caches(monkeypatch) -> None:
         ("student", "/meinunterricht/submissions"),
         ("student", "/meinunterricht/submissions/detail"),
         ("student", "/meinunterricht/course"),
+        ("student", "/meinunterricht/course/*"),
     ]

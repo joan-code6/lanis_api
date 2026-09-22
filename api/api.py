@@ -2725,6 +2725,7 @@ async def meinunterricht_submission_upload(
             sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions"),
             sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions/detail"),
             sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course/*"),
         )
     return result
 
@@ -2751,6 +2752,7 @@ async def meinunterricht_submission_delete_file(
             sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions"),
             sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions/detail"),
             sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course/*"),
         )
     return result
 
