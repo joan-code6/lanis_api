@@ -421,8 +421,8 @@ def meinunterricht_upload_files(
 ) -> dict[str, Any]:
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
-    if not files or len(files) > 5:
-        return {"success": False, "error": "Between one and five files are required"}
+    if not files:
+        return {"success": False, "error": "At least one file is required"}
     try:
         multipart = []
         for index, file in enumerate(files, start=1):

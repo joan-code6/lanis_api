@@ -2640,13 +2640,13 @@ async def meinunterricht_submission(
     detail_ref: str,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
+    endpoint = "/meinunterricht/submissions/detail"
     params = _make_param_key({"detail_ref": detail_ref})
-    cached = await sessions.get_cached(
-        auth.user_id, "/meinunterricht/submissions/detail", params
-    )
+    cached = await sessions.get_cached(auth.user_id, endpoint, params)
     if cached is not None:
         return cached
 
+    cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     detail = await run_in_threadpool(
         auth.client.meinunterricht_get_submission, detail_ref
     )
@@ -2659,8 +2659,8 @@ async def meinunterricht_submission(
         else detail
     )
     if result.get("success"):
-        await sessions.set_cache(
-            auth.user_id, "/meinunterricht/submissions/detail", result, params
+        await sessions.set_cache_if_current_version(
+            auth.user_id, endpoint, result, params, cache_version
         )
     return result
 
@@ -2685,8 +2685,8 @@ async def meinunterricht_submission_upload(
     files: List[UploadFile] = File(...),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    if not files or len(files) > 5:
-        raise HTTPException(status_code=422, detail="Between one and five files are required")
+    if not files:
+        raise HTTPException(status_code=422, detail="At least one file is required")
 
     payload: List[Dict[str, Any]] = []
     total_size = 0

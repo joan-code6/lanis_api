@@ -27,11 +27,17 @@ def test_submission_detail_route_returns_nested_contract_and_caches_success(monk
     async def get_cached(*_args, **_kwargs):
         return None
 
-    async def set_cache(*args, **_kwargs):
+    async def get_cache_version(*_args, **_kwargs):
+        return 4
+
+    async def set_cache_if_current_version(*args, **_kwargs):
         captured["cache"] = args
 
     monkeypatch.setattr(sessions, "get_cached", get_cached)
-    monkeypatch.setattr(sessions, "set_cache", set_cache)
+    monkeypatch.setattr(sessions, "get_cache_version", get_cache_version)
+    monkeypatch.setattr(
+        sessions, "set_cache_if_current_version", set_cache_if_current_version
+    )
 
     auth = SimpleNamespace(
         user_id="student",
@@ -51,6 +57,7 @@ def test_submission_detail_route_returns_nested_contract_and_caches_success(monk
         "submission": {"detail_ref": "opaque-ref", "title": "Mathe"},
     }
     assert captured["cache"][0:2] == ("student", "/meinunterricht/submissions/detail")
+    assert captured["cache"][4] == 4
 
 
 def test_submission_delete_invalidates_submission_caches(monkeypatch) -> None:
