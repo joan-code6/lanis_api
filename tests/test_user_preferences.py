@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from api import api as api_module
 from api import auth_db
 from api.api import (
+    AppearancePreferencesRequest,
     DashboardPreferencesRequest,
     HomeworkPreferencesRequest,
     SidebarPreferencesRequest,
@@ -17,6 +18,10 @@ from api.api import (
     get_account_preferences,
     update_account_preferences,
 )
+
+
+def test_appearance_preferences_accept_coral_theme() -> None:
+    assert AppearancePreferencesRequest(theme_color="coral").theme_color == "coral"
 
 
 def test_dashboard_preferences_limit_module_lists() -> None:

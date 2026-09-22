@@ -328,7 +328,7 @@ class WahlenSubmissionRequest(BaseModel):
 class AppearancePreferencesRequest(BaseModel):
     theme_mode: Optional[Literal["system", "light", "dark", "oled"]] = None
     theme_color: Optional[
-        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan"]
+        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan", "coral"]
     ] = None
 
 
