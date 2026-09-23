@@ -296,6 +296,7 @@ class SchulportalHessenAPI:
                 "wahlen_get_form",
                 "wahlen_submit",
             ],
+            "videokonferenz.php": ["videokonferenz_get_rooms"],
         }
 
         for entry in entries:
@@ -803,6 +804,11 @@ SchulportalHessenAPI.kalender_get_event = kalender_get_event
 from .applets.vertretungsplan.api import vertretungsplan_get_plan
 
 SchulportalHessenAPI.vertretungsplan_get_plan = vertretungsplan_get_plan
+
+# Import and attach the Videokonferenz methods
+from .applets.videokonferenz.api import videokonferenz_get_rooms
+
+SchulportalHessenAPI.videokonferenz_get_rooms = videokonferenz_get_rooms
 
 # Import and attach the stundenplan methods
 from .applets.stundenplan.api import stundenplan_get_plan
