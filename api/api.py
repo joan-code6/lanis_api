@@ -2685,8 +2685,8 @@ async def meinunterricht_submission_upload(
     files: List[UploadFile] = File(...),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    if not files:
-        raise HTTPException(status_code=422, detail="At least one file is required")
+    if not files or len(files) > 5:
+        raise HTTPException(status_code=422, detail="Between one and five files are required")
 
     payload: List[Dict[str, Any]] = []
     total_size = 0

@@ -313,7 +313,7 @@ def parse_submission_detail(
     )
     file_records: dict[str, dict[str, Any]] = {}
     for group in file_groups:
-        is_public = bool(group.select_one("span.label-info") and "col-md-5" in group.get("class", []))
+        is_public = "col-md-5" in group.get("class", [])
         for link in group.select("ul li a[href*='f=']"):
             record = _file_record(link, base_url, public=is_public)
             if record:
@@ -424,8 +424,8 @@ def meinunterricht_upload_files(
 ) -> dict[str, Any]:
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
-    if not files:
-        return {"success": False, "error": "At least one file is required"}
+    if not files or len(files) > 5:
+        return {"success": False, "error": "Between one and five files are required"}
     try:
         multipart = []
         for index, file in enumerate(files, start=1):
