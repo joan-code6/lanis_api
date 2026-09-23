@@ -193,20 +193,25 @@ async def _build_public_status() -> dict[str, Any]:
             previous = ordered_checks[cursor]
             cursor += 1
         day_checks = [previous] if previous else []
-        while cursor < len(ordered_checks) and ordered_checks[cursor][0] < min(next_day, now):
+        day_end = min(next_day, now)
+        is_current_day = day.date() == now.date()
+        while cursor < len(ordered_checks) and (
+            ordered_checks[cursor][0] < day_end
+            or (is_current_day and ordered_checks[cursor][0] == now)
+        ):
             day_checks.append(ordered_checks[cursor])
             cursor += 1
         aggregate = _aggregate(
             day_checks,
             day_start,
-            min(next_day, now),
+            day_end,
             interval,
         )
         available, failed = aggregate["available_checks"], aggregate["failed_checks"]
         has_degraded = any(
             check["status"] == "degraded"
             for timestamp, check in day_checks
-            if day_start <= timestamp < min(next_day, now)
+            if day_start <= timestamp < day_end or (is_current_day and timestamp == now)
         )
         status = (
             "unknown"

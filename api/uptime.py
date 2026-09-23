@@ -483,6 +483,13 @@ def _sample_interval_seconds(
     check: dict[str, Any], previous: datetime | None, following: datetime | None, normal_interval: int | None = None
 ) -> int:
     """Use stored cadence, falling back to neighboring timestamps for legacy rows."""
+    def utc_naive(value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    previous = utc_naive(previous)
+    following = utc_naive(following)
     normal = normal_interval or get_uptime_interval_seconds()
     stored = check.get("sample_interval_seconds")
     if isinstance(stored, (int, float)) and stored > 0:
