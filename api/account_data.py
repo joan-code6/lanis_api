@@ -93,6 +93,7 @@ async def delete_account_data(user_id: str) -> DeletionReport:
         from .api import (
             clear_account_export_state,
             clear_whatsapp_user_queue,
+            semantic_engine,
             sessions,
             task_queue,
             whatsapp_task_queue,
@@ -102,6 +103,7 @@ async def delete_account_data(user_id: str) -> DeletionReport:
         await whatsapp_task_queue.cancel_user_tasks(user_id)
         await clear_whatsapp_user_queue(user_id)
         runtime_counts = await sessions.delete_user_runtime_data(user_id)
+        semantic_engine.invalidate(user_id)
         await clear_account_export_state(user_id)
         # Delete the metrics store first. If the second database fails, a retry
         # can safely repeat the idempotent metrics deletion while the auth row

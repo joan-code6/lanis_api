@@ -1035,12 +1035,18 @@ def test_notification_cycle_isolates_a_single_user_failure(monkeypatch):
     async def get_users():
         return users
 
+    async def get_session(user_id):
+        return {"user_id": user_id}
+
     async def check_user(user, _get_client):
         if user["user_id"] == "bad":
             raise ValueError("corrupt notification state")
         checked.append(user["user_id"])
 
     monkeypatch.setattr(notifications, "get_enabled_notification_users", get_users)
+    monkeypatch.setattr(
+        "api.auth_db.get_refresh_token_by_user_id", get_session
+    )
     monkeypatch.setattr(notifications, "check_user_messages", check_user)
 
     asyncio.run(notifications.run_message_notification_cycle(lambda _user_id: None))
