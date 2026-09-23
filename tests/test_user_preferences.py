@@ -20,7 +20,7 @@ from api.api import (
 )
 
 
-@pytest.mark.parametrize("theme_color", ["coral", "blush"])
+@pytest.mark.parametrize("theme_color", ["coral", "blush", "moss"])
 def test_appearance_preferences_accept_new_themes(theme_color: str) -> None:
     assert AppearancePreferencesRequest(theme_color=theme_color).theme_color == theme_color
 
