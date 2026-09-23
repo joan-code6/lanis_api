@@ -45,6 +45,8 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
     }
     if row.get("latency_ms") is not None:
         result["latency_ms"] = row["latency_ms"]
+    if row.get("sample_interval_seconds") is not None:
+        result["sample_interval_seconds"] = row["sample_interval_seconds"]
     for name in ("login", "modules"):
         item = next((
             value for value in features
@@ -66,32 +68,43 @@ def _aggregate(
     end: datetime,
     interval: int,
 ) -> dict[str, Any]:
-    available = sum(check["status"] == "up" for _, check in checks)
-    failed = sum(check["status"] in {"down", "degraded"} for _, check in checks)
+    in_window = [(timestamp, check) for timestamp, check in checks if start <= timestamp <= end]
+    available = sum(check["status"] == "up" for _, check in in_window)
+    failed = sum(check["status"] in {"down", "degraded"} for _, check in in_window)
     # Weight each result by the time it represents so 15-second incident checks
     # do not count more heavily than normal five-minute checks.
     expected_seconds = max(1.0, (end - start).total_seconds())
     ordered = sorted(checks, key=lambda item: item[0])
     observed_seconds = available_seconds = 0.0
     # Each observation represents its state until the next check, capped at
-    # two normal intervals. This keeps incident-mode 15s sampling from
+    # twice its stored or inferred sampling interval. This keeps incident-mode sampling from
     # overweighting downtime in the percentage while still exposing gaps.
     for index, (timestamp, check) in enumerate(ordered):
         if check["status"] == "unknown":
             continue
         next_timestamp = ordered[index + 1][0] if index + 1 < len(ordered) else end
-        cadence = uptime.INCIDENT_UPTIME_INTERVAL_SECONDS if check["status"] in {"down", "degraded"} else interval
+        cadence = uptime._sample_interval_seconds(
+            check,
+            ordered[index - 1][0] if index else None,
+            next_timestamp if index + 1 < len(ordered) else None,
+            interval,
+        )
         span_end = min(next_timestamp, timestamp + timedelta(seconds=max(1, cadence * 2)), end)
         seconds = max(0.0, (span_end - max(timestamp, start)).total_seconds())
         observed_seconds += seconds
         if check["status"] == "up":
             available_seconds += seconds
     observed = available + failed
+    if observed_seconds == 0 and in_window:
+        observed_seconds = 1.0
+        latest_in_window = max(in_window, key=lambda item: item[0])[1]
+        if latest_in_window["status"] == "up":
+            available_seconds = 1.0
     return {
-        "checks": len(checks),
+        "checks": len(in_window),
         "available_checks": available,
         "failed_checks": failed,
-        "unknown_checks": len(checks) - observed,
+        "unknown_checks": len(in_window) - observed,
         "uptime_percent": round(100 * available_seconds / observed_seconds, 2) if observed_seconds else None,
         "coverage_percent": round(100 * min(observed_seconds, expected_seconds) / expected_seconds, 2),
     }
@@ -128,13 +141,14 @@ async def _build_public_status() -> dict[str, Any]:
     now = uptime._utcnow().replace(tzinfo=timezone.utc)
     start = now - timedelta(days=uptime.UPTIME_SUMMARY_DAYS)
     interval = uptime.get_uptime_interval_seconds()
+    query_start = start - timedelta(seconds=interval)
     rows = await uptime.user_metrics_db.get_uptime_checks(
-        limit=-1, since=start.replace(tzinfo=None)
+        limit=-1, since=query_start.replace(tzinfo=None)
     )
     checks = []
     for row in rows:
         timestamp = _timestamp(row.get("checked_at"))
-        if timestamp is not None and start <= timestamp <= now:
+        if timestamp is not None and query_start <= timestamp <= now:
             checks.append((timestamp, row))
     # Timestamps can collide when checks are written close together. Keep the
     # newest database row stable without exposing its internal identifier.
@@ -142,11 +156,14 @@ async def _build_public_status() -> dict[str, Any]:
     checks = [(timestamp, _check(row, timestamp)) for timestamp, row in checks]
     latest = checks[0] if checks else None
     latest_status = latest[1]["status"] if latest else "unknown"
-    stale_after = 2 * (
-        uptime.INCIDENT_UPTIME_INTERVAL_SECONDS
-        if latest_status in {"down", "degraded"}
-        else interval
-    )
+    if latest_status in {"down", "degraded"}:
+        last_probe_seconds = (latest[1].get("latency_ms") or 0) / 1000
+        stale_after = max(
+            2 * uptime.INCIDENT_UPTIME_INTERVAL_SECONDS,
+            uptime.INCIDENT_UPTIME_INTERVAL_SECONDS + 2 * last_probe_seconds,
+        )
+    else:
+        stale_after = 2 * interval
     stale = latest is None or (now - latest[0]).total_seconds() > stale_after
     current = (
         dict(latest[1])
@@ -164,23 +181,32 @@ async def _build_public_status() -> dict[str, Any]:
         ]
     current["stale"] = stale
 
-    by_day: dict[str, list] = {}
-    for timestamp, check in checks:
-        by_day.setdefault(timestamp.date().isoformat(), []).append((timestamp, check))
+    ordered_checks = sorted(checks, key=lambda item: item[0])
     daily = []
     day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    cursor = 0
+    previous = None
     while day <= now:
         next_day = day + timedelta(days=1)
+        day_start = max(day, start)
+        while cursor < len(ordered_checks) and ordered_checks[cursor][0] < day_start:
+            previous = ordered_checks[cursor]
+            cursor += 1
+        day_checks = [previous] if previous else []
+        while cursor < len(ordered_checks) and ordered_checks[cursor][0] < min(next_day, now):
+            day_checks.append(ordered_checks[cursor])
+            cursor += 1
         aggregate = _aggregate(
-            by_day.get(day.date().isoformat(), []),
-            max(day, start),
+            day_checks,
+            day_start,
             min(next_day, now),
             interval,
         )
         available, failed = aggregate["available_checks"], aggregate["failed_checks"]
         has_degraded = any(
             check["status"] == "degraded"
-            for _, check in by_day.get(day.date().isoformat(), [])
+            for timestamp, check in day_checks
+            if day_start <= timestamp < min(next_day, now)
         )
         status = (
             "unknown"
@@ -197,10 +223,15 @@ async def _build_public_status() -> dict[str, Any]:
     for key, period in (("24h", 1), ("7d", 7), ("30d", 30), ("90d", 90)):
         period_start = now - timedelta(days=period)
         period_checks = [(timestamp, check) for timestamp, check in checks if timestamp >= period_start]
+        prior = [(timestamp, check) for timestamp, check in checks if timestamp < period_start]
+        if prior:
+            period_checks.insert(0, prior[0])
         windows[key] = {
             "period_days": period,
             **_aggregate(period_checks, period_start, now, interval),
-            "latency": _latencies(period_checks),
+            "latency": _latencies([
+                item for item in period_checks if item[0] >= period_start
+            ]),
         }
     return {
         "success": True,

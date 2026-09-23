@@ -1301,12 +1301,16 @@ during an incident, less when a current result is about to become stale).
   components, last check time, and a safe error code.
 - `measurement`: `interval_seconds`, `stale_after_seconds`, UTC `period_start`
   and `period_end`, and a human-readable description of the methodology.
+  During an incident, the freshness window also accounts for the last probe's
+  measured duration and time needed for the next retry cycle.
 
 Failed synthetic probes are retried once immediately. A failed first probe whose
 retry succeeds is not recorded unless it closes an already confirmed incident.
-While an incident is active, checks run every 15 seconds; otherwise they use the
-configured normal interval. A result represents at most two intervals for its
-state (15 seconds during an incident, normal cadence while healthy). Missing
+While an incident is active, the scheduler waits 15 seconds between checks;
+otherwise it waits the configured normal interval. New observations store the
+effective interval, including probe execution time. Legacy rows infer cadence
+from adjacent timestamps so prior five-minute failures keep their historical
+weight. A result represents at most two such intervals. Missing
 or stale spans are excluded from availability and reduce coverage. Partial
 coverage does not mean all
 unobserved time was healthy; show coverage alongside the availability percentage.

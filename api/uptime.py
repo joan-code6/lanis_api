@@ -461,13 +461,51 @@ def _time_weighted_uptime(checks: list[dict[str, Any]], start: datetime, end: da
         if check.get("status") not in {"up", "down", "degraded"}:
             continue
         next_stamp = ordered[index + 1][0] if index + 1 < len(ordered) else end
-        cadence = INCIDENT_UPTIME_INTERVAL_SECONDS if check.get("status") in {"down", "degraded"} else interval
+        cadence = _sample_interval_seconds(
+            check,
+            ordered[index - 1][0] if index else None,
+            next_stamp if index + 1 < len(ordered) else None,
+            interval,
+        )
         span_end = min(next_stamp, stamp + timedelta(seconds=2 * cadence), end)
         seconds = max(0.0, (span_end - max(stamp, start)).total_seconds())
         observed += seconds
         if check.get("status") == "up":
             available += seconds
+    if observed == 0:
+        latest = next((check for stamp, check in reversed(ordered) if start <= stamp <= end and check.get("status") in {"up", "down", "degraded"}), None)
+        if latest is not None:
+            return 100.0 if latest.get("status") == "up" else 0.0
     return round(available / observed * 100, 2) if observed else None
+
+
+def _sample_interval_seconds(
+    check: dict[str, Any], previous: datetime | None, following: datetime | None, normal_interval: int | None = None
+) -> int:
+    """Use stored cadence, falling back to neighboring timestamps for legacy rows."""
+    normal = normal_interval or get_uptime_interval_seconds()
+    stored = check.get("sample_interval_seconds")
+    if isinstance(stored, (int, float)) and stored > 0:
+        return int(stored)
+    if check.get("status") not in {"down", "degraded"}:
+        return normal
+    gaps = [
+        (other - stamp).total_seconds()
+        for other, stamp in ((previous, _parse_check_time(check)), (following, _parse_check_time(check)))
+        if other is not None and stamp is not None and other != stamp
+    ]
+    if gaps:
+        nearest = min(abs(gap) for gap in gaps)
+        return max(INCIDENT_UPTIME_INTERVAL_SECONDS, min(normal, round(nearest)))
+    return normal
+
+
+def _parse_check_time(check: dict[str, Any]) -> datetime | None:
+    try:
+        value = datetime.fromisoformat(str(check.get("checked_at")).replace("Z", "+00:00"))
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+    except (TypeError, ValueError):
+        return None
 
 
 def _latency_summary(checks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -504,22 +542,41 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
         except (TypeError, ValueError):
             return None
 
-    selected = [check for check in checks if (stamp := timestamp(check)) is not None and start <= stamp <= end]
+    timed = [(stamp, check) for check in checks if (stamp := timestamp(check)) is not None and stamp <= end]
+    timed.sort(key=lambda item: item[0])
+    selected = [check for stamp, check in timed if start <= stamp <= end]
+    prior = [(stamp, check) for stamp, check in timed if stamp < start]
+    represented = ([prior[-1][1]] if prior else []) + selected
     available = sum(check.get("status") == "up" for check in selected)
     failed = sum(check.get("status") in {"down", "degraded"} for check in selected)
     interval = get_uptime_interval_seconds()
-    parsed = [(timestamp(check), check) for check in selected]
+    parsed = [(timestamp(check), check) for check in represented]
     parsed.sort(key=lambda item: item[0])
-    observed_seconds = 0.0
+    observed_seconds = available_seconds = 0.0
     for index, (stamp, _check) in enumerate(parsed):
         next_stamp = parsed[index + 1][0] if index + 1 < len(parsed) else end
-        cadence = INCIDENT_UPTIME_INTERVAL_SECONDS if _check.get("status") in {"down", "degraded"} else interval
-        observed_seconds += max(0.0, (min(next_stamp, stamp + timedelta(seconds=2 * cadence), end) - max(stamp, start)).total_seconds())
+        cadence = _sample_interval_seconds(
+            _check,
+            parsed[index - 1][0] if index else None,
+            next_stamp if index + 1 < len(parsed) else None,
+            interval,
+        )
+        seconds = max(0.0, (min(next_stamp, stamp + timedelta(seconds=2 * cadence), end) - max(stamp, start)).total_seconds())
+        observed_seconds += seconds
+        if _check.get("status") == "up":
+            available_seconds += seconds
+    if observed_seconds == 0 and selected:
+        latest = max(selected, key=lambda check: timestamp(check) or datetime.min)
+        observed_seconds = 1.0
+        if latest.get("status") == "up":
+            available_seconds = 1.0
+        else:
+            available_seconds = 0.0
     return {
         "checks": len(selected),
         "available_checks": available,
         "failed_checks": failed,
-        "uptime_percent": _time_weighted_uptime(selected, start, end),
+        "uptime_percent": round(available_seconds / observed_seconds * 100, 2) if observed_seconds else None,
         "coverage_percent": round(100 * min(1.0, observed_seconds / max(1.0, (end - start).total_seconds())), 2),
         "latency": _latency_summary(selected),
     }
@@ -527,21 +584,33 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
 
 async def run_uptime_check() -> dict[str, Any]:
     """Run a check, retry failures once, and persist only confirmed failures."""
+    previous_checks = await user_metrics_db.get_uptime_checks(limit=1)
+    previous_failure = bool(
+        previous_checks and previous_checks[0].get("status") in {"down", "degraded"}
+    )
+    probe_cycle_started = time.perf_counter()
     check = await run_in_threadpool(_probe_portal)
     if check["status"] in {"down", "degraded"}:
         retry = await run_in_threadpool(_probe_portal)
         if retry["status"] == "up":
-            previous = await user_metrics_db.get_uptime_checks(limit=1)
-            if previous and previous[0].get("status") in {"down", "degraded"}:
+            if previous_failure:
                 # A passing observation closes an already confirmed incident.
-                await user_metrics_db.record_uptime_check(retry)
-                await _notify_discord_on_transition(retry)
+                check = retry
                 logger.info("Schulportal incident recovered after successful retry")
+            else:
+                logger.info("Discarding transient Schulportal check failure after successful retry")
                 return retry
-            logger.info("Discarding transient Schulportal check failure after successful retry")
-            return retry
-        check = retry
+        else:
+            check = retry
     if check["status"] != "not_configured":
+        probe_cycle_seconds = max(0, math.ceil(time.perf_counter() - probe_cycle_started))
+        next_interval = (
+            INCIDENT_UPTIME_INTERVAL_SECONDS
+            if check["status"] in {"down", "degraded"}
+            else get_uptime_interval_seconds()
+        )
+        check["checked_at"] = _utcnow().isoformat()
+        check["sample_interval_seconds"] = next_interval + probe_cycle_seconds
         await user_metrics_db.record_uptime_check(check)
         await _notify_discord_on_transition(check)
     logger.info(
@@ -556,7 +625,8 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
     """Return current feature state and a rolling availability summary."""
     history = await user_metrics_db.get_uptime_checks(limit=limit)
     since = _utcnow() - timedelta(days=UPTIME_SUMMARY_DAYS)
-    incident_checks = await user_metrics_db.get_uptime_checks(limit=-1, since=since)
+    query_since = since - timedelta(seconds=get_uptime_interval_seconds())
+    incident_checks = await user_metrics_db.get_uptime_checks(limit=-1, since=query_since)
     incidents = group_uptime_incidents(incident_checks)[-UPTIME_INCIDENT_LIMIT:][::-1]
     summary_counts = await user_metrics_db.get_uptime_summary(since)
     daily = await user_metrics_db.get_uptime_daily_series(since)

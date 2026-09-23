@@ -220,6 +220,7 @@ class UserMetricsDB:
                 CREATE TABLE IF NOT EXISTS uptime_checks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     checked_at TIMESTAMP NOT NULL,
+                    sample_interval_seconds INTEGER,
                     url TEXT NOT NULL,
                     status TEXT NOT NULL,
                     is_available INTEGER NOT NULL,
@@ -235,6 +236,10 @@ class UserMetricsDB:
             if "features_json" not in uptime_columns:
                 await db.execute(
                     "ALTER TABLE uptime_checks ADD COLUMN features_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "sample_interval_seconds" not in uptime_columns:
+                await db.execute(
+                    "ALTER TABLE uptime_checks ADD COLUMN sample_interval_seconds INTEGER"
                 )
             await db.execute(
                 """
@@ -811,12 +816,13 @@ class UserMetricsDB:
             await db.execute(
                 """
                 INSERT INTO uptime_checks (
-                    checked_at, url, status, is_available, status_code,
+                    checked_at, sample_interval_seconds, url, status, is_available, status_code,
                     latency_ms, error, features_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     checked_at,
+                    check.get("sample_interval_seconds"),
                     str(check.get("url") or ""),
                     str(check.get("status") or "down"),
                     1 if check.get("is_available") else 0,
@@ -831,7 +837,7 @@ class UserMetricsDB:
             await db.execute(
                 """
                 DELETE FROM uptime_checks
-                WHERE julianday(checked_at) < julianday('now', '-90 day')
+                WHERE julianday(checked_at) < julianday('now', '-91 day')
                 """
             )
             await db.commit()
@@ -848,7 +854,7 @@ class UserMetricsDB:
             if since is None:
                 cursor = await db.execute(
                     """
-                    SELECT checked_at, url, status, is_available, status_code,
+                    SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                            latency_ms, error, features_json
                     FROM uptime_checks
                     ORDER BY checked_at DESC LIMIT ?
@@ -858,7 +864,7 @@ class UserMetricsDB:
             else:
                 cursor = await db.execute(
                     """
-                    SELECT checked_at, url, status, is_available, status_code,
+                    SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                            latency_ms, error, features_json
                     FROM uptime_checks
                     WHERE checked_at >= ?
@@ -888,7 +894,7 @@ class UserMetricsDB:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
-                SELECT checked_at, url, status, is_available, status_code,
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                        latency_ms, error, features_json
                 FROM uptime_checks
                 WHERE status != 'up'
