@@ -257,6 +257,17 @@ class UserMetricsDB:
                 VALUES (1, NULL, NULL)
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS uptime_alert_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TIMESTAMP NOT NULL,
+                    transition TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    error_code TEXT
+                )
+                """
+            )
             
             await db.commit()
         
@@ -981,6 +992,26 @@ class UserMetricsDB:
                 (1 if is_issue else 0, datetime.utcnow().isoformat()),
             )
             await db.commit()
+
+    async def record_uptime_alert_delivery(self, transition: str, outcome: str, error_code: str | None = None) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO uptime_alert_deliveries (created_at, transition, outcome, error_code) VALUES (?, ?, ?, ?)",
+                (datetime.utcnow().isoformat(), transition, outcome, error_code),
+            )
+            await db.execute("DELETE FROM uptime_alert_deliveries WHERE id NOT IN (SELECT id FROM uptime_alert_deliveries ORDER BY id DESC LIMIT 100)")
+            await db.commit()
+
+    async def get_uptime_alert_deliveries(self, limit: int = 20) -> List[Dict[str, Any]]:
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT created_at, transition, outcome, error_code FROM uptime_alert_deliveries ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
 
     async def record_admin_action(
         self, actor_user_id: str, action: str, target_user_id: str = ""

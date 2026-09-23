@@ -1277,34 +1277,44 @@ snapshots for the account, and a backend restart clears the in-memory store.
 
 `GET /status` requires no session token or administrator privileges. It reads the
 existing Schulportal synthetic monitor's stored results; requests never run a
-probe or log in. The sanitized response is shared for up to 30 seconds (less when
-a current result is about to become stale). `generated_at` is the snapshot time.
+probe or log in. The sanitized response is shared for up to 30 seconds (5 seconds
+during an incident, less when a current result is about to become stale).
+`generated_at` is the snapshot time.
 
 - `current`: `status` (`up`, `degraded`, `down`, `unknown`), UTC `checked_at`
-  (nullable), `stale`, and `features` with allowlisted `login`/`modules` names and
-  `up`/`down`/`unknown` status. Results older than twice the configured check
+  (nullable), `stale`, overall `latency_ms`, and `features` with allowlisted
+  `login`/`modules` names, status, and component latency. Results older than twice the configured check
   interval, absent checks, and a disabled/unconfigured monitor show `unknown`.
   `stale` specifically describes the age or absence of the latest observation.
 - `summary`: rolling `period_days: 90`, `checks`, `available_checks`,
   `failed_checks` (including degraded results), `unknown_checks`,
   `uptime_percent` (nullable), and `coverage_percent`.
+- `summary_windows`: exact rolling `24h`, `7d`, `30d`, and `90d` aggregates,
+  each with counts, time-weighted availability, coverage, median/p95 total
+  latency, and median/p95 latency for login and module checks.
 - `daily`: the same counts/percentages per UTC `day` with a daily `status`.
   Days without known observations remain `unknown`. The rolling 90×24-hour window
   intersects up to 91 calendar dates; the first and last dates are partial days.
 - `history`: at most 100 recent observations (`checked_at`, `status`, `features`).
-- `incidents`: at most 100 recent failed/degraded observations, with the same safe
-  shape. These are individual failed checks, not inferred continuous outages.
+- `incidents`: at most 100 recent grouped outages. Each has `started_at`, nullable
+  `resolved_at`, `duration_seconds`, status, confirmed check count, affected
+  components, last check time, and a safe error code.
 - `measurement`: `interval_seconds`, `stale_after_seconds`, UTC `period_start`
   and `period_end`, and a human-readable description of the methodology.
 
-Availability is successful checks divided by known checks. Missing or unknown
-checks are excluded from that percentage, not counted as successes. Coverage is
-the percentage of interval-sized slots containing at least one known result;
-duplicated/manual checks in the same slot do not increase coverage. Slots are
-anchored at the start of the requested period (or clipped UTC day). The currently
-configured interval is used as the expected cadence throughout the window, so
-changing it affects the coverage estimate. Partial coverage does not mean all
+Failed synthetic probes are retried once immediately. A failed first probe whose
+retry succeeds is not recorded unless it closes an already confirmed incident.
+While an incident is active, checks run every 15 seconds; otherwise they use the
+configured normal interval. A result represents at most two intervals for its
+state (15 seconds during an incident, normal cadence while healthy). Missing
+or stale spans are excluded from availability and reduce coverage. Partial
+coverage does not mean all
 unobserved time was healthy; show coverage alongside the availability percentage.
+
+Admin uptime responses include `summary_windows`, grouped incident records, the
+current alert-webhook configuration state, and the 20 latest alert delivery
+outcomes (`delivered` or `failed`). Failed webhook attempts are recorded with a
+safe error code and do not cause repeated alerts on every 15-second check.
 
 The existing monitor authenticates with one configured account and opens that
 account's available modules. Its result does not establish availability for all

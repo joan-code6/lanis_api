@@ -26,6 +26,7 @@ UPTIME_SERVICE_NAME = "Schulportal Hessen"
 DEFAULT_UPTIME_URL = "https://login.schulportal.hessen.de/"
 DEFAULT_UPTIME_INTERVAL_SECONDS = 5 * 60
 DEFAULT_UPTIME_TIMEOUT_SECONDS = 15
+INCIDENT_UPTIME_INTERVAL_SECONDS = 15
 UPTIME_HISTORY_LIMIT = 100
 UPTIME_INCIDENT_LIMIT = 100
 UPTIME_SUMMARY_DAYS = 90
@@ -109,6 +110,14 @@ def _discord_webhook_url() -> str | None:
     ):
         return None
     return value
+
+
+def _status_page_url() -> str:
+    base = os.getenv("LANIS_UI_BASE_URL", "https://lanis.arg-server.de").strip().rstrip("/")
+    parsed = urlparse(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        base = "https://lanis.arg-server.de"
+    return f"{base}/status"
 
 
 def _error_code(error: Any, default: str) -> str:
@@ -240,7 +249,9 @@ def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool
     if recovered:
         content = (
             f"✅ **{UPTIME_SERVICE_NAME} ist wieder erreichbar.**\n"
-            f"Alle synthetischen Checks sind wieder erfolgreich ({feature_status or 'keine Details'})."
+            f"Alle synthetischen Checks sind wieder erfolgreich ({feature_status or 'keine Details'}).\n"
+            f"Wiederhergestellt: {check.get('checked_at', 'unbekannt')}\n"
+            f"Status-Seite: {_status_page_url()}"
         )
     else:
         error_text = f" · Fehler: `{check['error']}`" if check.get("error") else ""
@@ -249,6 +260,8 @@ def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool
             f"Status: `{check.get('status', 'unknown')}`"
             f"{error_text}\n"
             f"Checks: {feature_status or 'keine Details'}"
+            f"\nErkannt: {check.get('checked_at', 'unbekannt')}"
+            f"\nStatus-Seite: {_status_page_url()}"
         )
     response = requests.post(
         webhook_url,
@@ -281,11 +294,20 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
                 not is_issue,
             )
         except Exception:
+            with contextlib.suppress(Exception):
+                await user_metrics_db.record_uptime_alert_delivery(
+                    "recovery" if not is_issue else "incident", "failed", "delivery_failed"
+                )
             logger.warning(
                 "Could not deliver Schulportal uptime transition to Discord",
                 exc_info=True,
             )
+            await user_metrics_db.set_uptime_alert_state(is_issue)
             return
+        with contextlib.suppress(Exception):
+            await user_metrics_db.record_uptime_alert_delivery(
+                "recovery" if not is_issue else "incident", "delivered"
+            )
         await user_metrics_db.set_uptime_alert_state(is_issue)
 
 
@@ -366,9 +388,159 @@ def _probe_portal() -> dict[str, Any]:
             logger.debug("Schulportal monitor client close failed", exc_info=True)
 
 
+def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = None) -> list[dict[str, Any]]:
+    """Collapse consecutive confirmed failures into incidents with recovery times."""
+    now = now or _utcnow()
+    ordered = sorted(checks, key=lambda item: str(item.get("checked_at") or ""))
+    incidents: list[dict[str, Any]] = []
+    active: dict[str, Any] | None = None
+    for check in ordered:
+        checked_at = str(check.get("checked_at") or "")
+        if check.get("status") in {"down", "degraded"}:
+            failed_features = [
+                str(feature.get("name"))
+                for feature in check.get("features") or []
+                if isinstance(feature, dict) and feature.get("status") == "down"
+            ]
+            if active is None:
+                active = {
+                    "started_at": checked_at,
+                    "checked_at": checked_at,
+                    "resolved_at": None,
+                    "duration_seconds": None,
+                    "status": check.get("status"),
+                    "checks": 0,
+                    "affected_features": [],
+                    "last_checked_at": checked_at,
+                    "error": check.get("error"),
+                }
+            active["checks"] += 1
+            active["last_checked_at"] = checked_at
+            active["checked_at"] = checked_at
+            if check.get("status") == "down":
+                active["status"] = "down"
+            active["affected_features"] = sorted(set(active["affected_features"]) | set(failed_features))
+            active["error"] = check.get("error") or active["error"]
+            continue
+        if active is not None:
+            active["resolved_at"] = checked_at
+            try:
+                start = datetime.fromisoformat(active["started_at"].replace("Z", "+00:00"))
+                end = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+                active["duration_seconds"] = max(0, int((end - start).total_seconds()))
+            except (TypeError, ValueError):
+                pass
+            incidents.append(active)
+            active = None
+    if active is not None:
+        try:
+            start = datetime.fromisoformat(active["started_at"].replace("Z", "+00:00"))
+            end = now.replace(tzinfo=start.tzinfo) if start.tzinfo else now.replace(tzinfo=None)
+            active["duration_seconds"] = max(0, int((end - start).total_seconds()))
+        except (TypeError, ValueError):
+            pass
+        incidents.append(active)
+    return incidents
+
+
+def _time_weighted_uptime(checks: list[dict[str, Any]], start: datetime, end: datetime) -> float | None:
+    """Calculate availability by observed time, not raw sample count."""
+    interval = get_uptime_interval_seconds()
+    ordered = []
+    for check in checks:
+        try:
+            stamp = datetime.fromisoformat(str(check.get("checked_at")).replace("Z", "+00:00"))
+            if stamp.tzinfo:
+                stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
+            ordered.append((stamp, check))
+        except (TypeError, ValueError):
+            continue
+    ordered.sort(key=lambda item: item[0])
+    observed = available = 0.0
+    for index, (stamp, check) in enumerate(ordered):
+        if check.get("status") not in {"up", "down", "degraded"}:
+            continue
+        next_stamp = ordered[index + 1][0] if index + 1 < len(ordered) else end
+        cadence = INCIDENT_UPTIME_INTERVAL_SECONDS if check.get("status") in {"down", "degraded"} else interval
+        span_end = min(next_stamp, stamp + timedelta(seconds=2 * cadence), end)
+        seconds = max(0.0, (span_end - max(stamp, start)).total_seconds())
+        observed += seconds
+        if check.get("status") == "up":
+            available += seconds
+    return round(available / observed * 100, 2) if observed else None
+
+
+def _latency_summary(checks: list[dict[str, Any]]) -> dict[str, Any]:
+    def summarize(values: list[Any]) -> dict[str, float | None]:
+        ordered = sorted(float(value) for value in values if isinstance(value, (int, float)))
+        if not ordered:
+            return {"median": None, "p95": None}
+        middle = len(ordered) // 2
+        median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+        return {
+            "median": round(median, 1),
+            "p95": round(ordered[min(len(ordered) - 1, math.ceil(len(ordered) * 0.95) - 1)], 1),
+        }
+
+    return {
+        "overall": summarize([check.get("latency_ms") for check in checks]),
+        "features": {
+            name: summarize([
+                feature.get("latency_ms")
+                for check in checks
+                for feature in (check.get("features") or [])
+                if isinstance(feature, dict) and feature.get("name") == name
+            ])
+            for name in ("login", "modules")
+        },
+    }
+
+
+def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime) -> dict[str, Any]:
+    def timestamp(check: dict[str, Any]) -> datetime | None:
+        try:
+            value = datetime.fromisoformat(str(check.get("checked_at")).replace("Z", "+00:00"))
+            return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+        except (TypeError, ValueError):
+            return None
+
+    selected = [check for check in checks if (stamp := timestamp(check)) is not None and start <= stamp <= end]
+    available = sum(check.get("status") == "up" for check in selected)
+    failed = sum(check.get("status") in {"down", "degraded"} for check in selected)
+    interval = get_uptime_interval_seconds()
+    parsed = [(timestamp(check), check) for check in selected]
+    parsed.sort(key=lambda item: item[0])
+    observed_seconds = 0.0
+    for index, (stamp, _check) in enumerate(parsed):
+        next_stamp = parsed[index + 1][0] if index + 1 < len(parsed) else end
+        cadence = INCIDENT_UPTIME_INTERVAL_SECONDS if _check.get("status") in {"down", "degraded"} else interval
+        observed_seconds += max(0.0, (min(next_stamp, stamp + timedelta(seconds=2 * cadence), end) - max(stamp, start)).total_seconds())
+    return {
+        "checks": len(selected),
+        "available_checks": available,
+        "failed_checks": failed,
+        "uptime_percent": _time_weighted_uptime(selected, start, end),
+        "coverage_percent": round(100 * min(1.0, observed_seconds / max(1.0, (end - start).total_seconds())), 2),
+        "latency": _latency_summary(selected),
+    }
+
+
 async def run_uptime_check() -> dict[str, Any]:
-    """Run and persist one authenticated synthetic check."""
+    """Run a check, retry failures once, and persist only confirmed failures."""
     check = await run_in_threadpool(_probe_portal)
+    if check["status"] in {"down", "degraded"}:
+        retry = await run_in_threadpool(_probe_portal)
+        if retry["status"] == "up":
+            previous = await user_metrics_db.get_uptime_checks(limit=1)
+            if previous and previous[0].get("status") in {"down", "degraded"}:
+                # A passing observation closes an already confirmed incident.
+                await user_metrics_db.record_uptime_check(retry)
+                await _notify_discord_on_transition(retry)
+                logger.info("Schulportal incident recovered after successful retry")
+                return retry
+            logger.info("Discarding transient Schulportal check failure after successful retry")
+            return retry
+        check = retry
     if check["status"] != "not_configured":
         await user_metrics_db.record_uptime_check(check)
         await _notify_discord_on_transition(check)
@@ -383,12 +555,42 @@ async def run_uptime_check() -> dict[str, Any]:
 async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]:
     """Return current feature state and a rolling availability summary."""
     history = await user_metrics_db.get_uptime_checks(limit=limit)
-    incidents = await user_metrics_db.get_uptime_incidents(limit=UPTIME_INCIDENT_LIMIT)
     since = _utcnow() - timedelta(days=UPTIME_SUMMARY_DAYS)
+    incident_checks = await user_metrics_db.get_uptime_checks(limit=-1, since=since)
+    incidents = group_uptime_incidents(incident_checks)[-UPTIME_INCIDENT_LIMIT:][::-1]
     summary_counts = await user_metrics_db.get_uptime_summary(since)
     daily = await user_metrics_db.get_uptime_daily_series(since)
+    timed_checks = []
+    for check in incident_checks:
+        try:
+            stamp = datetime.fromisoformat(str(check.get("checked_at")).replace("Z", "+00:00"))
+            stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None) if stamp.tzinfo else stamp
+            timed_checks.append((stamp, check))
+        except (TypeError, ValueError):
+            continue
+    timed_checks.sort(key=lambda item: item[0])
+    cursor = 0
+    previous_check = None
+    for item in daily:
+        day_start = datetime.fromisoformat(item["day"])
+        day_end = min(day_start + timedelta(days=1), _utcnow())
+        while cursor < len(timed_checks) and timed_checks[cursor][0] < day_start:
+            previous_check = timed_checks[cursor][1]
+            cursor += 1
+        day_checks = [previous_check] if previous_check else []
+        while cursor < len(timed_checks) and timed_checks[cursor][0] < day_end:
+            day_checks.append(timed_checks[cursor][1])
+            cursor += 1
+        window = _uptime_window(day_checks, day_start, day_end)
+        item["uptime_percent"] = window["uptime_percent"]
+        item["coverage_percent"] = window["coverage_percent"]
     available = summary_counts["available_checks"]
     failed = summary_counts["failed_checks"]
+    now = _utcnow()
+    windows = {
+        key: _uptime_window(incident_checks, now - timedelta(days=days), now)
+        for key, days in (("24h", 1), ("7d", 7), ("30d", 30), ("90d", 90))
+    }
     current = history[0] if history else None
     configured = uptime_is_configured()
     if not configured:
@@ -401,7 +603,6 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             "error": "credentials_not_configured",
             "features": [],
         }
-    observed = available + failed
     return {
         "success": True,
         "service": UPTIME_SERVICE_NAME,
@@ -410,9 +611,11 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
         "generated_at": _utcnow().isoformat() + "Z",
         "schedule": {
             "interval_seconds": get_uptime_interval_seconds(),
+            "incident_interval_seconds": INCIDENT_UPTIME_INTERVAL_SECONDS,
             "timeout_seconds": get_uptime_timeout_seconds(),
         },
         "daily": daily,
+        "summary_windows": windows,
         "current": current
         or {
             "status": "unknown",
@@ -429,25 +632,31 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             "checks": summary_counts["checks"],
             "available_checks": available,
             "failed_checks": failed,
-            "uptime_percent": round(available / observed * 100, 2) if observed else None,
+            "uptime_percent": _time_weighted_uptime(incident_checks, since, _utcnow()),
         },
         "history": history,
         "incidents": incidents,
+        "alert_deliveries": await user_metrics_db.get_uptime_alert_deliveries(),
+        "alert_configured": _discord_webhook_url() is not None,
     }
 
 
 async def run_uptime_scheduler() -> asyncio.Task:
     """Start the recurring authenticated synthetic monitor task."""
-    interval = get_uptime_interval_seconds()
-
     async def _loop() -> None:
         while True:
             try:
-                await run_uptime_check()
+                check = await run_uptime_check()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Schulportal synthetic check failed unexpectedly")
+                check = None
+            interval = (
+                INCIDENT_UPTIME_INTERVAL_SECONDS
+                if check and check.get("status") in {"down", "degraded"}
+                else get_uptime_interval_seconds()
+            )
             await asyncio.sleep(interval)
 
     return asyncio.create_task(_loop(), name="schulportal-uptime")

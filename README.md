@@ -93,16 +93,23 @@ configuration file. The observability API is under `/admin/*`; the legacy
 `/metrics/stats` endpoint is retained only as a protected, deprecated alias.
 
 The backend also runs an authenticated Schulportal synthetic check every five
-minutes by default. It logs in with the monitor account, loads the available
+minutes by default. Failed probes are retried once immediately; a transient
+failure followed by a successful retry is discarded. If a confirmed incident
+is active, successful retry results are retained as the recovery observation.
+While an incident remains active, checks run every 15 seconds. The monitor logs in with the monitor account, loads the available
 modules, and opens each module entry without exposing credentials. Configure
 the account with `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME`, and
 `LANIS_UPTIME_PASSWORD`; existing local deployments may use the corresponding
 `LANIS_API_*` variables as a fallback. Results are retained for 90 days in the
 metrics database, with a daily 90-day overview available to the private admin
-portal at `GET /admin/uptime`. Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
+portal at `GET /admin/uptime`; its selectable windows include 24 hours, 7, 30,
+and 90 days with median and p95 latency. Incidents are grouped until a successful
+check confirms recovery, and the public status page keeps a safe incident history.
+Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
 receive one alert when the service becomes unavailable and one recovery message
 when it becomes operational again; repeated checks during the same incident are
-suppressed. The new-user webhook receives one message after a first successful
+suppressed, and each transition links to the status page. Delivery outcomes are
+retained in the admin view. The new-user webhook receives one message after a first successful
 login; it can be separate from the uptime webhook with
 `LANIS_NEW_USER_DISCORD_WEBHOOK_URL`. An immediate check can be triggered with
 `POST /admin/uptime/check`.
