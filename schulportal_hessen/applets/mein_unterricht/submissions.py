@@ -355,7 +355,11 @@ def parse_submission_detail(
         "own_files": own_files,
         "public_files": public_files,
         "can_upload": can_upload,
-        "can_delete": bool(own_files),
+        # The portal only exposes the mutation form while the submission is
+        # actionable.  Having an uploaded file alone is not enough: closed
+        # submissions may still list the student's files but must not expose
+        # the delete action in the client.
+        "can_delete": bool(own_files) and can_upload,
     }
 
 
