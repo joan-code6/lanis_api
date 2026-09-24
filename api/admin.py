@@ -8,6 +8,7 @@ admin secret in configuration or returned by normal user-list endpoints.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import json
 import logging
 import os
@@ -46,7 +47,6 @@ logger = logging.getLogger("admin")
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 ADMIN_TOKEN_EXPIRE_MINUTES = 30
-STEP_UP_EXPIRE_MINUTES = 5
 ACTIVE_STATE_DAYS = 7
 DORMANT_STATE_DAYS = 30
 
@@ -62,20 +62,11 @@ class AdminLoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
 
 
-class AdminStepUpRequest(BaseModel):
-    password: str = Field(..., min_length=1)
-
-
 class AdminTokenResponse(BaseModel):
     access_token: str
     expires_in: int
     school_id: str
     username: str
-
-
-class AdminStepUpResponse(BaseModel):
-    step_up_token: str
-    expires_in: int
 
 
 class AdminUserSummary(BaseModel):
@@ -139,14 +130,13 @@ def _admin_secret() -> str:
     return secret
 
 
-def _issue_token(principal: AdminPrincipal, *, step_up: bool = False) -> str:
+def _issue_token(principal: AdminPrincipal) -> str:
     secret = _admin_secret()
     if not secret:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Admin authentication is not configured",
         )
-    minutes = STEP_UP_EXPIRE_MINUTES if step_up else ADMIN_TOKEN_EXPIRE_MINUTES
     now = _utcnow()
     return jwt.encode(
         {
@@ -154,9 +144,9 @@ def _issue_token(principal: AdminPrincipal, *, step_up: bool = False) -> str:
             "school_id": principal.school_id,
             "username": principal.username,
             "aud": "lanis-admin",
-            "typ": "admin-step-up" if step_up else "admin",
+            "typ": "admin",
             "iat": now,
-            "exp": now + timedelta(minutes=minutes),
+            "exp": now + timedelta(minutes=ADMIN_TOKEN_EXPIRE_MINUTES),
         },
         secret,
         algorithm="HS256",
@@ -205,12 +195,6 @@ async def admin_dependency(
     return _decode_token(x_admin_token, "admin")
 
 
-async def step_up_dependency(
-    x_admin_step_up: str = Header(..., alias="X-Admin-Step-Up"),
-) -> AdminPrincipal:
-    return _decode_token(x_admin_step_up, "admin-step-up")
-
-
 async def _verify_sph_credentials(school_id: str, username: str, password: str) -> bool:
     client = SchulportalHessenAPI()
     try:
@@ -220,18 +204,48 @@ async def _verify_sph_credentials(school_id: str, username: str, password: str) 
         client.close()
 
 
-async def _record_login(school_id: str, username: str) -> None:
+async def _record_login(
+    school_id: str, username: str, *, locks_held: bool = False
+) -> None:
     try:
-        await user_metrics_db.record_login(school_id, username)
+        user_id = make_user_id(school_id, username)
+        from .account_data import account_lifecycle_lock, clear_account_deletion_marker
+
+        if locks_held:
+            await clear_account_deletion_marker(user_id)
+            await user_metrics_db.record_login(school_id, username)
+            return
+        lifecycle_lock = await account_lifecycle_lock(user_id)
+        async with lifecycle_lock:
+            await clear_account_deletion_marker(user_id)
+            await user_metrics_db.record_login(school_id, username)
     except Exception:
         logger.warning("Could not record admin login metric", exc_info=True)
 
 
 async def _record_admin_action(
-    actor_user_id: str, action: str, target_user_id: str = ""
+    actor_user_id: str,
+    action: str,
+    target_user_id: str = "",
+    *,
+    locks_held: bool = False,
 ) -> None:
     try:
-        await user_metrics_db.record_admin_action(actor_user_id, action, target_user_id)
+        from .account_data import account_deletion_is_recent, account_lifecycle_lock
+
+        if locks_held:
+            if not await account_deletion_is_recent(actor_user_id):
+                await user_metrics_db.record_admin_action(
+                    actor_user_id, action, target_user_id
+                )
+            return
+        lifecycle_lock = await account_lifecycle_lock(actor_user_id)
+        async with lifecycle_lock:
+            if await account_deletion_is_recent(actor_user_id):
+                return
+            await user_metrics_db.record_admin_action(
+                actor_user_id, action, target_user_id
+            )
     except Exception:
         logger.warning("Could not persist admin audit event", exc_info=True)
 
@@ -246,41 +260,28 @@ async def admin_login(payload: AdminLoginRequest) -> AdminTokenResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid admin credentials",
         )
-    if not await _verify_sph_credentials(school_id, payload.username, payload.password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid admin credentials",
-        )
-    principal = AdminPrincipal(
-        user_id=user_id, school_id=school_id, username=normalize_username(username)
-    )
-    await _record_login(school_id, username)
-    await _record_admin_action(principal.user_id, "admin_login")
-    return AdminTokenResponse(
-        access_token=_issue_token(principal),
-        expires_in=ADMIN_TOKEN_EXPIRE_MINUTES * 60,
-        school_id=school_id,
-        username=normalize_username(username),
-    )
+    from .account_data import account_lifecycle_lock
 
-
-@router.post("/auth/step-up", response_model=AdminStepUpResponse)
-async def admin_step_up(
-    payload: AdminStepUpRequest,
-    principal: AdminPrincipal = Depends(admin_dependency),
-) -> AdminStepUpResponse:
-    if not await _verify_sph_credentials(
-        principal.school_id, principal.username, payload.password
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Admin re-authentication failed",
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock:
+        if not await _verify_sph_credentials(
+            school_id, payload.username, payload.password
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid admin credentials",
+            )
+        principal = AdminPrincipal(
+            user_id=user_id, school_id=school_id, username=normalize_username(username)
         )
-    await _record_admin_action(principal.user_id, "admin_step_up")
-    return AdminStepUpResponse(
-        step_up_token=_issue_token(principal, step_up=True),
-        expires_in=STEP_UP_EXPIRE_MINUTES * 60,
-    )
+        await _record_login(school_id, username, locks_held=True)
+        await _record_admin_action(principal.user_id, "admin_login", locks_held=True)
+        return AdminTokenResponse(
+            access_token=_issue_token(principal),
+            expires_in=ADMIN_TOKEN_EXPIRE_MINUTES * 60,
+            school_id=school_id,
+            username=normalize_username(username),
+        )
 
 
 @router.get("/me")
@@ -439,69 +440,46 @@ async def admin_user_detail(
     school_id, separator, username = user_id.partition(":")
     if not separator or not school_id or not username:
         raise HTTPException(status_code=404, detail="User not found")
-    row = await _metric_row(school_id, username)
-    if row is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    summary = _summary_from_row(row)
     storage_user_id = make_user_id(school_id, username)
-    await _record_admin_action(principal.user_id, "user_view", storage_user_id)
-    credentials = await get_refresh_token_by_user_id(storage_user_id)
-    preferences, _ = await get_user_preferences(storage_user_id)
-    return {
-        "success": True,
-        "user": summary.model_dump()
-        if hasattr(summary, "model_dump")
-        else summary.dict(),
-        "profile": _profile_from_row(row),
-        "credentials": {
-            "available": credentials is not None,
-            "created_at": credentials.get("created_at") if credentials else None,
-            "expires_at": credentials.get("expires_at") if credentials else None,
-        },
-        "state": {
-            "preferences": preferences,
-            "notification_preferences": await get_notification_preferences(
-                storage_user_id
-            ),
-            "custom_lessons": await get_custom_lessons(storage_user_id),
-            "class_links": await get_class_link_overrides(storage_user_id),
-            "push_subscription_count": len(
-                await get_push_subscriptions(storage_user_id)
-            ),
-        },
-    }
+    from .account_data import account_lifecycle_lock
 
-
-@router.post("/users/{user_id:path}/credentials/reveal")
-async def reveal_user_password(
-    user_id: str,
-    principal: AdminPrincipal = Depends(admin_dependency),
-    step_up_principal: AdminPrincipal = Depends(step_up_dependency),
-) -> dict[str, Any]:
-    if principal.user_id != step_up_principal.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Step-up session belongs to a different admin",
+    lock_ids = sorted({storage_user_id, canonicalize_user_id(principal.user_id)})
+    async with AsyncExitStack() as stack:
+        for lock_user_id in lock_ids:
+            lifecycle_lock = await account_lifecycle_lock(lock_user_id)
+            await stack.enter_async_context(lifecycle_lock)
+        row = await _metric_row(school_id, username)
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        summary = _summary_from_row(row)
+        await _record_admin_action(
+            principal.user_id, "user_view", storage_user_id, locks_held=True
         )
-    school_id, separator, username = user_id.partition(":")
-    if not separator or not school_id or not username:
-        raise HTTPException(status_code=404, detail="User not found")
-    storage_user_id = make_user_id(school_id, username)
-    credentials = await get_refresh_token_by_user_id(storage_user_id)
-    if not credentials:
-        raise HTTPException(
-            status_code=404, detail="No active stored credential for this user"
-        )
-    target_user_id = make_user_id(school_id, username)
-    await _record_admin_action(principal.user_id, "credential_reveal", target_user_id)
-    logger.warning("Admin credential reveal for %s", target_user_id)
-    return {
-        "success": True,
-        "school_id": school_id,
-        "username": username,
-        "password": credentials["password"],
-        "expires_at": credentials.get("expires_at"),
-    }
+        credentials = await get_refresh_token_by_user_id(storage_user_id)
+        preferences, _ = await get_user_preferences(storage_user_id)
+        return {
+            "success": True,
+            "user": summary.model_dump()
+            if hasattr(summary, "model_dump")
+            else summary.dict(),
+            "profile": _profile_from_row(row),
+            "credentials": {
+                "available": credentials is not None,
+                "created_at": credentials.get("created_at") if credentials else None,
+                "expires_at": credentials.get("expires_at") if credentials else None,
+            },
+            "state": {
+                "preferences": preferences,
+                "notification_preferences": await get_notification_preferences(
+                    storage_user_id
+                ),
+                "custom_lessons": await get_custom_lessons(storage_user_id),
+                "class_links": await get_class_link_overrides(storage_user_id),
+                "push_subscription_count": len(
+                    await get_push_subscriptions(storage_user_id)
+                ),
+            },
+        }
 
 
 @router.get("/schools/{school_id:path}")

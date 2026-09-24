@@ -322,9 +322,57 @@ async def initialize() -> None:
                 school_id TEXT NOT NULL,
                 username TEXT NOT NULL,
                 password TEXT NOT NULL,
+                session_id TEXT NOT NULL UNIQUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 expires_at TIMESTAMP NOT NULL
             )
+            """
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS account_deletion_markers ("
+            "user_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)"
+        )
+        await db.execute(
+            "DELETE FROM account_deletion_markers WHERE expires_at <= ?",
+            (datetime.utcnow().isoformat(),),
+        )
+        async with db.execute("PRAGMA table_info(refresh_tokens)") as cursor:
+            refresh_columns = {row[1] for row in await cursor.fetchall()}
+        if "session_id" not in refresh_columns:
+            await db.execute("ALTER TABLE refresh_tokens ADD COLUMN session_id TEXT")
+        async with db.execute(
+            "SELECT token FROM refresh_tokens WHERE session_id IS NULL OR session_id = ''"
+        ) as cursor:
+            missing_session_tokens = [row[0] for row in await cursor.fetchall()]
+        for token in missing_session_tokens:
+            await db.execute(
+                "UPDATE refresh_tokens SET session_id = ? WHERE token = ?",
+                (secrets.token_urlsafe(32), token),
+            )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_refresh_tokens_session_id "
+            "ON refresh_tokens(session_id)"
+        )
+        # SQLite cannot add a NOT NULL constraint to an existing table in place.
+        # These triggers give upgraded databases the same invariant as fresh ones.
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS refresh_tokens_session_id_insert
+            BEFORE INSERT ON refresh_tokens
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'refresh token session_id is required');
+            END
+            """
+        )
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS refresh_tokens_session_id_update
+            BEFORE UPDATE OF session_id ON refresh_tokens
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'refresh token session_id is required');
+            END
             """
         )
         await db.execute(
@@ -1051,6 +1099,7 @@ async def store_refresh_token(
     """
     user_id = _canonical_user_id(user_id)
     token = uuid.uuid4().hex
+    session_id = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
 
     async with _lock:
@@ -1060,9 +1109,18 @@ async def store_refresh_token(
                 (user_id, datetime.utcnow()),
             )
             await db.execute(
-                "INSERT INTO refresh_tokens (token, user_id, school_id, username, password, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (token, user_id, school_id, username, _encrypt_password(password), expires_at),
+                "INSERT INTO refresh_tokens "
+                "(token, user_id, school_id, username, password, session_id, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    token,
+                    user_id,
+                    school_id,
+                    username,
+                    _encrypt_password(password),
+                    session_id,
+                    expires_at,
+                ),
             )
             await db.commit()
 
@@ -1129,6 +1187,7 @@ async def get_refresh_token(token: str) -> Optional[dict]:
         "school_id": row["school_id"],
         "username": row["username"],
         "password": _decrypt_password(row["password"]),
+        "session_id": row["session_id"],
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
     }
@@ -1159,6 +1218,7 @@ async def get_refresh_token_by_user_id(user_id: str) -> Optional[dict]:
         "school_id": row["school_id"],
         "username": row["username"],
         "password": _decrypt_password(row["password"]),
+        "session_id": row["session_id"],
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
     }
@@ -1245,6 +1305,187 @@ def _notification_preferences_from_row(row: Any) -> Dict[str, Any]:
         "timezone": row["timezone"],
         "show_preview": bool(row["show_preview"]),
     }
+
+
+async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
+    """Return non-secret metadata for the session owning a JWT ID."""
+    if not session_id:
+        return None
+    await _revoke_expired_sessions()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM refresh_tokens WHERE session_id = ? AND expires_at > ?",
+            (session_id, datetime.utcnow()),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "user_id": row["user_id"],
+        "school_id": row["school_id"],
+        "username": row["username"],
+        "session_id": row["session_id"],
+        "created_at": row["created_at"],
+        "expires_at": row["expires_at"],
+    }
+
+
+async def get_user_account_data(user_id: str) -> Dict[str, Any]:
+    """Return user-owned persisted data without exposing authentication secrets."""
+    user_id = _canonical_user_id(user_id)
+    credential = await get_refresh_token_by_user_id(user_id)
+    preferences, _ = await get_user_preferences(user_id)
+    notification_preferences = await get_notification_preferences(user_id)
+    custom_lessons = await get_custom_lessons(user_id)
+    class_links = await get_class_link_overrides(user_id)
+    push_subscriptions = await get_push_subscriptions(user_id)
+    whatsapp = await get_whatsapp_link_for_user(user_id)
+    message_state = await get_message_notification_state(user_id)
+    vertretungsplan_state = await get_vertretungsplan_notification_state(user_id)
+    dashboard_notifications = await get_dashboard_notifications(user_id)
+    return {
+        "account": {
+            "school_id": credential["school_id"] if credential else None,
+            "username": credential["username"] if credential else None,
+            "credential_stored": credential is not None,
+            "credential_created_at": credential["created_at"] if credential else None,
+            "credential_expires_at": credential["expires_at"] if credential else None,
+        },
+        "preferences": preferences,
+        "notification_preferences": notification_preferences,
+        "custom_lessons": custom_lessons,
+        "class_link_overrides": class_links,
+        "push_subscriptions": {"count": len(push_subscriptions)},
+        "whatsapp": {
+            "linked": whatsapp is not None,
+            "phone_suffix": whatsapp.get("phone_suffix") if whatsapp else None,
+            "show_message_previews": (
+                whatsapp.get("show_message_previews", False) if whatsapp else False
+            ),
+            "linked_at": whatsapp.get("linked_at") if whatsapp else None,
+        },
+        "notification_state": {
+            "messages": message_state,
+            "vertretungsplan": vertretungsplan_state,
+            "dashboard_notifications": dashboard_notifications,
+        },
+    }
+
+
+async def get_dashboard_notifications(user_id: str) -> List[Dict[str, Any]]:
+    """Return retained dashboard notification payloads and read state for export."""
+    user_id = _canonical_user_id(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT notification_id, source, payload, first_seen_at, last_seen_at,
+                   read_at, is_active
+            FROM dashboard_notifications
+            WHERE user_id = ?
+            ORDER BY first_seen_at ASC, notification_id ASC
+            """,
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    notifications = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            payload = None
+        notifications.append(
+            {
+                "notification_id": row["notification_id"],
+                "source": row["source"],
+                "payload": payload,
+                "first_seen_at": row["first_seen_at"],
+                "last_seen_at": row["last_seen_at"],
+                "read_at": row["read_at"],
+                "is_active": bool(row["is_active"]),
+            }
+        )
+    return notifications
+
+
+async def delete_user_data(user_id: str) -> Dict[str, int]:
+    """Atomically delete all user-owned rows from the authentication database."""
+    user_id = _canonical_user_id(user_id)
+    tables = (
+        "refresh_tokens",
+        "notification_preferences",
+        "custom_lessons",
+        "class_link_overrides",
+        "push_subscriptions",
+        "message_notification_state",
+        "vertretungsplan_notification_state",
+        "dashboard_notifications",
+        "user_preferences",
+        "whatsapp_pairing_codes",
+        "whatsapp_links",
+        "whatsapp_ai_conversations",
+        "whatsapp_pending_actions",
+    )
+    counts: Dict[str, int] = {}
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT whatsapp_id_hash FROM whatsapp_links WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                hashes = [row[0] for row in await cursor.fetchall()]
+            if hashes:
+                placeholders = ", ".join("?" for _ in hashes)
+                cursor = await db.execute(
+                    f"DELETE FROM whatsapp_rate_limits WHERE whatsapp_id_hash IN ({placeholders})",
+                    hashes,
+                )
+                counts["whatsapp_rate_limits"] = max(cursor.rowcount, 0)
+            else:
+                counts["whatsapp_rate_limits"] = 0
+            for table in tables:
+                cursor = await db.execute(
+                    f"DELETE FROM {table} WHERE user_id = ?", (user_id,)
+                )
+                counts[table] = max(cursor.rowcount, 0)
+            await db.execute(
+                "DELETE FROM admin_audit WHERE target_user_id = ?", (user_id,)
+            )
+            await db.execute(
+                "INSERT OR REPLACE INTO account_deletion_markers (user_id, expires_at) VALUES (?, ?)",
+                (user_id, (datetime.utcnow() + timedelta(hours=1)).isoformat()),
+            )
+            await db.execute(
+                "DELETE FROM account_deletion_markers WHERE expires_at <= ?",
+                (datetime.utcnow().isoformat(),),
+            )
+            await db.commit()
+    return counts
+
+
+async def account_deletion_marker_is_active(user_id: str) -> bool:
+    """Return whether a durable account-deletion tombstone is still active."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT 1 FROM account_deletion_markers WHERE user_id = ? AND expires_at > ?",
+                (user_id, datetime.utcnow().isoformat()),
+            ) as cursor:
+                return await cursor.fetchone() is not None
+
+
+async def clear_account_deletion_marker(user_id: str) -> None:
+    """Clear a tombstone after a fresh successful login."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM account_deletion_markers WHERE user_id = ?", (user_id,)
+            )
+            await db.commit()
 
 
 async def get_notification_preferences(user_id: str) -> Dict[str, Any]:

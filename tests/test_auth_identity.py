@@ -16,8 +16,8 @@ def test_existing_case_variant_auth_rows_are_rekeyed(tmp_path, monkeypatch):
             await db.execute(
                 """
                 INSERT INTO refresh_tokens
-                    (token, user_id, school_id, username, password, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (token, user_id, school_id, username, password, session_id, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "token-upper",
@@ -25,6 +25,7 @@ def test_existing_case_variant_auth_rows_are_rekeyed(tmp_path, monkeypatch):
                     "5201",
                     "Bennet.Wegener",
                     "test-password",
+                    "legacy-session-id",
                     "2099-01-01T00:00:00",
                 ),
             )

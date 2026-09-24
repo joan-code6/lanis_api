@@ -374,6 +374,100 @@ class UserMetricsDB:
                 total_active_seconds=row["total_active_seconds"] or 0,
                 session_count=row["session_count"] or 0,
             )
+
+    async def get_account_data(
+        self, school_id: str, login: str, user_id: str
+    ) -> Dict[str, Any]:
+        """Return the profile and activity data held for one account."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM users WHERE school_id = ? AND login = ?",
+                (school_id, login),
+            ) as cursor:
+                user_row = await cursor.fetchone()
+            async with db.execute(
+                """
+                SELECT event_type,
+                       CASE WHEN event_type = 'admin_action' THEN ''
+                            ELSE school_id END AS school_id,
+                       CASE WHEN event_type = 'admin_action' THEN ''
+                            ELSE login END AS login,
+                       occurred_at, duration_seconds,
+                       CASE WHEN event_type = 'admin_action' THEN NULL
+                            ELSE actor_user_id END AS actor_user_id,
+                       CASE WHEN event_type = 'admin_action'
+                                  AND target_user_id <> ? THEN NULL
+                            ELSE target_user_id END AS target_user_id,
+                       action
+                FROM activity_events
+                WHERE (school_id = ? AND login = ?)
+                   OR actor_user_id = ? OR target_user_id = ?
+                ORDER BY occurred_at ASC
+                """,
+                (user_id, school_id, login, user_id, user_id),
+            ) as cursor:
+                events = [dict(row) for row in await cursor.fetchall()]
+
+        if user_row is None:
+            return {
+                "profile": {},
+                "activity": {
+                    "login_count": 0,
+                    "session_count": 0,
+                    "total_active_seconds": 0,
+                    "events": events,
+                },
+            }
+        return {
+            "profile": json.loads(user_row["user_data"]),
+            "activity": {
+                "login_count": user_row["login_count"] or 0,
+                "session_count": user_row["session_count"] or 0,
+                "total_active_seconds": user_row["total_active_seconds"] or 0,
+                "events": events,
+            },
+        }
+
+    async def delete_user_data(
+        self, school_id: str, login: str, user_id: str
+    ) -> Dict[str, int]:
+        """Delete the profile and all activity rows identifying one account."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "DELETE FROM users WHERE school_id = ? AND login = ?",
+                (school_id, login),
+            )
+            user_rows = max(cursor.rowcount, 0)
+            await db.execute(
+                """
+                UPDATE activity_events
+                SET actor_user_id = NULL, school_id = '', login = ''
+                WHERE event_type = 'admin_action' AND actor_user_id = ?
+                """,
+                (user_id,),
+            )
+            cursor = await db.execute(
+                """
+                DELETE FROM activity_events
+                WHERE (
+                    event_type <> 'admin_action'
+                    AND school_id = ? AND login = ?
+                )
+                   OR target_user_id = ?
+                """,
+                (school_id, login, user_id),
+            )
+            event_rows = max(cursor.rowcount, 0)
+            await db.commit()
+        return {"users": user_rows, "activity_events": event_rows}
     
     async def get_all_users(self, limit: int = 100, offset: int = 0) -> List[UserRecord]:
         """Get all user records with pagination."""

@@ -80,12 +80,29 @@ def setup(monkeypatch):
     monkeypatch.setattr(outage_cache, "snapshots", store)
     state = SimpleNamespace(mode="ok", revoked=False, value=1)
 
-    async def stored(user):
+    async def stored(session_id):
         if state.revoked:
             return None
-        return {"school_id": "5201", "username": user, "password": "unused"}
+        username = session_id.removeprefix("session-")
+        return {
+            "user_id": f"5201:{username}",
+            "school_id": "5201",
+            "username": username,
+            "session_id": session_id,
+        }
 
-    monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", stored)
+    async def stored_user(user_id):
+        if state.revoked:
+            return None
+        return {
+            "user_id": user_id,
+            "school_id": "5201",
+            "username": user_id.partition(":")[2],
+            "password": "unused",
+        }
+
+    monkeypatch.setattr(api_module, "get_refresh_token_by_session_id", stored)
+    monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", stored_user)
 
     def request(self, method, url, **kwargs):
         assert kwargs["timeout"] == (5, 15)
@@ -120,7 +137,9 @@ def setup(monkeypatch):
         await manager.set_cache(auth.user_id, "/kalender", result)
         return result
 
-    token = manager.create_access_token("5201:student", "5201", "student")
+    token = manager.create_access_token(
+        "5201:student", "5201", "student", "session-student"
+    )
     return app, manager, store, state, {"X-Session-Token": token}
 
 
@@ -226,7 +245,7 @@ def test_auth_parameters_user_isolation_revocation_and_write_invalidation(setup)
         )
         other = {
             "X-Session-Token": manager.create_access_token(
-                "5201:other", "5201", "other"
+                "5201:other", "5201", "other", "session-other"
             )
         }
         assert (
@@ -256,6 +275,21 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     version = store.version("a", "/kalender")
     store.put(key, b"{}", now - timedelta(hours=25), version)
     assert store.get(key, version) is None
+
+
+def test_deleted_user_snapshot_generation_is_never_reused():
+    store = outage_cache.SnapshotStore()
+    store.version("a", "/benutzer")
+    for _ in range(5):
+        store.invalidate("a")
+    stale_version = store.version("a", "/benutzer")
+    for user_id in ("b", "c", "d", "e"):
+        store.version(user_id, "/benutzer")
+
+    store.delete_user_data("a")
+    fresh_version = store.version("a", "/benutzer")
+
+    assert fresh_version[0] != stale_version[0]
     store.put(key, b"{}", now, version)
     store.invalidate("a")
     store.put(key, b"{}", now, version)
@@ -273,6 +307,21 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     assert store.total_bytes == 6
     store.put(key, b"large", now, version)
     assert store.get(key, version) is None
+
+
+def test_deleted_user_snapshot_generation_is_never_reused():
+    store = outage_cache.SnapshotStore()
+    store.version("a", "/benutzer")
+    for _ in range(5):
+        store.invalidate("a")
+    stale_version = store.version("a", "/benutzer")
+    for user_id in ("b", "c", "d", "e"):
+        store.version(user_id, "/benutzer")
+
+    store.delete_user_data("a")
+    fresh_version = store.version("a", "/benutzer")
+
+    assert fresh_version[0] != stale_version[0]
 
 
 def test_endpoint_invalidation_preserves_unrelated_outage_snapshots():
