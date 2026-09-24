@@ -4,6 +4,8 @@ import os
 import re
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
+import requests
+
 from schulportal_hessen.tools.cryptor import Cryptor
 from .submissions import extract_entry_uploads, meinunterricht_get_submissions as _get_submissions
 
@@ -754,7 +756,7 @@ def meinunterricht_download_file(self, url: str) -> Dict[str, Any]:
         {"success": True, "filename": "{file}", "content": b"..."}
     """
     if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
+        return {"success": False, "error": "Not logged in", "status_code": 401}
 
     try:
         download_url = _make_absolute_url(self.BASE_START_URL, url)
@@ -768,6 +770,20 @@ def meinunterricht_download_file(self, url: str) -> Dict[str, Any]:
             "content_type": response.headers.get("Content-Type"),
             "content": response.content,
             "url": download_url,
+        }
+    except requests.HTTPError as e:
+        upstream_status = e.response.status_code if e.response is not None else None
+        status_code = 401 if upstream_status == 401 else 404 if upstream_status == 404 else 502
+        return {
+            "success": False,
+            "error": f"Failed to download file: {str(e)}",
+            "status_code": status_code,
+        }
+    except requests.RequestException as e:
+        return {
+            "success": False,
+            "error": f"Failed to download file: {str(e)}",
+            "status_code": 502,
         }
     except Exception as e:
         return {"success": False, "error": f"Failed to download file: {str(e)}"}

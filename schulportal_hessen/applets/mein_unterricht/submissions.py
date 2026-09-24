@@ -391,7 +391,7 @@ def _ensure_cryptor(client: Any) -> Cryptor:
 
 def meinunterricht_get_submissions(self) -> dict[str, Any]:
     if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
+        return {"success": False, "error": "Not logged in", "status_code": 401}
     try:
         response = self.session.get(
             f"{self.BASE_START_URL}/meinunterricht.php", params={"a": "sus_abgaben"}
@@ -527,11 +527,23 @@ def meinunterricht_delete_uploaded_file(
 
 def meinunterricht_download_submission_file(self, file_ref: str) -> dict[str, Any]:
     if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
+        return {"success": False, "error": "Not logged in", "status_code": 401}
     try:
         url = _decode_ref(file_ref, self.BASE_START_URL)
         return self.meinunterricht_download_file(url)
     except requests.RequestException as exc:
-        return {"success": False, "error": f"Failed to download submission file: {exc}"}
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        upstream_status = getattr(exc.response, "status_code", None)
+        status_code = 401 if upstream_status == 401 else 404 if upstream_status == 404 else 502
+        return {
+            "success": False,
+            "error": f"Failed to download submission file: {exc}",
+            "status_code": status_code,
+        }
+    except ValueError as exc:
+        return {
+            "success": False,
+            "error": f"Failed to download submission file: {exc}",
+            "status_code": 400,
+        }
+    except (AttributeError, IndexError, KeyError, TypeError) as exc:
         return {"success": False, "error": f"Failed to download submission file: {exc}"}

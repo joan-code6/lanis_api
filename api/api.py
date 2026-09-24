@@ -2624,7 +2624,13 @@ async def meinunterricht_submission_file(
         auth.client.meinunterricht_download_submission_file, file_ref
     )
     if not result.get("success"):
-        raise HTTPException(status_code=404, detail=result.get("error", "File not found"))
+        failure_status = result.get("status_code")
+        if failure_status not in {400, 401, 404, 502}:
+            failure_status = 502
+        raise HTTPException(
+            status_code=failure_status,
+            detail=result.get("error", "Failed to download file"),
+        )
 
     filename = re.sub(r'[\r\n"]', "_", str(result.get("filename") or "download"))
     content_disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
