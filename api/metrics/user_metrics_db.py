@@ -884,6 +884,33 @@ class UserMetricsDB:
                 checks.append(check)
             return checks
 
+    async def get_previous_uptime_check(self, before: datetime) -> Optional[Dict[str, Any]]:
+        """Return the latest stored check strictly before a reporting boundary."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
+                       latency_ms, error, features_json
+                FROM uptime_checks
+                WHERE checked_at < ?
+                ORDER BY checked_at DESC LIMIT 1
+                """,
+                (before.isoformat(),),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            check = dict(row)
+            check["is_available"] = bool(check["is_available"])
+            try:
+                features = json.loads(check.pop("features_json") or "[]")
+            except (TypeError, ValueError):
+                features = []
+            check["features"] = features if isinstance(features, list) else []
+            return check
+
     async def get_uptime_incidents(
         self,
         limit: int = 100,
@@ -971,17 +998,17 @@ class UserMetricsDB:
                 series.append(item)
             return series
 
-    async def get_uptime_alert_state(self) -> Optional[bool]:
-        """Return the last delivered alert state, or ``None`` before first use."""
+    async def get_uptime_alert_state(self) -> tuple[Optional[bool], Optional[str]]:
+        """Return the delivered state and its last transition/reset timestamp."""
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT is_issue FROM uptime_alert_state WHERE id = 1"
+                "SELECT is_issue, updated_at FROM uptime_alert_state WHERE id = 1"
             )
             row = await cursor.fetchone()
-            if row is None or row[0] is None:
-                return None
-            return bool(row[0])
+            if row is None:
+                return None, None
+            return (bool(row[0]) if row[0] is not None else None), row[1]
 
     async def set_uptime_alert_state(self, is_issue: bool) -> None:
         """Persist the last uptime alert state after a webhook is delivered."""
@@ -996,6 +1023,16 @@ class UserMetricsDB:
                     updated_at = excluded.updated_at
                 """,
                 (1 if is_issue else 0, datetime.utcnow().isoformat()),
+            )
+            await db.commit()
+
+    async def touch_uptime_alert_state(self) -> None:
+        """Reset pending retries after an observation confirms the delivered state."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE uptime_alert_state SET updated_at = ? WHERE id = 1",
+                (datetime.utcnow().isoformat(),),
             )
             await db.commit()
 

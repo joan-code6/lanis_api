@@ -280,11 +280,12 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
 
     is_issue = check.get("status") != "up"
     async with _uptime_alert_lock:
-        previous_issue = await user_metrics_db.get_uptime_alert_state()
+        previous_issue, state_updated_at = await user_metrics_db.get_uptime_alert_state()
         if previous_issue is None and not is_issue:
             await user_metrics_db.set_uptime_alert_state(False)
             return
         if previous_issue is not None and previous_issue == is_issue:
+            await user_metrics_db.touch_uptime_alert_state()
             return
 
         transition = "recovery" if not is_issue else "incident"
@@ -298,7 +299,15 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
                     )
                     if failed_at.tzinfo:
                         failed_at = failed_at.astimezone(timezone.utc).replace(tzinfo=None)
-                    if (_utcnow() - failed_at).total_seconds() < UPTIME_ALERT_RETRY_SECONDS:
+                    state_at = (
+                        datetime.fromisoformat(str(state_updated_at).replace("Z", "+00:00"))
+                        if state_updated_at
+                        else None
+                    )
+                    if state_at is not None and state_at.tzinfo:
+                        state_at = state_at.astimezone(timezone.utc).replace(tzinfo=None)
+                    is_current_pending = state_at is None or failed_at > state_at
+                    if is_current_pending and (_utcnow() - failed_at).total_seconds() < UPTIME_ALERT_RETRY_SECONDS:
                         return
                 except (TypeError, ValueError):
                     pass
@@ -532,13 +541,6 @@ def _parse_check_time(check: dict[str, Any]) -> datetime | None:
         return None
 
 
-def _uptime_predecessor_lookback_seconds() -> int:
-    """Fetch enough history for the longest observation validity horizon."""
-    normal_interval = get_uptime_interval_seconds()
-    incident_interval = INCIDENT_UPTIME_INTERVAL_SECONDS + 2 * get_uptime_timeout_seconds()
-    return 2 * max(normal_interval, incident_interval)
-
-
 def _latency_summary(checks: list[dict[str, Any]]) -> dict[str, Any]:
     def summarize(values: list[Any]) -> dict[str, float | None]:
         ordered = sorted(float(value) for value in values if isinstance(value, (int, float)))
@@ -656,8 +658,10 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
     """Return current feature state and a rolling availability summary."""
     history = await user_metrics_db.get_uptime_checks(limit=limit)
     since = _utcnow() - timedelta(days=UPTIME_SUMMARY_DAYS)
-    query_since = since - timedelta(seconds=_uptime_predecessor_lookback_seconds())
-    incident_checks = await user_metrics_db.get_uptime_checks(limit=-1, since=query_since)
+    incident_checks = await user_metrics_db.get_uptime_checks(limit=-1, since=since)
+    previous_check = await user_metrics_db.get_previous_uptime_check(since)
+    if previous_check is not None:
+        incident_checks.append(previous_check)
     incidents = group_uptime_incidents(incident_checks)[-UPTIME_INCIDENT_LIMIT:][::-1]
     summary_counts = await user_metrics_db.get_uptime_summary(since)
     daily = await user_metrics_db.get_uptime_daily_series(since)

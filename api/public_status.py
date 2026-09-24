@@ -155,14 +155,18 @@ async def _build_public_status() -> dict[str, Any]:
     now = uptime._utcnow().replace(tzinfo=timezone.utc)
     start = now - timedelta(days=uptime.UPTIME_SUMMARY_DAYS)
     interval = uptime.get_uptime_interval_seconds()
-    query_start = start - timedelta(seconds=uptime._uptime_predecessor_lookback_seconds())
     rows = await uptime.user_metrics_db.get_uptime_checks(
-        limit=-1, since=query_start.replace(tzinfo=None)
+        limit=-1, since=start.replace(tzinfo=None)
     )
+    previous_row = await uptime.user_metrics_db.get_previous_uptime_check(
+        start.replace(tzinfo=None)
+    )
+    if previous_row is not None:
+        rows.append(previous_row)
     checks = []
     for row in rows:
         timestamp = _timestamp(row.get("checked_at"))
-        if timestamp is not None and query_start <= timestamp <= now:
+        if timestamp is not None and timestamp <= now:
             checks.append((timestamp, row))
     # Timestamps can collide when checks are written close together. Keep the
     # newest database row stable without exposing its internal identifier.
@@ -172,9 +176,12 @@ async def _build_public_status() -> dict[str, Any]:
     latest_status = latest[1]["status"] if latest else "unknown"
     if latest_status in {"down", "degraded"}:
         last_probe_seconds = (latest[1].get("latency_ms") or 0) / 1000
+        effective_interval = latest[1].get("sample_interval_seconds")
         stale_after = max(
             2 * uptime.INCIDENT_UPTIME_INTERVAL_SECONDS,
-            uptime.INCIDENT_UPTIME_INTERVAL_SECONDS + 2 * last_probe_seconds,
+            2 * effective_interval
+            if isinstance(effective_interval, (int, float)) and effective_interval > 0
+            else uptime.INCIDENT_UPTIME_INTERVAL_SECONDS + 2 * last_probe_seconds,
         )
     else:
         stale_after = 2 * interval
