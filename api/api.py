@@ -2487,6 +2487,7 @@ async def meinunterricht_course(
     if cached is not None:
         return cached
 
+    cache_version = await sessions.get_cache_version(auth.user_id, "/meinunterricht/course")
     result = await run_in_threadpool(auth.client.meinunterricht_get_course, course_id)
 
     if result.get("success") and "entries" in result:
@@ -2513,8 +2514,12 @@ async def meinunterricht_course(
                     )
                     await task_queue.add_task(download_task)
 
-    await sessions.set_cache(
-        auth.user_id, "/meinunterricht/course", result, params
+    await sessions.set_cache_if_current_version(
+        auth.user_id,
+        "/meinunterricht/course",
+        result,
+        params,
+        cache_version,
     )
     return result
 
