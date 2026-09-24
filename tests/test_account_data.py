@@ -94,6 +94,23 @@ def test_account_deletion_uses_authenticated_identity_after_logout_race(
     asyncio.run(scenario())
 
 
+def test_deletion_marker_survives_auth_database_reinitialization(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+        monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
+        await auth_db.initialize()
+        await auth_db.delete_user_data("5201:student")
+
+        assert await auth_db.account_deletion_marker_is_active("5201:student")
+        await auth_db.initialize()
+        assert await auth_db.account_deletion_marker_is_active("5201:student")
+
+        await auth_db.clear_account_deletion_marker("5201:student")
+        assert not await auth_db.account_deletion_marker_is_active("5201:student")
+
+    asyncio.run(scenario())
+
+
 def test_admin_cannot_reveal_credentials_or_request_step_up_tokens():
     paths = {route.path for route in admin_router.routes}
     assert "/admin/users/{user_id:path}/credentials/reveal" not in paths

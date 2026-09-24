@@ -391,14 +391,24 @@ class UserMetricsDB:
                 user_row = await cursor.fetchone()
             async with db.execute(
                 """
-                SELECT event_type, school_id, login, occurred_at,
-                       duration_seconds, actor_user_id, target_user_id, action
+                SELECT event_type,
+                       CASE WHEN event_type = 'admin_action' THEN ''
+                            ELSE school_id END AS school_id,
+                       CASE WHEN event_type = 'admin_action' THEN ''
+                            ELSE login END AS login,
+                       occurred_at, duration_seconds,
+                       CASE WHEN event_type = 'admin_action' THEN NULL
+                            ELSE actor_user_id END AS actor_user_id,
+                       CASE WHEN event_type = 'admin_action'
+                                  AND target_user_id <> ? THEN NULL
+                            ELSE target_user_id END AS target_user_id,
+                       action
                 FROM activity_events
                 WHERE (school_id = ? AND login = ?)
                    OR actor_user_id = ? OR target_user_id = ?
                 ORDER BY occurred_at ASC
                 """,
-                (school_id, login, user_id, user_id),
+                (user_id, school_id, login, user_id, user_id),
             ) as cursor:
                 events = [dict(row) for row in await cursor.fetchall()]
 

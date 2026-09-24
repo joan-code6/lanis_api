@@ -134,6 +134,26 @@ def test_deleting_admin_anonymizes_retained_cross_account_audit(tmp_path):
     asyncio.run(scenario())
 
 
+def test_account_export_redacts_other_admin_identities(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.record_admin_action(
+            "5201:admin", "school_view", "5201:student"
+        )
+        exported = await database.get_account_data(
+            "5201", "student", "5201:student"
+        )
+        event = exported["activity"]["events"][0]
+        assert event["event_type"] == "admin_action"
+        assert event["actor_user_id"] is None
+        assert event["school_id"] == ""
+        assert event["login"] == ""
+        assert event["target_user_id"] == "5201:student"
+
+    asyncio.run(scenario())
+
+
 def test_analytics_aggregates_activity_and_module_launches(tmp_path):
     database = UserMetricsDB(tmp_path / "metrics.db")
 

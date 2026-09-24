@@ -328,6 +328,14 @@ async def initialize() -> None:
             )
             """
         )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS account_deletion_markers ("
+            "user_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)"
+        )
+        await db.execute(
+            "DELETE FROM account_deletion_markers WHERE expires_at <= ?",
+            (datetime.utcnow().isoformat(),),
+        )
         async with db.execute("PRAGMA table_info(refresh_tokens)") as cursor:
             refresh_columns = {row[1] for row in await cursor.fetchall()}
         if "session_id" not in refresh_columns:
@@ -1445,8 +1453,39 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
             await db.execute(
                 "DELETE FROM admin_audit WHERE target_user_id = ?", (user_id,)
             )
+            await db.execute(
+                "INSERT OR REPLACE INTO account_deletion_markers (user_id, expires_at) VALUES (?, ?)",
+                (user_id, (datetime.utcnow() + timedelta(hours=1)).isoformat()),
+            )
+            await db.execute(
+                "DELETE FROM account_deletion_markers WHERE expires_at <= ?",
+                (datetime.utcnow().isoformat(),),
+            )
             await db.commit()
     return counts
+
+
+async def account_deletion_marker_is_active(user_id: str) -> bool:
+    """Return whether a durable account-deletion tombstone is still active."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT 1 FROM account_deletion_markers WHERE user_id = ? AND expires_at > ?",
+                (user_id, datetime.utcnow().isoformat()),
+            ) as cursor:
+                return await cursor.fetchone() is not None
+
+
+async def clear_account_deletion_marker(user_id: str) -> None:
+    """Clear a tombstone after a fresh successful login."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM account_deletion_markers WHERE user_id = ?", (user_id,)
+            )
+            await db.commit()
 
 
 async def get_notification_preferences(user_id: str) -> Dict[str, Any]:

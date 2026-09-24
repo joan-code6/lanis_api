@@ -211,7 +211,7 @@ async def _record_login(school_id: str, username: str) -> None:
 
         lifecycle_lock = await account_lifecycle_lock(user_id)
         async with lifecycle_lock:
-            clear_account_deletion_marker(user_id)
+            await clear_account_deletion_marker(user_id)
             await user_metrics_db.record_login(school_id, username)
     except Exception:
         logger.warning("Could not record admin login metric", exc_info=True)
@@ -228,14 +228,14 @@ async def _record_admin_action(
         from .account_data import account_deletion_is_recent, account_lifecycle_lock
 
         if locks_held:
-            if not account_deletion_is_recent(actor_user_id):
+            if not await account_deletion_is_recent(actor_user_id):
                 await user_metrics_db.record_admin_action(
                     actor_user_id, action, target_user_id
                 )
             return
         lifecycle_lock = await account_lifecycle_lock(actor_user_id)
         async with lifecycle_lock:
-            if account_deletion_is_recent(actor_user_id):
+            if await account_deletion_is_recent(actor_user_id):
                 return
             await user_metrics_db.record_admin_action(
                 actor_user_id, action, target_user_id

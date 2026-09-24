@@ -1356,7 +1356,7 @@ async def _login_account(
     session_id = refresh_data["session_id"]
     from .account_data import clear_account_deletion_marker
 
-    clear_account_deletion_marker(user_id)
+    await clear_account_deletion_marker(user_id)
     await task_queue.allow_user_tasks(user_id)
 
     # 3. Issue short-term access token (JWT)
