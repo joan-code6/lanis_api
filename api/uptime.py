@@ -448,6 +448,9 @@ def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = 
             active["affected_features"] = sorted(set(active["affected_features"]) | set(failed_features))
             active["error"] = check.get("error") or active["error"]
             continue
+        if active is not None and check.get("status") != "up":
+            # Unknown or unconfigured observations do not confirm recovery.
+            continue
         if active is not None:
             active["resolved_at"] = checked_at
             try:
@@ -473,11 +476,15 @@ def _time_weighted_uptime(checks: list[dict[str, Any]], start: datetime, end: da
     """Calculate availability by observed time, not raw sample count."""
     interval = get_uptime_interval_seconds()
     ordered = []
+    seen_timestamps = set()
     for check in checks:
         try:
             stamp = datetime.fromisoformat(str(check.get("checked_at")).replace("Z", "+00:00"))
             if stamp.tzinfo:
                 stamp = stamp.astimezone(timezone.utc).replace(tzinfo=None)
+            if stamp in seen_timestamps:
+                continue
+            seen_timestamps.add(stamp)
             ordered.append((stamp, check))
         except (TypeError, ValueError):
             continue
