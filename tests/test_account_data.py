@@ -121,12 +121,20 @@ def test_course_file_task_stops_before_starting_after_deletion(monkeypatch):
         async def deleted(_user_id):
             return True
 
+        async def current_generation(_user_id, _generation):
+            return True
+
         def should_not_fetch(*_args, **_kwargs):
             raise AssertionError("deleted account task must not fetch files")
 
         pending = []
         monkeypatch.setattr(account_data, "account_lifecycle_lock", get_lock)
         monkeypatch.setattr(account_data, "account_deletion_is_recent", deleted)
+        monkeypatch.setattr(
+            api_module.task_queue,
+            "is_user_generation_current",
+            current_generation,
+        )
         monkeypatch.setattr(api_module, "is_file_cached", lambda _file_hash: False)
         monkeypatch.setattr(api_module, "unmark_pending", pending.append)
         monkeypatch.setattr(api_module, "write_pending_meta", should_not_fetch)

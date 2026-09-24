@@ -210,6 +210,18 @@ class TaskQueue:
         """Re-enable user-scoped work after a fresh login."""
         async with self._lock:
             self._cancelled_users.discard(user_id)
+
+    async def is_user_generation_current(
+        self, user_id: str, generation: Optional[int]
+    ) -> bool:
+        """Check whether work still belongs to the user's current login epoch."""
+        if generation is None:
+            return True
+        async with self._lock:
+            return (
+                user_id not in self._cancelled_users
+                and generation == self._user_generations.get(user_id, 0)
+            )
     
     async def _worker(self, worker_id: int) -> None:
         """Worker coroutine that processes tasks from the queue."""

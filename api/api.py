@@ -2774,7 +2774,11 @@ async def mark_read(
 
 
 async def _download_course_file(
-    user_id: str, download_url: str, file_hash: str
+    user_id: str,
+    download_url: str,
+    file_hash: str,
+    *,
+    task_generation: int | None = None,
 ) -> None:
     if is_file_cached(file_hash):
         unmark_pending(file_hash)
@@ -2784,7 +2788,12 @@ async def _download_course_file(
 
     lifecycle_lock = await account_lifecycle_lock(user_id)
     async with lifecycle_lock:
-        if await account_deletion_is_recent(user_id):
+        if (
+            await account_deletion_is_recent(user_id)
+            or not await task_queue.is_user_generation_current(
+                user_id, task_generation
+            )
+        ):
             unmark_pending(file_hash)
             return
         write_pending_meta(file_hash, download_url)
@@ -2793,7 +2802,12 @@ async def _download_course_file(
     result = await run_in_threadpool(client.meinunterricht_download_file, download_url)
 
     async with lifecycle_lock:
-        if await account_deletion_is_recent(user_id):
+        if (
+            await account_deletion_is_recent(user_id)
+            or not await task_queue.is_user_generation_current(
+                user_id, task_generation
+            )
+        ):
             unmark_pending(file_hash)
             return
         if result.get("success"):
@@ -2965,9 +2979,23 @@ async def meinunterricht_course(
 
                 if not is_file_cached(file_hash) and not is_file_pending(file_hash):
                     mark_pending(file_hash)
+                    download_task: Task
+
+                    async def download_course_file_for_task(
+                        task_user_id: str,
+                        task_download_url: str,
+                        task_file_hash: str,
+                    ) -> None:
+                        await _download_course_file(
+                            task_user_id,
+                            task_download_url,
+                            task_file_hash,
+                            task_generation=download_task.user_generation,
+                        )
+
                     download_task = Task(
                         name=f"download_file:{file_hash[:12]}",
-                        func=_download_course_file,
+                        func=download_course_file_for_task,
                         args=(auth.user_id, original_url, file_hash),
                         user_id=auth.user_id,
                         priority=TaskPriority.LOW,

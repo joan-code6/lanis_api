@@ -59,3 +59,27 @@ def test_cancel_user_tasks_purges_completed_task_arguments():
             await queue.stop(wait=False)
 
     asyncio.run(scenario())
+
+
+def test_cancelled_task_generation_stays_invalid_after_relogin():
+    async def scenario():
+        queue = TaskQueue()
+        task = Task(
+            name="download",
+            user_id="5201:student",
+            func=lambda: None,
+            priority=TaskPriority.LOW,
+        )
+        await queue.add_task(task)
+        original_generation = task.user_generation
+
+        assert await queue.is_user_generation_current(
+            "5201:student", original_generation
+        )
+        await queue.cancel_user_tasks("5201:student")
+        await queue.allow_user_tasks("5201:student")
+        assert not await queue.is_user_generation_current(
+            "5201:student", original_generation
+        )
+
+    asyncio.run(scenario())
