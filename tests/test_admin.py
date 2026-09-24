@@ -14,7 +14,7 @@ def test_admin_login_requires_allowlisted_sph_identity(monkeypatch):
     async def verify(_school_id, _username, _password):
         return True
 
-    async def record(_school_id, _username):
+    async def record(_school_id, _username, **_kwargs):
         return None
 
     monkeypatch.setattr(admin_module, "_verify_sph_credentials", verify)
@@ -35,6 +35,46 @@ def test_admin_login_requires_allowlisted_sph_identity(monkeypatch):
     assert response.username == "bennet.wegener"
     principal = asyncio.run(admin_dependency(response.access_token))
     assert principal == AdminPrincipal("5201:bennet.wegener", "5201", "bennet.wegener")
+
+
+def test_admin_login_holds_lifecycle_lock_during_verification_and_audit(monkeypatch):
+    monkeypatch.setenv("LANIS_ADMIN_ACCOUNTS", "5201:admin.one")
+    monkeypatch.setenv("LANIS_ADMIN_JWT_SECRET", "a" * 64)
+    state = {"held": False}
+
+    class LifecycleLock:
+        async def __aenter__(self):
+            state["held"] = True
+
+        async def __aexit__(self, *_args):
+            state["held"] = False
+
+    async def get_lock(_user_id):
+        return LifecycleLock()
+
+    async def verify(_school_id, _username, _password):
+        assert state["held"]
+        return True
+
+    async def record(*_args, **kwargs):
+        assert state["held"]
+        assert kwargs["locks_held"] is True
+
+    from api import account_data
+
+    monkeypatch.setattr(account_data, "account_lifecycle_lock", get_lock)
+    monkeypatch.setattr(admin_module, "_verify_sph_credentials", verify)
+    monkeypatch.setattr(admin_module, "_record_login", record)
+    monkeypatch.setattr(admin_module, "_record_admin_action", record)
+
+    asyncio.run(
+        admin_login(
+            AdminLoginRequest(
+                school_id="5201", username="admin.one", password="password"
+            )
+        )
+    )
+    assert state["held"] is False
 
 
 def test_admin_login_rejects_non_allowlisted_identity(monkeypatch):

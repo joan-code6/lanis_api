@@ -2780,20 +2780,33 @@ async def _download_course_file(
         unmark_pending(file_hash)
         return
 
-    write_pending_meta(file_hash, download_url)
-    session_data = await sessions._get_or_create_schulportal_client(user_id)
-    client = session_data.client
+    from .account_data import account_deletion_is_recent, account_lifecycle_lock
+
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock:
+        if await account_deletion_is_recent(user_id):
+            unmark_pending(file_hash)
+            return
+        write_pending_meta(file_hash, download_url)
+        session_data = await sessions._get_or_create_schulportal_client(user_id)
+        client = session_data.client
     result = await run_in_threadpool(client.meinunterricht_download_file, download_url)
 
-    if result.get("success"):
-        save_file(
-            file_hash,
-            result["content"],
-            result.get("content_type", "application/octet-stream"),
-            result.get("filename", "download"),
-        )
-    else:
-        unmark_pending(file_hash)
+    async with lifecycle_lock:
+        if await account_deletion_is_recent(user_id):
+            unmark_pending(file_hash)
+            return
+        if result.get("success"):
+            save_file(
+                file_hash,
+                result["content"],
+                result.get("content_type", "application/octet-stream"),
+                result.get("filename", "download"),
+            )
+        else:
+            unmark_pending(file_hash)
+
+    if not result.get("success"):
         logger.warning(
             "File download failed for %s: %s", file_hash[:12], result.get("error")
         )
@@ -3004,12 +3017,18 @@ async def meinunterricht_file(
             client.meinunterricht_download_file, meta["download_url"]
         )
         if result.get("success"):
-            save_file(
-                file_hash,
-                result["content"],
-                result.get("content_type", "application/octet-stream"),
-                result.get("filename", "download"),
-            )
+            from .account_data import account_deletion_is_recent, account_lifecycle_lock
+
+            lifecycle_lock = await account_lifecycle_lock(user_id)
+            async with lifecycle_lock:
+                if await account_deletion_is_recent(user_id):
+                    raise HTTPException(status_code=404, detail="File not found")
+                save_file(
+                    file_hash,
+                    result["content"],
+                    result.get("content_type", "application/octet-stream"),
+                    result.get("filename", "download"),
+                )
             return FileResponse(
                 content_path,
                 media_type=result.get("content_type", "application/octet-stream"),

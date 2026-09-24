@@ -111,6 +111,33 @@ def test_deletion_marker_survives_auth_database_reinitialization(tmp_path, monke
     asyncio.run(scenario())
 
 
+def test_course_file_task_stops_before_starting_after_deletion(monkeypatch):
+    from api import api as api_module
+
+    async def scenario():
+        async def get_lock(_user_id):
+            return asyncio.Lock()
+
+        async def deleted(_user_id):
+            return True
+
+        def should_not_fetch(*_args, **_kwargs):
+            raise AssertionError("deleted account task must not fetch files")
+
+        pending = []
+        monkeypatch.setattr(account_data, "account_lifecycle_lock", get_lock)
+        monkeypatch.setattr(account_data, "account_deletion_is_recent", deleted)
+        monkeypatch.setattr(api_module, "is_file_cached", lambda _file_hash: False)
+        monkeypatch.setattr(api_module, "unmark_pending", pending.append)
+        monkeypatch.setattr(api_module, "write_pending_meta", should_not_fetch)
+        await api_module._download_course_file(
+            "5201:student", "https://sph.invalid/file", "file-hash"
+        )
+        assert pending == ["file-hash"]
+
+    asyncio.run(scenario())
+
+
 def test_admin_cannot_reveal_credentials_or_request_step_up_tokens():
     paths = {route.path for route in admin_router.routes}
     assert "/admin/users/{user_id:path}/credentials/reveal" not in paths

@@ -204,11 +204,17 @@ async def _verify_sph_credentials(school_id: str, username: str, password: str) 
         client.close()
 
 
-async def _record_login(school_id: str, username: str) -> None:
+async def _record_login(
+    school_id: str, username: str, *, locks_held: bool = False
+) -> None:
     try:
         user_id = make_user_id(school_id, username)
         from .account_data import account_lifecycle_lock, clear_account_deletion_marker
 
+        if locks_held:
+            await clear_account_deletion_marker(user_id)
+            await user_metrics_db.record_login(school_id, username)
+            return
         lifecycle_lock = await account_lifecycle_lock(user_id)
         async with lifecycle_lock:
             await clear_account_deletion_marker(user_id)
@@ -254,22 +260,28 @@ async def admin_login(payload: AdminLoginRequest) -> AdminTokenResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid admin credentials",
         )
-    if not await _verify_sph_credentials(school_id, payload.username, payload.password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid admin credentials",
+    from .account_data import account_lifecycle_lock
+
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock:
+        if not await _verify_sph_credentials(
+            school_id, payload.username, payload.password
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid admin credentials",
+            )
+        principal = AdminPrincipal(
+            user_id=user_id, school_id=school_id, username=normalize_username(username)
         )
-    principal = AdminPrincipal(
-        user_id=user_id, school_id=school_id, username=normalize_username(username)
-    )
-    await _record_login(school_id, username)
-    await _record_admin_action(principal.user_id, "admin_login")
-    return AdminTokenResponse(
-        access_token=_issue_token(principal),
-        expires_in=ADMIN_TOKEN_EXPIRE_MINUTES * 60,
-        school_id=school_id,
-        username=normalize_username(username),
-    )
+        await _record_login(school_id, username, locks_held=True)
+        await _record_admin_action(principal.user_id, "admin_login", locks_held=True)
+        return AdminTokenResponse(
+            access_token=_issue_token(principal),
+            expires_in=ADMIN_TOKEN_EXPIRE_MINUTES * 60,
+            school_id=school_id,
+            username=normalize_username(username),
+        )
 
 
 @router.get("/me")
