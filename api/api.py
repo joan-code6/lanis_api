@@ -29,7 +29,19 @@ from urllib.parse import quote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import requests as http_requests
-from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -2705,6 +2717,7 @@ async def meinunterricht_course(
     if cached is not None:
         return cached
 
+    cache_version = await sessions.get_cache_version(auth.user_id, "/meinunterricht/course")
     result = await run_in_threadpool(auth.client.meinunterricht_get_course, course_id)
 
     if result.get("success") and "entries" in result:
@@ -2731,8 +2744,12 @@ async def meinunterricht_course(
                     )
                     await task_queue.add_task(download_task)
 
-    await sessions.set_cache(
-        auth.user_id, "/meinunterricht/course", result, params
+    await sessions.set_cache_if_current_version(
+        auth.user_id,
+        "/meinunterricht/course",
+        result,
+        params,
+        cache_version,
     )
     return result
 
@@ -2825,7 +2842,161 @@ async def meinunterricht_submissions(
         return cached
 
     result = await run_in_threadpool(auth.client.meinunterricht_get_submissions)
-    await sessions.set_cache(auth.user_id, "/meinunterricht/submissions", result)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/meinunterricht/submissions", result)
+    return result
+
+
+@app.get("/meinunterricht/submissions/file/{file_ref}")
+async def meinunterricht_submission_file(
+    file_ref: str,
+    auth: AuthSession = Depends(client_dependency),
+):
+    """Proxy a submission file through the authenticated Schulportal session."""
+    from fastapi.responses import Response
+
+    result = await run_in_threadpool(
+        auth.client.meinunterricht_download_submission_file, file_ref
+    )
+    if not result.get("success"):
+        failure_status = result.get("status_code")
+        if failure_status not in {400, 401, 404, 502}:
+            failure_status = 502
+        if failure_status == 401:
+            await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(
+            status_code=failure_status,
+            detail=result.get("error", "Failed to download file"),
+        )
+
+    filename = re.sub(r'[\r\n"]', "_", str(result.get("filename") or "download"))
+    content_disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+    return Response(
+        content=result.get("content", b""),
+        media_type=result.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": content_disposition},
+    )
+
+
+@app.get("/meinunterricht/submissions/{detail_ref}")
+async def meinunterricht_submission(
+    detail_ref: str,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    endpoint = "/meinunterricht/submissions/detail"
+    params = _make_param_key({"detail_ref": detail_ref})
+    cached = await sessions.get_cached(auth.user_id, endpoint, params)
+    if cached is not None:
+        return cached
+
+    cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
+    detail = await run_in_threadpool(
+        auth.client.meinunterricht_get_submission, detail_ref
+    )
+    result: Dict[str, object] = (
+        {
+            "success": True,
+            "submission": {key: value for key, value in detail.items() if key != "success"},
+        }
+        if detail.get("success")
+        else detail
+    )
+    if result.get("success"):
+        await sessions.set_cache_if_current_version(
+            auth.user_id, endpoint, result, params, cache_version
+        )
+    return result
+
+
+MAX_SUBMISSION_FILE_BYTES = 50 * 1024 * 1024
+MAX_SUBMISSION_TOTAL_BYTES = 50 * 1024 * 1024
+
+
+def _upload_file_size(upload_file: UploadFile) -> int:
+    current_position = upload_file.file.tell()
+    upload_file.file.seek(0, 2)
+    size = upload_file.file.tell()
+    upload_file.file.seek(current_position)
+    return size
+
+
+@app.post("/meinunterricht/submissions/upload")
+async def meinunterricht_submission_upload(
+    course_id: str = Form(..., min_length=1, max_length=200),
+    entry_id: str = Form(..., min_length=1, max_length=200),
+    upload_id: str = Form(..., min_length=1, max_length=200),
+    files: List[UploadFile] = File(...),
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not files or len(files) > 5:
+        raise HTTPException(status_code=422, detail="Between one and five files are required")
+
+    payload: List[Dict[str, Any]] = []
+    total_size = 0
+    try:
+        for file in files:
+            file_size = file.size
+            if file_size is None:
+                file_size = await run_in_threadpool(_upload_file_size, file)
+            if file_size > MAX_SUBMISSION_FILE_BYTES:
+                raise HTTPException(status_code=413, detail="Submission file is too large")
+            total_size += file_size
+            if total_size > MAX_SUBMISSION_TOTAL_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Combined submission files are too large",
+                )
+            payload.append(
+                {
+                    "filename": file.filename or "upload",
+                    "content_type": file.content_type,
+                    "stream": file.file,
+                }
+            )
+        result = await run_in_threadpool(
+            auth.client.meinunterricht_upload_files,
+            course_id,
+            entry_id,
+            upload_id,
+            payload,
+        )
+    finally:
+        for file in files:
+            await file.close()
+    if result.get("success"):
+        await asyncio.gather(
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions/detail"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course/*"),
+        )
+    return result
+
+
+@app.delete("/meinunterricht/submissions/file")
+async def meinunterricht_submission_delete_file(
+    course_id: str = Form(..., min_length=1, max_length=200),
+    entry_id: str = Form(..., min_length=1, max_length=200),
+    upload_id: str = Form(..., min_length=1, max_length=200),
+    file_index: str = Form(..., min_length=1, max_length=20),
+    password: str = Form(..., min_length=1, max_length=500),
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    result = await run_in_threadpool(
+        auth.client.meinunterricht_delete_uploaded_file,
+        course_id,
+        entry_id,
+        upload_id,
+        file_index,
+        password,
+    )
+    if result.get("success"):
+        await asyncio.gather(
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions/detail"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course/*"),
+        )
     return result
 
 
