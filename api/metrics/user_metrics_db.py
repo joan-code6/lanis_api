@@ -832,12 +832,17 @@ class UserMetricsDB:
                     json.dumps(check.get("features") or [], ensure_ascii=False),
                 ),
             )
-            # At the default five-minute interval this keeps the local store
-            # bounded without removing the recent history shown in the admin UI.
+            # Keep the reporting period plus two of the longest possible
+            # observation intervals, so a predecessor remains available.
             await db.execute(
                 """
                 DELETE FROM uptime_checks
-                WHERE julianday(checked_at) < julianday('now', '-91 day')
+                WHERE julianday(checked_at) < julianday('now') - (
+                    90.0 + 2.0 * MAX(
+                        86400,
+                        COALESCE((SELECT MAX(sample_interval_seconds) FROM uptime_checks), 0)
+                    ) / 86400.0
+                )
                 """
             )
             await db.commit()

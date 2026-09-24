@@ -100,8 +100,9 @@ While an incident remains active, checks run every 15 seconds. The monitor logs 
 modules, and opens each module entry without exposing credentials. Configure
 the account with `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME`, and
 `LANIS_UPTIME_PASSWORD`; existing local deployments may use the corresponding
-`LANIS_API_*` variables as a fallback. Results are retained for 91 days so the
-90-day reporting window can include a predecessor observation at its boundary.
+`LANIS_API_*` variables as a fallback. Results are retained for the 90-day
+reporting window plus twice the longest stored sample interval, with at least
+two extra days for legacy rows and the maximum configured cadence.
 A daily 90-day overview is available to the private admin
 portal at `GET /admin/uptime`; its selectable windows include 24 hours, 7, 30,
 and 90 days with median and p95 latency. Incidents are grouped until a successful
