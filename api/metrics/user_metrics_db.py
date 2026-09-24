@@ -439,7 +439,7 @@ class UserMetricsDB:
             await db.execute(
                 """
                 UPDATE activity_events
-                SET actor_user_id = NULL
+                SET actor_user_id = NULL, school_id = '', login = ''
                 WHERE event_type = 'admin_action' AND actor_user_id = ?
                 """,
                 (user_id,),

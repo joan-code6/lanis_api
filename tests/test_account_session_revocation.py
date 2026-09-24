@@ -136,3 +136,28 @@ def test_runtime_deletion_removes_cache_versions_without_reopening_old_writes(
         )
 
     asyncio.run(scenario())
+
+
+def test_cache_versions_keep_global_monotonicity_after_account_deletion():
+    async def scenario():
+        manager = api_module.AuthManager()
+        user_id = "5201:student"
+        stale_version = await manager.get_cache_version(user_id, "/modules")
+        for _ in range(5):
+            await manager.invalidate_endpoint_cache(user_id, "/modules")
+        newest_before_delete = await manager.get_cache_version(user_id, "/modules")
+
+        await manager.delete_user_runtime_data(user_id)
+
+        new_version = await manager.get_cache_version(user_id, "/modules")
+        assert newest_before_delete > stale_version
+        assert new_version > newest_before_delete
+        assert not await manager.set_cache_if_current_version(
+            user_id,
+            "/modules",
+            {"success": True, "stale": True},
+            "",
+            newest_before_delete,
+        )
+
+    asyncio.run(scenario())

@@ -937,11 +937,8 @@ class AuthManager:
         snapshots.invalidate_endpoint(user_id, endpoint)
         async with self._lock:
             version_key = (user_id, endpoint)
-            if version_key in self._cache_versions:
-                self._cache_versions[version_key] += 1
-            else:
-                self._cache_generation += 1
-                self._cache_versions[version_key] = self._cache_generation
+            self._cache_generation += 1
+            self._cache_versions[version_key] = self._cache_generation
             expired = [
                 key
                 for key, entry in self._cache.items()
@@ -957,7 +954,8 @@ class AuthManager:
                 key for key in self._cache_versions if key[0] == user_id
             ]
             for version_key in version_keys:
-                self._cache_versions[version_key] += 1
+                self._cache_generation += 1
+                self._cache_versions[version_key] = self._cache_generation
             expired = [
                 key for key, entry in self._cache.items() if entry.user_id == user_id
             ]
@@ -1494,7 +1492,9 @@ async def delete_account_endpoint(
     if payload.confirmation != "DELETE":
         raise HTTPException(status_code=400, detail='confirmation must be exactly "DELETE"')
     try:
-        report = await delete_account_data(auth.user_id)
+        report = await delete_account_data(
+            auth.user_id, school_id=auth.school_id, username=auth.username
+        )
     except Exception:
         logger.exception("Account deletion failed for %s", auth.user_id)
         raise HTTPException(status_code=500, detail="Account deletion failed")
@@ -2790,6 +2790,11 @@ async def _download_course_file(
         )
 
 
+async def _clear_pending_course_file(file_hash: str) -> None:
+    """Release a shared-file reservation when its owner task is cancelled."""
+    unmark_pending(file_hash)
+
+
 @app.get("/meinunterricht")
 async def meinunterricht_overview(
     auth: AuthSession = Depends(client_dependency),
@@ -2945,6 +2950,9 @@ async def meinunterricht_course(
                         user_id=auth.user_id,
                         priority=TaskPriority.LOW,
                         max_retries=2,
+                        on_cancel=lambda pending_hash=file_hash: _clear_pending_course_file(
+                            pending_hash
+                        ),
                     )
                     await task_queue.add_task(download_task)
 
@@ -4635,6 +4643,26 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
             incoming.sender_id, not_linked_message(config.ui_base_url)
         )
         return
+
+    lifecycle_lock = await account_lifecycle_lock(link["user_id"])
+    async with lifecycle_lock:
+        # The link may have been removed while this task waited for deletion.
+        current_link = await get_whatsapp_link_for_sender(incoming.sender_id)
+        if not current_link or any(
+            current_link.get(field) != link.get(field)
+            for field in ("user_id", "linked_at")
+        ):
+            return
+        await _process_linked_whatsapp_message(incoming, config, client, intent, link)
+
+
+async def _process_linked_whatsapp_message(
+    incoming: IncomingWhatsAppMessage,
+    config: WhatsAppConfig,
+    client: WhatsAppCloudClient,
+    intent: str,
+    link: Dict[str, Any],
+) -> None:
 
     try:
         session_data = await sessions._get_or_create_schulportal_client(

@@ -80,6 +80,9 @@ class Task:
     kwargs: Dict[str, Any] = field(default_factory=dict, compare=False)
     max_retries: int = field(default=3, compare=False)
     retry_delay: float = field(default=1.0, compare=False)
+    on_cancel: Optional[Callable[[], Coroutine[Any, Any, Any]]] = field(
+        default=None, compare=False
+    )
     
     # Runtime state
     status: str = field(default=TaskStatus.PENDING, compare=False)
@@ -208,6 +211,11 @@ class TaskQueue:
                     continue
 
                 if task.user_id and task.user_id in self._cancelled_users:
+                    if task.on_cancel is not None:
+                        try:
+                            await task.on_cancel()
+                        except Exception:
+                            logger.exception("Cancellation cleanup failed for %s", task.name)
                     task.status = TaskStatus.COMPLETED
                     task.completed_at = datetime.utcnow()
                     self._queue.task_done()

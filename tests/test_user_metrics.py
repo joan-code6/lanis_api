@@ -113,6 +113,27 @@ def test_activity_heartbeats_and_admin_audit_are_persisted(tmp_path):
     asyncio.run(scenario())
 
 
+def test_deleting_admin_anonymizes_retained_cross_account_audit(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.record_admin_action(
+            "5201:admin", "credential_reveal", "5201:student"
+        )
+
+        await database.delete_user_data("5201", "admin", "5201:admin")
+
+        async with aiosqlite.connect(database.db_path) as db:
+            async with db.execute(
+                "SELECT school_id, login, actor_user_id, target_user_id "
+                "FROM activity_events WHERE event_type = 'admin_action'"
+            ) as cursor:
+                event = await cursor.fetchone()
+        assert event == ("", "", None, "5201:student")
+
+    asyncio.run(scenario())
+
+
 def test_analytics_aggregates_activity_and_module_launches(tmp_path):
     database = UserMetricsDB(tmp_path / "metrics.db")
 

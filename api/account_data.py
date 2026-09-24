@@ -81,14 +81,17 @@ async def build_account_export(user_id: str) -> dict:
     }
 
 
-async def delete_account_data(user_id: str) -> DeletionReport:
+async def delete_account_data(
+    user_id: str, school_id: str | None = None, username: str | None = None
+) -> DeletionReport:
     """Delete LANIS-held account data while preserving data in Schulportal Hessen."""
     user_id = canonicalize_user_id(user_id)
     lock = await account_lifecycle_lock(user_id)
     async with lock:
         credential = await auth_db.get_refresh_token_by_user_id(user_id)
-        if not credential:
-            return DeletionReport(success=True, deleted={}, upstream_sph_data_deleted=False)
+        if credential:
+            school_id = credential["school_id"]
+            username = credential["username"]
 
         from .api import (
             clear_account_export_state,
@@ -108,9 +111,11 @@ async def delete_account_data(user_id: str) -> DeletionReport:
         # Delete the metrics store first. If the second database fails, a retry
         # can safely repeat the idempotent metrics deletion while the auth row
         # still exists to authenticate the retry.
-        metrics_counts = await user_metrics_db.delete_user_data(
-            credential["school_id"], credential["username"], user_id
-        )
+        metrics_counts = {"users": 0, "activity_events": 0}
+        if school_id and username:
+            metrics_counts = await user_metrics_db.delete_user_data(
+                school_id, username, user_id
+            )
         auth_counts = await auth_db.delete_user_data(user_id)
         return DeletionReport(
             success=True,
