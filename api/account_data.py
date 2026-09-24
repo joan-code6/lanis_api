@@ -1,6 +1,7 @@
 """Self-service account export and deletion orchestration."""
 
 import asyncio
+import time
 import weakref
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,6 +23,30 @@ _lifecycle_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
     weakref.WeakValueDictionary()
 )
 _lifecycle_guard = asyncio.Lock()
+_deleted_account_markers: Dict[str, float] = {}
+_DELETION_MARKER_TTL_SECONDS = 60 * 60
+
+
+def account_deletion_is_recent(user_id: str) -> bool:
+    """Identify deletions during the remaining lifetime of admin JWTs."""
+    now = time.monotonic()
+    expired = [
+        uid
+        for uid, deleted_at in _deleted_account_markers.items()
+        if now - deleted_at >= _DELETION_MARKER_TTL_SECONDS
+    ]
+    for uid in expired:
+        _deleted_account_markers.pop(uid, None)
+    user_id = canonicalize_user_id(user_id)
+    deleted_at = _deleted_account_markers.get(user_id)
+    if deleted_at is None:
+        return False
+    return True
+
+
+def clear_account_deletion_marker(user_id: str) -> None:
+    """Allow new activity after a fresh successful login."""
+    _deleted_account_markers.pop(canonicalize_user_id(user_id), None)
 
 
 async def account_lifecycle_lock(user_id: str) -> asyncio.Lock:
@@ -117,6 +142,8 @@ async def delete_account_data(
                 school_id, username, user_id
             )
         auth_counts = await auth_db.delete_user_data(user_id)
+        account_deletion_is_recent(user_id)  # Prune expired tombstones.
+        _deleted_account_markers[user_id] = time.monotonic()
         return DeletionReport(
             success=True,
             deleted={

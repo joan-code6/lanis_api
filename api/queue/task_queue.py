@@ -83,6 +83,7 @@ class Task:
     on_cancel: Optional[Callable[[], Coroutine[Any, Any, Any]]] = field(
         default=None, compare=False
     )
+    user_generation: Optional[int] = field(default=None, compare=False)
     
     # Runtime state
     status: str = field(default=TaskStatus.PENDING, compare=False)
@@ -123,6 +124,7 @@ class TaskQueue:
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._cancelled_users: set[str] = set()
+        self._user_generations: Dict[str, int] = {}
     
     async def start(self) -> None:
         """Start the task queue workers."""
@@ -184,6 +186,11 @@ class TaskQueue:
             raise asyncio.QueueFull(f"Task queue full (max: {self.max_queue_size})")
         
         task.status = TaskStatus.PENDING
+        if task.user_id:
+            generation = self._user_generations.get(task.user_id, 0)
+            task.user_generation = generation - int(
+                task.user_id in self._cancelled_users
+            )
         await self._queue.put(task)
         logger.debug(f"Task added: {task.name} (id={task.task_id}, priority={task.priority})")
         return task.task_id
@@ -192,6 +199,9 @@ class TaskQueue:
         """Skip pending work and erase retained task arguments for a user."""
         async with self._lock:
             self._cancelled_users.add(user_id)
+            self._user_generations[user_id] = (
+                self._user_generations.get(user_id, 0) + 1
+            )
             for task_id, task in list(self._completed_tasks.items()):
                 if task.user_id == user_id:
                     self._completed_tasks.pop(task_id, None)
@@ -213,7 +223,11 @@ class TaskQueue:
                 except asyncio.TimeoutError:
                     continue
 
-                if task.user_id and task.user_id in self._cancelled_users:
+                if task.user_id and (
+                    task.user_id in self._cancelled_users
+                    or task.user_generation
+                    != self._user_generations.get(task.user_id, 0)
+                ):
                     if task.on_cancel is not None:
                         try:
                             await task.on_cancel()
@@ -270,9 +284,12 @@ class TaskQueue:
         
         async with self._lock:
             self._active_tasks.pop(task.task_id, None)
-            if self.retain_completed_tasks and not (
-                task.user_id and task.user_id in self._cancelled_users
-            ):
+            task_is_current = not task.user_id or (
+                task.user_id not in self._cancelled_users
+                and task.user_generation
+                == self._user_generations.get(task.user_id, 0)
+            )
+            if self.retain_completed_tasks and task_is_current:
                 self._completed_tasks[task.task_id] = task
     
     def get_task_status(self, task_id: str) -> Optional[Task]:

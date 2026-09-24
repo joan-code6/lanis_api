@@ -24,6 +24,7 @@ def test_cancelled_user_task_runs_cleanup_callback():
             )
         )
         await queue.cancel_user_tasks("5201:student")
+        await queue.allow_user_tasks("5201:student")
         await queue.start()
         try:
             await asyncio.wait_for(cleanup_ran.wait(), timeout=2)
@@ -36,12 +37,9 @@ def test_cancelled_user_task_runs_cleanup_callback():
 def test_cancel_user_tasks_purges_completed_task_arguments():
     async def scenario():
         queue = TaskQueue(max_concurrent=1)
-        started = asyncio.Event()
-        release = asyncio.Event()
 
         async def task_body(*_args):
-            started.set()
-            await release.wait()
+            return None
 
         task = Task(
             name="profile-fetch",
@@ -53,13 +51,11 @@ def test_cancel_user_tasks_purges_completed_task_arguments():
         await queue.add_task(task)
         await queue.start()
         try:
-            await asyncio.wait_for(started.wait(), timeout=2)
-            await queue.cancel_user_tasks("5201:student")
-            release.set()
             await asyncio.wait_for(queue._queue.join(), timeout=2)
+            assert task.task_id in queue._completed_tasks
+            await queue.cancel_user_tasks("5201:student")
             assert task.task_id not in queue._completed_tasks
         finally:
-            release.set()
             await queue.stop(wait=False)
 
     asyncio.run(scenario())

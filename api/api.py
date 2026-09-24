@@ -1354,6 +1354,9 @@ async def _login_account(
     if not refresh_data or not refresh_data.get("session_id"):
         raise HTTPException(status_code=500, detail="Could not initialize login session")
     session_id = refresh_data["session_id"]
+    from .account_data import clear_account_deletion_marker
+
+    clear_account_deletion_marker(user_id)
     await task_queue.allow_user_tasks(user_id)
 
     # 3. Issue short-term access token (JWT)
@@ -1380,6 +1383,7 @@ async def _login_account(
                     name=f"notify_new_user:{username}@{school_id}",
                     func=notify_new_user,
                     args=(school_id, normalize_username(username)),
+                    user_id=user_id,
                     priority=TaskPriority.LOW,
                     max_retries=2,
                 )
@@ -2451,6 +2455,7 @@ async def get_message_headers(
             cache_params,
             cache_version,
         ),
+        user_id=auth.user_id,
         priority=TaskPriority.LOW,
         max_retries=2,
     )
@@ -2670,6 +2675,7 @@ async def search_recipients(
             cache_params,
             cache_version,
         ),
+        user_id=auth.user_id,
         priority=TaskPriority.LOW,
         max_retries=2,
     )
@@ -2705,6 +2711,7 @@ async def get_conversation(
             cache_params,
             cache_version,
         ),
+        user_id=auth.user_id,
         priority=TaskPriority.LOW,
         max_retries=2,
     )

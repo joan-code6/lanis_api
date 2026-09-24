@@ -8,6 +8,7 @@ admin secret in configuration or returned by normal user-list endpoints.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import json
 import logging
 import os
@@ -205,16 +206,40 @@ async def _verify_sph_credentials(school_id: str, username: str, password: str) 
 
 async def _record_login(school_id: str, username: str) -> None:
     try:
-        await user_metrics_db.record_login(school_id, username)
+        user_id = make_user_id(school_id, username)
+        from .account_data import account_lifecycle_lock, clear_account_deletion_marker
+
+        lifecycle_lock = await account_lifecycle_lock(user_id)
+        async with lifecycle_lock:
+            clear_account_deletion_marker(user_id)
+            await user_metrics_db.record_login(school_id, username)
     except Exception:
         logger.warning("Could not record admin login metric", exc_info=True)
 
 
 async def _record_admin_action(
-    actor_user_id: str, action: str, target_user_id: str = ""
+    actor_user_id: str,
+    action: str,
+    target_user_id: str = "",
+    *,
+    locks_held: bool = False,
 ) -> None:
     try:
-        await user_metrics_db.record_admin_action(actor_user_id, action, target_user_id)
+        from .account_data import account_deletion_is_recent, account_lifecycle_lock
+
+        if locks_held:
+            if not account_deletion_is_recent(actor_user_id):
+                await user_metrics_db.record_admin_action(
+                    actor_user_id, action, target_user_id
+                )
+            return
+        lifecycle_lock = await account_lifecycle_lock(actor_user_id)
+        async with lifecycle_lock:
+            if account_deletion_is_recent(actor_user_id):
+                return
+            await user_metrics_db.record_admin_action(
+                actor_user_id, action, target_user_id
+            )
     except Exception:
         logger.warning("Could not persist admin audit event", exc_info=True)
 
@@ -406,13 +431,18 @@ async def admin_user_detail(
     storage_user_id = make_user_id(school_id, username)
     from .account_data import account_lifecycle_lock
 
-    lifecycle_lock = await account_lifecycle_lock(storage_user_id)
-    async with lifecycle_lock:
+    lock_ids = sorted({storage_user_id, canonicalize_user_id(principal.user_id)})
+    async with AsyncExitStack() as stack:
+        for lock_user_id in lock_ids:
+            lifecycle_lock = await account_lifecycle_lock(lock_user_id)
+            await stack.enter_async_context(lifecycle_lock)
         row = await _metric_row(school_id, username)
         if row is None:
             raise HTTPException(status_code=404, detail="User not found")
         summary = _summary_from_row(row)
-        await _record_admin_action(principal.user_id, "user_view", storage_user_id)
+        await _record_admin_action(
+            principal.user_id, "user_view", storage_user_id, locks_held=True
+        )
         credentials = await get_refresh_token_by_user_id(storage_user_id)
         preferences, _ = await get_user_preferences(storage_user_id)
         return {
