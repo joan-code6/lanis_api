@@ -201,6 +201,8 @@ async def _build_public_status() -> dict[str, Any]:
         ):
             day_checks.append(ordered_checks[cursor])
             cursor += 1
+        if day_checks:
+            previous = day_checks[-1]
         aggregate = _aggregate(
             day_checks,
             day_start,
