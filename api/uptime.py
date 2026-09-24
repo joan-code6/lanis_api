@@ -548,6 +548,17 @@ def _parse_check_time(check: dict[str, Any]) -> datetime | None:
         return None
 
 
+def _dedupe_uptime_checks(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the newest database row for each timestamp."""
+    newest_by_timestamp: dict[datetime, dict[str, Any]] = {}
+    for check in checks:
+        stamp = _parse_check_time(check)
+        if stamp is not None:
+            # Database reads order collisions by descending row id.
+            newest_by_timestamp.setdefault(stamp, check)
+    return [check for _, check in sorted(newest_by_timestamp.items(), reverse=True)]
+
+
 def _latency_summary(checks: list[dict[str, Any]]) -> dict[str, Any]:
     def summarize(values: list[Any]) -> dict[str, float | None]:
         ordered = sorted(float(value) for value in values if isinstance(value, (int, float)))
@@ -677,6 +688,7 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
     previous_check = await user_metrics_db.get_previous_uptime_check(since)
     if previous_check is not None:
         incident_checks.append(previous_check)
+    incident_checks = _dedupe_uptime_checks(incident_checks)
     incidents = group_uptime_incidents(incident_checks)[-UPTIME_INCIDENT_LIMIT:][::-1]
     summary_counts = await user_metrics_db.get_uptime_summary(since)
     daily = await user_metrics_db.get_uptime_daily_series(since)
