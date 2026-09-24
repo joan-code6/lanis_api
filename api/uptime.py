@@ -515,6 +515,13 @@ def _parse_check_time(check: dict[str, Any]) -> datetime | None:
         return None
 
 
+def _uptime_predecessor_lookback_seconds() -> int:
+    """Fetch enough history for the longest observation validity horizon."""
+    normal_interval = get_uptime_interval_seconds()
+    incident_interval = INCIDENT_UPTIME_INTERVAL_SECONDS + 2 * get_uptime_timeout_seconds()
+    return 2 * max(normal_interval, incident_interval)
+
+
 def _latency_summary(checks: list[dict[str, Any]]) -> dict[str, Any]:
     def summarize(values: list[Any]) -> dict[str, float | None]:
         ordered = sorted(float(value) for value in values if isinstance(value, (int, float)))
@@ -632,7 +639,7 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
     """Return current feature state and a rolling availability summary."""
     history = await user_metrics_db.get_uptime_checks(limit=limit)
     since = _utcnow() - timedelta(days=UPTIME_SUMMARY_DAYS)
-    query_since = since - timedelta(seconds=get_uptime_interval_seconds())
+    query_since = since - timedelta(seconds=_uptime_predecessor_lookback_seconds())
     incident_checks = await user_metrics_db.get_uptime_checks(limit=-1, since=query_since)
     incidents = group_uptime_incidents(incident_checks)[-UPTIME_INCIDENT_LIMIT:][::-1]
     summary_counts = await user_metrics_db.get_uptime_summary(since)
@@ -658,6 +665,8 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
         while cursor < len(timed_checks) and timed_checks[cursor][0] < day_end:
             day_checks.append(timed_checks[cursor][1])
             cursor += 1
+        if day_checks:
+            previous_check = day_checks[-1]
         window = _uptime_window(day_checks, day_start, day_end)
         item["uptime_percent"] = window["uptime_percent"]
         item["coverage_percent"] = window["coverage_percent"]

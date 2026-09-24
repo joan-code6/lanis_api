@@ -141,7 +141,7 @@ async def _build_public_status() -> dict[str, Any]:
     now = uptime._utcnow().replace(tzinfo=timezone.utc)
     start = now - timedelta(days=uptime.UPTIME_SUMMARY_DAYS)
     interval = uptime.get_uptime_interval_seconds()
-    query_start = start - timedelta(seconds=interval)
+    query_start = start - timedelta(seconds=uptime._uptime_predecessor_lookback_seconds())
     rows = await uptime.user_metrics_db.get_uptime_checks(
         limit=-1, since=query_start.replace(tzinfo=None)
     )
