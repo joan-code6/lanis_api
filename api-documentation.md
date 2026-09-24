@@ -1318,7 +1318,8 @@ unobserved time was healthy; show coverage alongside the availability percentage
 Admin uptime responses include `summary_windows`, grouped incident records, the
 current alert-webhook configuration state, and the 20 latest alert delivery
 outcomes (`delivered` or `failed`). Failed webhook attempts are recorded with a
-safe error code and do not cause repeated alerts on every 15-second check.
+safe error code and retried no more often than once every five minutes while
+the corresponding incident or recovery transition remains current.
 
 The existing monitor authenticates with one configured account and opens that
 account's available modules. Its result does not establish availability for all

@@ -30,6 +30,7 @@ INCIDENT_UPTIME_INTERVAL_SECONDS = 15
 UPTIME_HISTORY_LIMIT = 100
 UPTIME_INCIDENT_LIMIT = 100
 UPTIME_SUMMARY_DAYS = 90
+UPTIME_ALERT_RETRY_SECONDS = 300
 DISCORD_WEBHOOK_ENV = "LANIS_UPTIME_DISCORD_WEBHOOK_URL"
 
 _uptime_alert_lock = asyncio.Lock()
@@ -286,6 +287,23 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
         if previous_issue is not None and previous_issue == is_issue:
             return
 
+        transition = "recovery" if not is_issue else "incident"
+        for delivery in await user_metrics_db.get_uptime_alert_deliveries(limit=100):
+            if delivery.get("transition") != transition:
+                continue
+            if delivery.get("outcome") == "failed":
+                try:
+                    failed_at = datetime.fromisoformat(
+                        str(delivery.get("created_at")).replace("Z", "+00:00")
+                    )
+                    if failed_at.tzinfo:
+                        failed_at = failed_at.astimezone(timezone.utc).replace(tzinfo=None)
+                    if (_utcnow() - failed_at).total_seconds() < UPTIME_ALERT_RETRY_SECONDS:
+                        return
+                except (TypeError, ValueError):
+                    pass
+            break
+
         try:
             await run_in_threadpool(
                 _send_discord_alert,
@@ -296,7 +314,7 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
         except Exception:
             with contextlib.suppress(Exception):
                 await user_metrics_db.record_uptime_alert_delivery(
-                    "recovery" if not is_issue else "incident", "failed", "delivery_failed"
+                    transition, "failed", "delivery_failed"
                 )
             logger.warning(
                 "Could not deliver Schulportal uptime transition to Discord",
@@ -305,7 +323,7 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
             return
         with contextlib.suppress(Exception):
             await user_metrics_db.record_uptime_alert_delivery(
-                "recovery" if not is_issue else "incident", "delivered"
+                transition, "delivered"
             )
         await user_metrics_db.set_uptime_alert_state(is_issue)
 
@@ -656,8 +674,9 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
     previous_check = None
     for item in daily:
         day_start = datetime.fromisoformat(item["day"])
+        window_start = max(day_start, since)
         day_end = min(day_start + timedelta(days=1), _utcnow())
-        while cursor < len(timed_checks) and timed_checks[cursor][0] < day_start:
+        while cursor < len(timed_checks) and timed_checks[cursor][0] < window_start:
             previous_check = timed_checks[cursor][1]
             cursor += 1
         day_checks = [previous_check] if previous_check else []
@@ -666,7 +685,7 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             cursor += 1
         if day_checks:
             previous_check = day_checks[-1]
-        window = _uptime_window(day_checks, day_start, day_end)
+        window = _uptime_window(day_checks, window_start, day_end)
         item["uptime_percent"] = window["uptime_percent"]
         item["coverage_percent"] = window["coverage_percent"]
     available = summary_counts["available_checks"]
