@@ -140,6 +140,10 @@ class SnapshotStore:
             path = key[1]
             if (
                 path in paths
+                or any(
+                    pattern.endswith("/*") and path.startswith(pattern[:-1])
+                    for pattern in paths
+                )
                 or (
                     endpoint.startswith("/nachrichten")
                     and path.startswith("/nachrichten/")
