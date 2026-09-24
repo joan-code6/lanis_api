@@ -403,37 +403,41 @@ async def admin_user_detail(
     school_id, separator, username = user_id.partition(":")
     if not separator or not school_id or not username:
         raise HTTPException(status_code=404, detail="User not found")
-    row = await _metric_row(school_id, username)
-    if row is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    summary = _summary_from_row(row)
     storage_user_id = make_user_id(school_id, username)
-    await _record_admin_action(principal.user_id, "user_view", storage_user_id)
-    credentials = await get_refresh_token_by_user_id(storage_user_id)
-    preferences, _ = await get_user_preferences(storage_user_id)
-    return {
-        "success": True,
-        "user": summary.model_dump()
-        if hasattr(summary, "model_dump")
-        else summary.dict(),
-        "profile": _profile_from_row(row),
-        "credentials": {
-            "available": credentials is not None,
-            "created_at": credentials.get("created_at") if credentials else None,
-            "expires_at": credentials.get("expires_at") if credentials else None,
-        },
-        "state": {
-            "preferences": preferences,
-            "notification_preferences": await get_notification_preferences(
-                storage_user_id
-            ),
-            "custom_lessons": await get_custom_lessons(storage_user_id),
-            "class_links": await get_class_link_overrides(storage_user_id),
-            "push_subscription_count": len(
-                await get_push_subscriptions(storage_user_id)
-            ),
-        },
-    }
+    from .account_data import account_lifecycle_lock
+
+    lifecycle_lock = await account_lifecycle_lock(storage_user_id)
+    async with lifecycle_lock:
+        row = await _metric_row(school_id, username)
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        summary = _summary_from_row(row)
+        await _record_admin_action(principal.user_id, "user_view", storage_user_id)
+        credentials = await get_refresh_token_by_user_id(storage_user_id)
+        preferences, _ = await get_user_preferences(storage_user_id)
+        return {
+            "success": True,
+            "user": summary.model_dump()
+            if hasattr(summary, "model_dump")
+            else summary.dict(),
+            "profile": _profile_from_row(row),
+            "credentials": {
+                "available": credentials is not None,
+                "created_at": credentials.get("created_at") if credentials else None,
+                "expires_at": credentials.get("expires_at") if credentials else None,
+            },
+            "state": {
+                "preferences": preferences,
+                "notification_preferences": await get_notification_preferences(
+                    storage_user_id
+                ),
+                "custom_lessons": await get_custom_lessons(storage_user_id),
+                "class_links": await get_class_link_overrides(storage_user_id),
+                "push_subscription_count": len(
+                    await get_push_subscriptions(storage_user_id)
+                ),
+            },
+        }
 
 
 @router.get("/schools/{school_id:path}")

@@ -8,7 +8,7 @@ def test_cancelled_user_task_runs_cleanup_callback():
         queue = TaskQueue(max_concurrent=1)
         cleanup_ran = asyncio.Event()
 
-        async def task_body():
+        async def task_body(*_args):
             raise AssertionError("cancelled task body must not run")
 
         async def cleanup():
@@ -28,6 +28,38 @@ def test_cancelled_user_task_runs_cleanup_callback():
         try:
             await asyncio.wait_for(cleanup_ran.wait(), timeout=2)
         finally:
+            await queue.stop(wait=False)
+
+    asyncio.run(scenario())
+
+
+def test_cancel_user_tasks_purges_completed_task_arguments():
+    async def scenario():
+        queue = TaskQueue(max_concurrent=1)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def task_body(*_args):
+            started.set()
+            await release.wait()
+
+        task = Task(
+            name="profile-fetch",
+            user_id="5201:student",
+            args=("5201:student", "5201", "student", "session-secret"),
+            func=task_body,
+            priority=TaskPriority.LOW,
+        )
+        await queue.add_task(task)
+        await queue.start()
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            await queue.cancel_user_tasks("5201:student")
+            release.set()
+            await asyncio.wait_for(queue._queue.join(), timeout=2)
+            assert task.task_id not in queue._completed_tasks
+        finally:
+            release.set()
             await queue.stop(wait=False)
 
     asyncio.run(scenario())

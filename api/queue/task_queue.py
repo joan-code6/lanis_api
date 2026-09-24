@@ -189,9 +189,12 @@ class TaskQueue:
         return task.task_id
 
     async def cancel_user_tasks(self, user_id: str) -> None:
-        """Skip pending user-scoped work after an account is deleted."""
+        """Skip pending work and erase retained task arguments for a user."""
         async with self._lock:
             self._cancelled_users.add(user_id)
+            for task_id, task in list(self._completed_tasks.items()):
+                if task.user_id == user_id:
+                    self._completed_tasks.pop(task_id, None)
 
     async def allow_user_tasks(self, user_id: str) -> None:
         """Re-enable user-scoped work after a fresh login."""
@@ -267,7 +270,9 @@ class TaskQueue:
         
         async with self._lock:
             self._active_tasks.pop(task.task_id, None)
-            if self.retain_completed_tasks:
+            if self.retain_completed_tasks and not (
+                task.user_id and task.user_id in self._cancelled_users
+            ):
                 self._completed_tasks[task.task_id] = task
     
     def get_task_status(self, task_id: str) -> Optional[Task]:
