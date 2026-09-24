@@ -14,6 +14,18 @@ _cache_lock = asyncio.Lock()
 _cached_status: dict[str, Any] | None = None
 _cache_deadline = 0.0
 _cache_configuration: tuple | None = None
+_PUBLIC_ERROR_CODES = {
+    "timeout",
+    "connection_error",
+    "request_error",
+    "login_failed",
+    "login_check_failed",
+    "modules_request_failed",
+    "modules_response_invalid",
+    "modules_empty",
+    "module_open_failed",
+    "modules_check_failed",
+}
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -47,6 +59,8 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
         result["latency_ms"] = row["latency_ms"]
     if row.get("sample_interval_seconds") is not None:
         result["sample_interval_seconds"] = row["sample_interval_seconds"]
+    if row.get("error") in _PUBLIC_ERROR_CODES:
+        result["error"] = row["error"]
     for name in ("login", "modules"):
         item = next((
             value for value in features

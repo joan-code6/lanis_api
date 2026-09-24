@@ -302,7 +302,6 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
                 "Could not deliver Schulportal uptime transition to Discord",
                 exc_info=True,
             )
-            await user_metrics_db.set_uptime_alert_state(is_issue)
             return
         with contextlib.suppress(Exception):
             await user_metrics_db.record_uptime_alert_delivery(
