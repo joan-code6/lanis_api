@@ -33,6 +33,7 @@ READ_ROUTES = {
     "/meinunterricht/entry",
     "/meinunterricht/weekly",
     "/meinunterricht/submissions",
+    "/meinunterricht/submissions/{detail_ref}",
     "/nachrichten/headers",
     "/nachrichten/{conversation_id}",
 }
@@ -60,6 +61,14 @@ DEPENDENT_SNAPSHOT_PATHS = {
         "/meinunterricht/submissions",
         "/stundenplan",
         "/stundenplan/view",
+    },
+    "/meinunterricht/submissions": {
+        "/meinunterricht/submissions",
+        "/meinunterricht/submissions/*",
+    },
+    "/meinunterricht/submissions/detail": {
+        "/meinunterricht/submissions",
+        "/meinunterricht/submissions/*",
     },
 }
 
@@ -99,6 +108,8 @@ class SnapshotStore:
             return "/nachrichten/*"
         if path.startswith("/meinunterricht/course/"):
             return "/meinunterricht/course/*"
+        if path.startswith("/meinunterricht/submissions/"):
+            return "/meinunterricht/submissions/*"
         return path
 
     def version(self, user_id, path):
