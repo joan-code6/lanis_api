@@ -1055,7 +1055,9 @@ async def serialize_account_requests(request: Request, call_next):
         request.method == "DELETE" and request.url.path == "/account"
     ):
         return await call_next(request)
-    token = request.headers.get("X-Session-Token")
+    token = request.headers.get("X-Session-Token") or request.query_params.get(
+        "token"
+    )
     if not token:
         return await call_next(request)
     try:
@@ -4615,7 +4617,27 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
 
     action_code = confirmation_code(incoming.text)
     if action_code:
-        await _confirm_whatsapp_action(incoming, action_code, client)
+        link = await get_whatsapp_link_for_sender(incoming.sender_id)
+        if link:
+            lifecycle_lock = await account_lifecycle_lock(link["user_id"])
+            async with lifecycle_lock:
+                current_link = await get_whatsapp_link_for_sender(
+                    incoming.sender_id
+                )
+                if current_link and all(
+                    current_link.get(field) == link.get(field)
+                    for field in ("user_id", "linked_at")
+                ):
+                    await _confirm_whatsapp_action(
+                        incoming, action_code, client
+                    )
+                else:
+                    await client.send_text(
+                        incoming.sender_id,
+                        "⚠️ Die Aktion konnte nicht bestätigt werden.",
+                    )
+        else:
+            await _confirm_whatsapp_action(incoming, action_code, client)
         return
 
     code = pairing_code(incoming.text)
