@@ -575,7 +575,14 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
         except (TypeError, ValueError):
             return None
 
-    timed = [(stamp, check) for check in checks if (stamp := timestamp(check)) is not None and stamp <= end]
+    timed = []
+    seen_timestamps = set()
+    for check in checks:
+        stamp = timestamp(check)
+        if stamp is not None and stamp <= end and stamp not in seen_timestamps:
+            # get_uptime_checks orders colliding timestamps by newest row id.
+            seen_timestamps.add(stamp)
+            timed.append((stamp, check))
     timed.sort(key=lambda item: item[0])
     selected = [check for stamp, check in timed if start <= stamp <= end]
     prior = [(stamp, check) for stamp, check in timed if stamp < start]
@@ -600,9 +607,10 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
             available_seconds += seconds
     if observed_seconds == 0 and selected:
         latest = max(selected, key=lambda check: timestamp(check) or datetime.min)
-        observed_seconds = 1.0
-        if latest.get("status") == "up":
-            available_seconds = 1.0
+        if latest.get("status") in {"up", "down", "degraded"}:
+            observed_seconds = 1.0
+            if latest.get("status") == "up":
+                available_seconds = 1.0
         else:
             available_seconds = 0.0
     return {

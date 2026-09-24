@@ -857,7 +857,7 @@ class UserMetricsDB:
                     SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                            latency_ms, error, features_json
                     FROM uptime_checks
-                    ORDER BY checked_at DESC LIMIT ?
+                    ORDER BY checked_at DESC, id DESC LIMIT ?
                     """,
                     (limit,),
                 )
@@ -868,7 +868,7 @@ class UserMetricsDB:
                            latency_ms, error, features_json
                     FROM uptime_checks
                     WHERE checked_at >= ?
-                    ORDER BY checked_at DESC LIMIT ?
+                    ORDER BY checked_at DESC, id DESC LIMIT ?
                     """,
                     (since.isoformat(), limit),
                 )
@@ -895,7 +895,7 @@ class UserMetricsDB:
                        latency_ms, error, features_json
                 FROM uptime_checks
                 WHERE checked_at < ?
-                ORDER BY checked_at DESC LIMIT 1
+                ORDER BY checked_at DESC, id DESC LIMIT 1
                 """,
                 (before.isoformat(),),
             )
@@ -925,7 +925,7 @@ class UserMetricsDB:
                        latency_ms, error, features_json
                 FROM uptime_checks
                 WHERE status != 'up'
-                ORDER BY checked_at DESC LIMIT ?
+                ORDER BY checked_at DESC, id DESC LIMIT ?
                 """,
                 (limit,),
             )

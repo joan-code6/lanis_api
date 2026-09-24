@@ -110,8 +110,9 @@ def _aggregate(
             available_seconds += seconds
     observed = available + failed
     if observed_seconds == 0 and in_window:
-        observed_seconds = 1.0
         latest_in_window = max(in_window, key=lambda item: item[0])[1]
+        if latest_in_window["status"] in {"up", "down", "degraded"}:
+            observed_seconds = 1.0
         if latest_in_window["status"] == "up":
             available_seconds = 1.0
     return {
@@ -168,9 +169,13 @@ async def _build_public_status() -> dict[str, Any]:
         timestamp = _timestamp(row.get("checked_at"))
         if timestamp is not None and timestamp <= now:
             checks.append((timestamp, row))
-    # Timestamps can collide when checks are written close together. Keep the
-    # newest database row stable without exposing its internal identifier.
-    checks.sort(key=lambda item: (item[0], str(item[1].get("id", ""))), reverse=True)
+    # The database orders colliding timestamps by descending row id. Keep only
+    # the newest observation so a superseded row cannot represent the interval.
+    checks.sort(key=lambda item: item[0], reverse=True)
+    newest_by_timestamp = {}
+    for timestamp, row in checks:
+        newest_by_timestamp.setdefault(timestamp, row)
+    checks = list(newest_by_timestamp.items())
     checks = [(timestamp, _check(row, timestamp)) for timestamp, row in checks]
     latest = checks[0] if checks else None
     latest_status = latest[1]["status"] if latest else "unknown"
