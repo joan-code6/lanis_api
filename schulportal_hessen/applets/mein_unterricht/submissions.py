@@ -269,9 +269,17 @@ def parse_submission_detail(
         ),
         soup,
     )
-    deadline_node = requirements.select_one("b span.editable")
+    editable_nodes = requirements.select("span.editable")
+    deadline_node = requirements.select_one("b span.editable") or next(
+        (
+            node
+            for node in editable_nodes
+            if "spätestens" in node.get_text(" ", strip=True).casefold()
+        ),
+        None,
+    )
     start_node = next(
-        (node for node in requirements.select("span.editable") if node is not deadline_node),
+        (node for node in editable_nodes if node is not deadline_node),
         None,
     )
     start = start_node.get_text(" ", strip=True).replace(" ab", "") if start_node else None
