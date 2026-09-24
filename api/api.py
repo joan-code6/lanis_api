@@ -2632,6 +2632,8 @@ async def meinunterricht_submission_file(
         failure_status = result.get("status_code")
         if failure_status not in {400, 401, 404, 502}:
             failure_status = 502
+        if failure_status == 401:
+            await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
         raise HTTPException(
             status_code=failure_status,
             detail=result.get("error", "Failed to download file"),
