@@ -275,6 +275,21 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     version = store.version("a", "/kalender")
     store.put(key, b"{}", now - timedelta(hours=25), version)
     assert store.get(key, version) is None
+
+
+def test_deleted_user_snapshot_generation_is_never_reused():
+    store = outage_cache.SnapshotStore()
+    store.version("a", "/benutzer")
+    for _ in range(5):
+        store.invalidate("a")
+    stale_version = store.version("a", "/benutzer")
+    for user_id in ("b", "c", "d", "e"):
+        store.version(user_id, "/benutzer")
+
+    store.delete_user_data("a")
+    fresh_version = store.version("a", "/benutzer")
+
+    assert fresh_version[0] != stale_version[0]
     store.put(key, b"{}", now, version)
     store.invalidate("a")
     store.put(key, b"{}", now, version)
@@ -292,6 +307,21 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     assert store.total_bytes == 6
     store.put(key, b"large", now, version)
     assert store.get(key, version) is None
+
+
+def test_deleted_user_snapshot_generation_is_never_reused():
+    store = outage_cache.SnapshotStore()
+    store.version("a", "/benutzer")
+    for _ in range(5):
+        store.invalidate("a")
+    stale_version = store.version("a", "/benutzer")
+    for user_id in ("b", "c", "d", "e"):
+        store.version(user_id, "/benutzer")
+
+    store.delete_user_data("a")
+    fresh_version = store.version("a", "/benutzer")
+
+    assert fresh_version[0] != stale_version[0]
 
 
 def test_endpoint_invalidation_preserves_unrelated_outage_snapshots():

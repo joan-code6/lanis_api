@@ -113,11 +113,11 @@ class SnapshotStore:
         )
 
     def invalidate(self, user_id):
-        if user_id not in self.user_versions:
-            self._generation += 1
-            self.user_versions[user_id] = self._generation
-        else:
-            self.user_versions[user_id] += 1
+        # Keep every user generation in the same monotonically increasing
+        # sequence. Deletion removes the per-user key, so its next allocation
+        # must never reuse the just-invalidated value.
+        self._generation += 1
+        self.user_versions[user_id] = self._generation
         for key in list(self.entries):
             if key[0] == user_id:
                 self._remove(key)
