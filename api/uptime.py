@@ -612,6 +612,8 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
     parsed.sort(key=lambda item: item[0])
     observed_seconds = available_seconds = 0.0
     for index, (stamp, _check) in enumerate(parsed):
+        if _check.get("status") not in {"up", "down", "degraded"}:
+            continue
         next_stamp = parsed[index + 1][0] if index + 1 < len(parsed) else end
         cadence = _sample_interval_seconds(
             _check,
