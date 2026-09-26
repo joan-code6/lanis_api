@@ -692,7 +692,6 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
         incident_checks.append(previous_check)
     incident_checks = _dedupe_uptime_checks(incident_checks)
     incidents = group_uptime_incidents(incident_checks)[-UPTIME_INCIDENT_LIMIT:][::-1]
-    summary_counts = await user_metrics_db.get_uptime_summary(since)
     daily = await user_metrics_db.get_uptime_daily_series(since)
     timed_checks = []
     for check in incident_checks:
@@ -736,13 +735,12 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             if not available
             else "degraded"
         )
-    available = summary_counts["available_checks"]
-    failed = summary_counts["failed_checks"]
     now = _utcnow()
     windows = {
         key: _uptime_window(incident_checks, now - timedelta(days=days), now)
         for key, days in (("24h", 1), ("7d", 7), ("30d", 30), ("90d", 90))
     }
+    summary_window = windows["90d"]
     current = history[0] if history else None
     configured = uptime_is_configured()
     if not configured:
@@ -781,10 +779,13 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
         "summary": {
             "period_days": UPTIME_SUMMARY_DAYS,
             "period_hours": UPTIME_SUMMARY_DAYS * 24,
-            "checks": summary_counts["checks"],
-            "available_checks": available,
-            "failed_checks": failed,
-            "uptime_percent": _time_weighted_uptime(incident_checks, since, _utcnow()),
+            "checks": summary_window["checks"],
+            "available_checks": summary_window["available_checks"],
+            "failed_checks": summary_window["failed_checks"],
+            "unknown_checks": summary_window["checks"]
+            - summary_window["available_checks"]
+            - summary_window["failed_checks"],
+            "uptime_percent": summary_window["uptime_percent"],
         },
         "history": history,
         "incidents": incidents,
@@ -796,17 +797,29 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
 async def run_uptime_scheduler() -> asyncio.Task:
     """Start the recurring authenticated synthetic monitor task."""
     async def _loop() -> None:
+        incident_active = False
         while True:
             try:
                 check = await run_uptime_check()
+                if check.get("status") in {"down", "degraded"}:
+                    incident_active = True
+                elif check.get("status") == "up":
+                    incident_active = False
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Schulportal synthetic check failed unexpectedly")
-                check = None
+                try:
+                    latest = await user_metrics_db.get_uptime_checks(limit=1)
+                    if latest and latest[0].get("status") in {"down", "degraded"}:
+                        incident_active = True
+                    elif latest and latest[0].get("status") == "up":
+                        incident_active = False
+                except Exception:
+                    logger.warning("Could not reload persisted uptime state after scheduler failure", exc_info=True)
             interval = (
                 INCIDENT_UPTIME_INTERVAL_SECONDS
-                if check and check.get("status") in {"down", "degraded"}
+                if incident_active
                 else get_uptime_interval_seconds()
             )
             await asyncio.sleep(interval)
