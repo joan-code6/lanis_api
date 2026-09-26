@@ -324,6 +324,35 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
     is_issue = check.get("status") != "up"
     async with _uptime_alert_lock:
         previous_issue, state_updated_at = await user_metrics_db.get_uptime_alert_state_details()
+        deliveries = await user_metrics_db.get_uptime_alert_deliveries(limit=100)
+        state_at = None
+        try:
+            state_at = datetime.fromisoformat(str(state_updated_at).replace("Z", "+00:00")) if state_updated_at else None
+            if state_at is not None and state_at.tzinfo:
+                state_at = state_at.astimezone(timezone.utc).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            state_at = None
+        # A webhook may have accepted an alert even if the following state
+        # write failed. Reconcile from a newer successful delivery before
+        # deciding whether the next observation is a state transition.
+        for delivery in deliveries:
+            if delivery.get("outcome") != "delivered":
+                continue
+            delivered_at = None
+            try:
+                delivered_at = datetime.fromisoformat(
+                    str(delivery.get("created_at")).replace("Z", "+00:00")
+                )
+                if delivered_at.tzinfo:
+                    delivered_at = delivered_at.astimezone(timezone.utc).replace(tzinfo=None)
+            except (TypeError, ValueError):
+                continue
+            if state_at is None or delivered_at > state_at:
+                transition_state = delivery.get("transition") == "incident"
+                previous_issue = transition_state
+                with contextlib.suppress(Exception):
+                    await user_metrics_db.set_uptime_alert_state(transition_state)
+            break
         if previous_issue is None and not is_issue:
             await user_metrics_db.set_uptime_alert_state(False)
             return
@@ -332,7 +361,7 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
             return
 
         transition = "recovery" if not is_issue else "incident"
-        for delivery in await user_metrics_db.get_uptime_alert_deliveries(limit=100):
+        for delivery in deliveries:
             if delivery.get("transition") != transition:
                 continue
             if delivery.get("outcome") == "failed":
