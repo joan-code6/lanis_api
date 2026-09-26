@@ -280,7 +280,7 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
 
     is_issue = check.get("status") != "up"
     async with _uptime_alert_lock:
-        previous_issue, state_updated_at = await user_metrics_db.get_uptime_alert_state()
+        previous_issue, state_updated_at = await user_metrics_db.get_uptime_alert_state_details()
         if previous_issue is None and not is_issue:
             await user_metrics_db.set_uptime_alert_state(False)
             return

@@ -1003,7 +1003,12 @@ class UserMetricsDB:
                 series.append(item)
             return series
 
-    async def get_uptime_alert_state(self) -> tuple[Optional[bool], Optional[str]]:
+    async def get_uptime_alert_state(self) -> Optional[bool]:
+        """Return the last delivered alert state, or ``None`` before first use."""
+        state, _ = await self.get_uptime_alert_state_details()
+        return state
+
+    async def get_uptime_alert_state_details(self) -> tuple[Optional[bool], Optional[str]]:
         """Return the delivered state and its last transition/reset timestamp."""
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:

@@ -159,8 +159,11 @@ async def _build_public_status() -> dict[str, Any]:
     rows = await uptime.user_metrics_db.get_uptime_checks(
         limit=-1, since=start.replace(tzinfo=None)
     )
-    previous_row = await uptime.user_metrics_db.get_previous_uptime_check(
-        start.replace(tzinfo=None)
+    get_previous_check = getattr(uptime.user_metrics_db, "get_previous_uptime_check", None)
+    previous_row = (
+        await get_previous_check(start.replace(tzinfo=None))
+        if get_previous_check is not None
+        else None
     )
     if previous_row is not None:
         rows.append(previous_row)
