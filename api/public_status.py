@@ -290,9 +290,16 @@ async def _build_public_status() -> dict[str, Any]:
             for timestamp, check in day_checks
             if day_start <= timestamp < day_end or (is_current_day and timestamp == now)
         )
+        has_down = any(
+            check["status"] == "down"
+            for timestamp, check in day_checks
+            if day_start <= timestamp < day_end or (is_current_day and timestamp == now)
+        )
         if available or failed:
             status = (
-                "degraded"
+                "down"
+                if not available and has_down
+                else "degraded"
                 if has_degraded or (available and failed)
                 else "down"
                 if failed
