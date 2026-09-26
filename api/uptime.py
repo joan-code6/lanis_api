@@ -723,7 +723,28 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
         incident_checks.append(previous_check)
     incident_checks = _dedupe_uptime_checks(incident_checks)
     incidents = group_uptime_incidents(incident_checks)[-UPTIME_INCIDENT_LIMIT:][::-1]
-    daily = await user_metrics_db.get_uptime_daily_series(since)
+    daily_by_day = {
+        item["day"]: item
+        for item in await user_metrics_db.get_uptime_daily_series(since)
+    }
+    daily = []
+    day = since.date()
+    while day <= now.date():
+        day_key = day.isoformat()
+        daily.append(
+            daily_by_day.get(
+                day_key,
+                {
+                    "day": day_key,
+                    "checks": 0,
+                    "available_checks": 0,
+                    "failed_checks": 0,
+                    "uptime_percent": None,
+                    "status": "unknown",
+                },
+            )
+        )
+        day += timedelta(days=1)
     timed_checks = []
     for check in incident_checks:
         try:
