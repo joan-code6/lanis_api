@@ -349,6 +349,14 @@ async def get_public_status() -> dict[str, Any]:
             return _cached_status
         result = await _build_public_status()
         ttl = 5.0 if result["current"]["status"] in {"down", "degraded"} else 30.0
+        if result["current"]["status"] in {"down", "degraded"}:
+            expected_interval = result["current"].get("sample_interval_seconds")
+            if (
+                isinstance(expected_interval, (int, float))
+                and math.isfinite(expected_interval)
+                and expected_interval > 0
+            ):
+                ttl = max(ttl, float(expected_interval))
         checked_at = _timestamp(result["current"]["checked_at"])
         if checked_at is not None and not result["current"]["stale"]:
             now = uptime._utcnow().replace(tzinfo=timezone.utc)
