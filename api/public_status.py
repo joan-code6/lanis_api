@@ -89,9 +89,9 @@ def _aggregate(
     # do not count more heavily than normal five-minute checks.
     expected_seconds = max(1.0, (end - start).total_seconds())
     ordered = sorted(checks, key=lambda item: item[0])
-    # A manual/overlapping probe that repeats the same state within the
-    # minimum incident cadence is redundant for coverage. Keep the latest
-    # sample in that short cluster while retaining unknown rows as boundaries.
+    # Repeated same-state probes within the minimum incident cadence should
+    # not inflate coverage. Keep the latest sample for coverage only; uptime
+    # weighting below retains every observation so state transitions stay exact.
     coverage_ordered = []
     for item in ordered:
         if (
@@ -104,34 +104,43 @@ def _aggregate(
             coverage_ordered[-1] = item
         else:
             coverage_ordered.append(item)
-    observed_seconds = available_seconds = 0.0
-    # Each observation represents its state until the next check, capped at
-    # twice its stored or inferred sampling interval. This keeps incident-mode sampling from
-    # overweighting downtime in the percentage while still exposing gaps.
-    for index, (timestamp, check) in enumerate(coverage_ordered):
-        if check["status"] == "unknown":
-            continue
-        next_timestamp = (
-            coverage_ordered[index + 1][0]
-            if index + 1 < len(coverage_ordered)
-            else end
-        )
-        cadence = uptime._sample_interval_seconds(
-            check,
-            coverage_ordered[index - 1][0] if index else None,
-            next_timestamp if index + 1 < len(coverage_ordered) else None,
-            interval,
-        )
-        span_end = min(next_timestamp, timestamp + timedelta(seconds=max(1, cadence * 2)), end)
-        seconds = max(0.0, (span_end - max(timestamp, start)).total_seconds())
-        observed_seconds += seconds
-        if check["status"] == "up":
-            available_seconds += seconds
+    def weighted_seconds(
+        observations: list[tuple[datetime, dict[str, Any]]],
+    ) -> tuple[float, float]:
+        observed = available = 0.0
+        # Each observation represents its state until the next check, capped
+        # at twice its stored or inferred cadence.
+        for index, (timestamp, check) in enumerate(observations):
+            if check["status"] == "unknown":
+                continue
+            next_timestamp = observations[index + 1][0] if index + 1 < len(observations) else end
+            cadence = uptime._sample_interval_seconds(
+                check,
+                observations[index - 1][0] if index else None,
+                next_timestamp if index + 1 < len(observations) else None,
+                interval,
+            )
+            span_end = min(
+                next_timestamp,
+                timestamp + timedelta(seconds=max(1, cadence * 2)),
+                end,
+            )
+            seconds = max(0.0, (span_end - max(timestamp, start)).total_seconds())
+            observed += seconds
+            if check["status"] == "up":
+                available += seconds
+        return observed, available
+
+    # Preserve every state transition for uptime, but coalesce redundant
+    # same-state samples when measuring total coverage.
+    observed_seconds, available_seconds = weighted_seconds(ordered)
+    coverage_seconds, _ = weighted_seconds(coverage_ordered)
     observed = available + failed
     if observed_seconds == 0 and in_window:
         latest_in_window = max(in_window, key=lambda item: item[0])[1]
         if latest_in_window["status"] in {"up", "down", "degraded"}:
             observed_seconds = 1.0
+            coverage_seconds = max(coverage_seconds, 1.0)
         if latest_in_window["status"] == "up":
             available_seconds = 1.0
     return {
@@ -140,7 +149,7 @@ def _aggregate(
         "failed_checks": failed,
         "unknown_checks": len(in_window) - observed,
         "uptime_percent": round(100 * available_seconds / observed_seconds, 2) if observed_seconds else None,
-        "coverage_percent": round(100 * min(observed_seconds, expected_seconds) / expected_seconds, 2),
+        "coverage_percent": round(100 * min(coverage_seconds, expected_seconds) / expected_seconds, 2),
     }
 
 
