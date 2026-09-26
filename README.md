@@ -94,8 +94,9 @@ configuration file. The observability API is under `/admin/*`; the legacy
 
 The backend also runs an authenticated Schulportal synthetic check every five
 minutes by default. Failed probes are retried once immediately; a transient
-failure followed by a successful retry is discarded. If a confirmed incident
-is active, successful retry results are retained as the recovery observation.
+failure followed by a successful retry is stored as a healthy observation, not
+as an incident. If a confirmed incident is active, the successful retry is
+stored as the recovery observation.
 While an incident remains active, checks run every 15 seconds. The monitor logs in with the monitor account, loads the available
 modules, and opens each module entry without exposing credentials. Configure
 the account with `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME`, and

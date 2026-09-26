@@ -14,6 +14,7 @@ Features:
 import hashlib
 import json
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -128,6 +129,7 @@ class UserMetricsDB:
     def __init__(self, db_path: Optional[Path] = None) -> None:
         self.db_path = db_path or DEFAULT_DB_PATH
         self._initialized = False
+        self._last_uptime_retention_cleanup = 0.0
     
     async def initialize(self) -> None:
         """Initialize the database and create tables if they don't exist."""
@@ -812,6 +814,12 @@ class UserMetricsDB:
         """Persist one authenticated Schulportal synthetic check."""
         await self.initialize()
         checked_at = str(check.get("checked_at") or datetime.utcnow().isoformat())
+        now_monotonic = time.monotonic()
+        cleanup_retention = (
+            now_monotonic - self._last_uptime_retention_cleanup >= 86400
+        )
+        if cleanup_retention:
+            self._last_uptime_retention_cleanup = now_monotonic
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -832,19 +840,22 @@ class UserMetricsDB:
                     json.dumps(check.get("features") or [], ensure_ascii=False),
                 ),
             )
-            # Keep the reporting period plus two of the longest possible
-            # observation intervals, so a predecessor remains available.
-            await db.execute(
-                """
-                DELETE FROM uptime_checks
-                WHERE julianday(checked_at) < julianday('now') - (
-                    90.0 + 2.0 * MAX(
-                        86400,
-                        COALESCE((SELECT MAX(sample_interval_seconds) FROM uptime_checks), 0)
-                    ) / 86400.0
+            if cleanup_retention:
+                cursor = await db.execute(
+                    "SELECT MAX(sample_interval_seconds) FROM uptime_checks"
                 )
-                """
-            )
+                (max_sample_interval,) = await cursor.fetchone()
+                retention_cadence = max(86400, int(max_sample_interval or 0))
+                retention_cutoff = datetime.utcnow() - timedelta(
+                    days=90, seconds=2 * retention_cadence
+                )
+                # Keep the report horizon plus two maximum sample intervals.
+                # Comparing the stored ISO timestamps directly lets SQLite use
+                # the checked_at index instead of converting every table row.
+                await db.execute(
+                    "DELETE FROM uptime_checks WHERE checked_at < ?",
+                    (retention_cutoff.isoformat(),),
+                )
             await db.commit()
 
     async def get_uptime_checks(

@@ -345,7 +345,7 @@ async def _build_public_status() -> dict[str, Any]:
             "stale_after_seconds": stale_after,
             "period_start": _iso(start),
             "period_end": _iso(now),
-            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit einem einzelnen Testkonto. Die Verfügbarkeit wird zeitgewichtet aus bestätigten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Ein einzelner fehlgeschlagener Versuch wird wiederholt und bei erfolgreichem Retry verworfen. Störungen fassen aufeinanderfolgende bestätigte Ausfälle zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
+            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit einem einzelnen Testkonto. Die Verfügbarkeit wird zeitgewichtet aus bestätigten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Ein fehlgeschlagener Versuch wird wiederholt; bei erfolgreichem Retry wird das Ergebnis als verfügbar gespeichert und kein Vorfall ausgelöst. Störungen fassen aufeinanderfolgende bestätigte Ausfälle zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
         },
     }
 
