@@ -1304,9 +1304,9 @@ during an incident, less when a current result is about to become stale).
   During an incident, the freshness window also accounts for the last probe's
   measured duration and time needed for the next retry cycle.
 
-Failed synthetic probes are retried once immediately. A failed first probe whose
-retry succeeds is not recorded unless it closes an already confirmed incident.
-While an incident is active, the scheduler waits 15 seconds between checks;
+Failed synthetic probes are retried once immediately. If the retry succeeds,
+the successful result is stored as a healthy observation and the initial failed
+attempt is discarded. While an incident is active, the scheduler waits 15 seconds between checks;
 otherwise it waits the configured normal interval. New observations store the
 effective interval, including probe execution time. Legacy rows infer cadence
 from adjacent timestamps so prior five-minute failures keep their historical
