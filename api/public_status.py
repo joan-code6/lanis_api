@@ -199,7 +199,13 @@ async def _build_public_status() -> dict[str, Any]:
             else uptime.INCIDENT_UPTIME_INTERVAL_SECONDS + 2 * last_probe_seconds,
         )
     else:
-        stale_after = 2 * interval
+        effective_interval = latest[1].get("sample_interval_seconds") if latest else None
+        stale_after = max(
+            2 * interval,
+            2 * effective_interval
+            if isinstance(effective_interval, (int, float)) and effective_interval > 0
+            else 0,
+        )
     stale = latest is None or (now - latest[0]).total_seconds() > stale_after
     current = (
         dict(latest[1])
