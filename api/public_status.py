@@ -172,9 +172,16 @@ async def _build_public_status() -> dict[str, Any]:
         timestamp = _timestamp(row.get("checked_at"))
         if timestamp is not None and timestamp <= now:
             checks.append((timestamp, row))
-    # The database orders colliding timestamps by descending row id. Keep only
-    # the newest observation so a superseded row cannot represent the interval.
-    checks.sort(key=lambda item: item[0], reverse=True)
+    # Resolve timestamp collisions by newest row id before dropping internal
+    # metadata from the public projection. The query is also ordered this way,
+    # but retaining the tie-breaker here keeps alternate DB adapters consistent.
+    def row_id(row: dict[str, Any]) -> int:
+        try:
+            return int(row.get("id", -1))
+        except (TypeError, ValueError):
+            return -1
+
+    checks.sort(key=lambda item: (item[0], row_id(item[1])), reverse=True)
     newest_by_timestamp = {}
     for timestamp, row in checks:
         newest_by_timestamp.setdefault(timestamp, row)
