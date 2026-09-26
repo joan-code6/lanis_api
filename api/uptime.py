@@ -35,6 +35,7 @@ DISCORD_WEBHOOK_ENV = "LANIS_UPTIME_DISCORD_WEBHOOK_URL"
 
 _uptime_alert_lock = asyncio.Lock()
 _uptime_scheduler_wake_event: asyncio.Event | None = None
+_uptime_notification_tasks: set[asyncio.Task[None]] = set()
 
 
 def _utcnow() -> datetime:
@@ -45,6 +46,25 @@ def wake_uptime_scheduler() -> None:
     """Wake the recurring scheduler after an external check confirms an incident."""
     if _uptime_scheduler_wake_event is not None:
         _uptime_scheduler_wake_event.set()
+
+
+def _schedule_discord_notification(check: dict[str, Any]) -> None:
+    """Deliver alerts in the background so webhook latency cannot delay probes."""
+    task = asyncio.create_task(_notify_discord_on_transition(check))
+    _uptime_notification_tasks.add(task)
+
+    def _finish(completed: asyncio.Task[None]) -> None:
+        _uptime_notification_tasks.discard(completed)
+        if completed.cancelled():
+            return
+        error = completed.exception()
+        if error is not None:
+            logger.error(
+                "Unexpected error while sending Schulportal uptime notification",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    task.add_done_callback(_finish)
 
 
 def get_uptime_url() -> str:
@@ -680,7 +700,7 @@ async def run_uptime_check() -> dict[str, Any]:
         check["checked_at"] = _utcnow().isoformat()
         check["sample_interval_seconds"] = next_interval + probe_cycle_seconds
         await user_metrics_db.record_uptime_check(check)
-        await _notify_discord_on_transition(check)
+        _schedule_discord_notification(check)
     logger.info(
         "Schulportal synthetic check: %s (%sms)",
         check["status"],
