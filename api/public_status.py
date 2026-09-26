@@ -357,8 +357,16 @@ async def get_public_status() -> dict[str, Any]:
         ):
             return _cached_status
         result = await _build_public_status()
-        ttl = 5.0 if result["current"]["status"] in {"down", "degraded"} else 30.0
-        if result["current"]["status"] in {"down", "degraded"}:
+        active_incident = any(
+            incident.get("resolved_at") is None
+            for incident in result.get("incidents", [])
+        )
+        incident_status = (
+            result["current"]["status"] in {"down", "degraded"}
+            or active_incident
+        )
+        ttl = 5.0 if incident_status else 30.0
+        if incident_status:
             expected_interval = result["current"].get("sample_interval_seconds")
             if (
                 isinstance(expected_interval, (int, float))
