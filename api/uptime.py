@@ -67,6 +67,22 @@ def _schedule_discord_notification(check: dict[str, Any]) -> None:
     task.add_done_callback(_finish)
 
 
+async def drain_uptime_notification_tasks(timeout_seconds: float = 65.0) -> None:
+    """Wait for active webhook deliveries before shutdown, with a fixed bound."""
+    pending = set(_uptime_notification_tasks)
+    if not pending:
+        return
+    _, pending = await asyncio.wait(pending, timeout=timeout_seconds)
+    if pending:
+        logger.warning(
+            "Cancelling %d uptime notification task(s) after shutdown timeout",
+            len(pending),
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 def get_uptime_url() -> str:
     """Return the Schulportal login URL used by the authenticated client."""
     return DEFAULT_UPTIME_URL

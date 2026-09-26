@@ -55,7 +55,7 @@ from .identity import (
 from .discord import notify_new_user
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
-from .uptime import run_uptime_scheduler
+from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler
 from .public_status import get_public_status
 from .documentation import router as documentation_router
 from .homepage import router as homepage_router
@@ -1138,6 +1138,8 @@ async def _cleanup_sessions() -> None:
         _message_notification_task.cancel()
     if _uptime_scheduler_task:
         _uptime_scheduler_task.cancel()
+        await asyncio.gather(_uptime_scheduler_task, return_exceptions=True)
+    await drain_uptime_notification_tasks()
     if _whatsapp_history_cleanup_task:
         _whatsapp_history_cleanup_task.cancel()
     await task_queue.stop(wait=True, timeout=10.0)
