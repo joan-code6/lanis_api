@@ -290,15 +290,24 @@ async def _build_public_status() -> dict[str, Any]:
             for timestamp, check in day_checks
             if day_start <= timestamp < day_end or (is_current_day and timestamp == now)
         )
-        status = (
-            "unknown"
-            if not available and not failed
-            else "degraded"
-            if has_degraded or (available and failed)
-            else "down"
-            if failed
-            else "up"
-        )
+        if available or failed:
+            status = (
+                "degraded"
+                if has_degraded or (available and failed)
+                else "down"
+                if failed
+                else "up"
+            )
+        elif aggregate["uptime_percent"] is None or aggregate["coverage_percent"] == 0:
+            status = "unknown"
+        else:
+            status = (
+                "up"
+                if aggregate["uptime_percent"] >= 100
+                else "down"
+                if aggregate["uptime_percent"] <= 0
+                else "degraded"
+            )
         daily.append({"day": day.date().isoformat(), "status": status, **aggregate})
         day = next_day
     windows = {}

@@ -687,7 +687,7 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
 
 
 async def run_uptime_check() -> dict[str, Any]:
-    """Run a check, retry failures once, and persist only confirmed failures."""
+    """Retry failures once and persist the resulting healthy or confirmed state."""
     previous_checks = await user_metrics_db.get_uptime_checks(limit=1)
     previous_failure = bool(
         previous_checks and previous_checks[0].get("status") in {"down", "degraded"}
@@ -697,13 +697,12 @@ async def run_uptime_check() -> dict[str, Any]:
     if check["status"] in {"down", "degraded"}:
         retry = await run_in_threadpool(_probe_portal)
         if retry["status"] == "up":
+            check = retry
             if previous_failure:
                 # A passing observation closes an already confirmed incident.
-                check = retry
                 logger.info("Schulportal incident recovered after successful retry")
             else:
                 logger.info("Discarding transient Schulportal check failure after successful retry")
-                return retry
         else:
             check = retry
     if check["status"] != "not_configured":
