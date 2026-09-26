@@ -349,9 +349,15 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
                 continue
             if state_at is None or delivered_at > state_at:
                 transition_state = delivery.get("transition") == "incident"
-                previous_issue = transition_state
-                with contextlib.suppress(Exception):
+                try:
                     await user_metrics_db.set_uptime_alert_state(transition_state)
+                except Exception:
+                    logger.warning(
+                        "Could not reconcile Schulportal uptime alert state",
+                        exc_info=True,
+                    )
+                    return
+                previous_issue = transition_state
             break
         if previous_issue is None and not is_issue:
             await user_metrics_db.set_uptime_alert_state(False)
