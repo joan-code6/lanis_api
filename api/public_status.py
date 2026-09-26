@@ -356,7 +356,10 @@ async def get_public_status() -> dict[str, Any]:
                 and math.isfinite(expected_interval)
                 and expected_interval > 0
             ):
-                ttl = max(ttl, float(expected_interval))
+                ttl = min(
+                    max(ttl, float(expected_interval)),
+                    float(uptime.INCIDENT_UPTIME_INTERVAL_SECONDS),
+                )
         checked_at = _timestamp(result["current"]["checked_at"])
         if checked_at is not None and not result["current"]["stale"]:
             now = uptime._utcnow().replace(tzinfo=timezone.utc)
