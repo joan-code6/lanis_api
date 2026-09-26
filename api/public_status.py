@@ -101,7 +101,10 @@ def _aggregate(
             and (item[0] - coverage_ordered[-1][0]).total_seconds()
             < uptime.INCIDENT_UPTIME_INTERVAL_SECONDS
         ):
-            coverage_ordered[-1] = item
+            # Keep the cluster's first timestamp so its leading coverage is
+            # retained. Replacing it with each later probe shifts the start
+            # forward and undercounts the interval before a state change.
+            continue
         else:
             coverage_ordered.append(item)
     def weighted_seconds(
@@ -308,7 +311,16 @@ async def _build_public_status() -> dict[str, Any]:
         elif aggregate["uptime_percent"] is None or aggregate["coverage_percent"] == 0:
             status = "unknown"
         else:
-            status = (
+            carried = next(
+                (
+                    check["status"]
+                    for timestamp, check in reversed(day_checks)
+                    if timestamp < day_start
+                    and check["status"] in {"up", "down", "degraded"}
+                ),
+                None,
+            )
+            status = carried or (
                 "up"
                 if aggregate["uptime_percent"] >= 100
                 else "down"
