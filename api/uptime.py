@@ -668,10 +668,42 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
         observed_seconds += seconds
         if _check.get("status") == "up":
             available_seconds += seconds
+    coverage_parsed = []
+    for item in parsed:
+        if (
+            item[1].get("status") in {"up", "down", "degraded"}
+            and coverage_parsed
+            and coverage_parsed[-1][1].get("status") == item[1].get("status")
+            and (item[0] - coverage_parsed[-1][0]).total_seconds()
+            < INCIDENT_UPTIME_INTERVAL_SECONDS
+        ):
+            # Preserve the first observation in a cluster so duplicate
+            # same-state probes do not shift its leading coverage boundary.
+            continue
+        coverage_parsed.append(item)
+    coverage_seconds = 0.0
+    for index, (stamp, check) in enumerate(coverage_parsed):
+        if check.get("status") not in {"up", "down", "degraded"}:
+            continue
+        next_stamp = coverage_parsed[index + 1][0] if index + 1 < len(coverage_parsed) else end
+        cadence = _sample_interval_seconds(
+            check,
+            coverage_parsed[index - 1][0] if index else None,
+            next_stamp if index + 1 < len(coverage_parsed) else None,
+            interval,
+        )
+        coverage_seconds += max(
+            0.0,
+            (
+                min(next_stamp, stamp + timedelta(seconds=2 * cadence), end)
+                - max(stamp, start)
+            ).total_seconds(),
+        )
     if observed_seconds == 0 and selected:
         latest = max(selected, key=lambda check: timestamp(check) or datetime.min)
         if latest.get("status") in {"up", "down", "degraded"}:
             observed_seconds = 1.0
+            coverage_seconds = max(coverage_seconds, 1.0)
             if latest.get("status") == "up":
                 available_seconds = 1.0
         else:
@@ -681,7 +713,7 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
         "available_checks": available,
         "failed_checks": failed,
         "uptime_percent": round(available_seconds / observed_seconds * 100, 2) if observed_seconds else None,
-        "coverage_percent": round(100 * min(1.0, observed_seconds / max(1.0, (end - start).total_seconds())), 2),
+        "coverage_percent": round(100 * min(1.0, coverage_seconds / max(1.0, (end - start).total_seconds())), 2),
         "latency": _latency_summary(selected),
     }
 
