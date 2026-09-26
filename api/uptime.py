@@ -719,8 +719,23 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
         if day_checks:
             previous_check = day_checks[-1]
         window = _uptime_window(day_checks, window_start, day_end)
+        available = window["available_checks"]
+        failed = window["failed_checks"]
+        item["checks"] = window["checks"]
+        item["available_checks"] = available
+        item["failed_checks"] = failed
+        item["unknown_checks"] = window["checks"] - available - failed
         item["uptime_percent"] = window["uptime_percent"]
         item["coverage_percent"] = window["coverage_percent"]
+        item["status"] = (
+            "unknown"
+            if not available and not failed
+            else "up"
+            if not failed
+            else "down"
+            if not available
+            else "degraded"
+        )
     available = summary_counts["available_checks"]
     failed = summary_counts["failed_checks"]
     now = _utcnow()
