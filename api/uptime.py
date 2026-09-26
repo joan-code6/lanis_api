@@ -34,10 +34,17 @@ UPTIME_ALERT_RETRY_SECONDS = 300
 DISCORD_WEBHOOK_ENV = "LANIS_UPTIME_DISCORD_WEBHOOK_URL"
 
 _uptime_alert_lock = asyncio.Lock()
+_uptime_scheduler_wake_event: asyncio.Event | None = None
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def wake_uptime_scheduler() -> None:
+    """Wake the recurring scheduler after an external check confirms an incident."""
+    if _uptime_scheduler_wake_event is not None:
+        _uptime_scheduler_wake_event.set()
 
 
 def get_uptime_url() -> str:
@@ -688,6 +695,9 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
     history = await user_metrics_db.get_uptime_checks(limit=limit)
     since = now - timedelta(days=UPTIME_SUMMARY_DAYS)
     incident_checks = await user_metrics_db.get_uptime_checks(limit=-1, since=since)
+    get_incident_prefix = getattr(user_metrics_db, "get_uptime_incident_prefix", None)
+    if get_incident_prefix is not None:
+        incident_checks.extend(await get_incident_prefix(since))
     previous_check = await user_metrics_db.get_previous_uptime_check(since)
     if previous_check is not None:
         incident_checks.append(previous_check)
@@ -800,6 +810,10 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
 
 async def run_uptime_scheduler() -> asyncio.Task:
     """Start the recurring authenticated synthetic monitor task."""
+    global _uptime_scheduler_wake_event
+    wake_event = asyncio.Event()
+    _uptime_scheduler_wake_event = wake_event
+
     async def _loop() -> None:
         incident_active = False
         while True:
@@ -826,6 +840,10 @@ async def run_uptime_scheduler() -> asyncio.Task:
                 if incident_active
                 else get_uptime_interval_seconds()
             )
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.wait_for(wake_event.wait(), timeout=interval)
+                wake_event.clear()
+            except asyncio.TimeoutError:
+                pass
 
     return asyncio.create_task(_loop(), name="schulportal-uptime")

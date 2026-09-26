@@ -916,6 +916,51 @@ class UserMetricsDB:
             check["features"] = features if isinstance(features, list) else []
             return check
 
+    async def get_uptime_incident_prefix(self, before: datetime) -> List[Dict[str, Any]]:
+        """Return the retained observation chain for an incident crossing ``before``."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, checked_at FROM uptime_checks
+                WHERE status = 'up' AND checked_at < ?
+                ORDER BY checked_at DESC, id DESC LIMIT 1
+                """,
+                (before.isoformat(),),
+            )
+            last_up = await cursor.fetchone()
+            if last_up is not None:
+                where = "(checked_at > ? OR (checked_at = ? AND id >= ?)) AND checked_at < ?"
+                parameters = (
+                    last_up["checked_at"], last_up["checked_at"], last_up["id"],
+                    before.isoformat(),
+                )
+            else:
+                where = "julianday(checked_at) >= julianday(?) - (2.0 * MAX(86400, COALESCE((SELECT MAX(sample_interval_seconds) FROM uptime_checks), 0)) / 86400.0) AND checked_at < ?"
+                parameters = (before.isoformat(), before.isoformat())
+            cursor = await db.execute(
+                f"""
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
+                       latency_ms, error, features_json
+                FROM uptime_checks
+                WHERE {where}
+                ORDER BY checked_at DESC, id DESC
+                """,
+                parameters,
+            )
+            checks = []
+            for row in await cursor.fetchall():
+                check = dict(row)
+                check["is_available"] = bool(check["is_available"])
+                try:
+                    features = json.loads(check.pop("features_json") or "[]")
+                except (TypeError, ValueError):
+                    features = []
+                check["features"] = features if isinstance(features, list) else []
+                checks.append(check)
+            return checks
+
     async def get_uptime_incidents(
         self,
         limit: int = 100,

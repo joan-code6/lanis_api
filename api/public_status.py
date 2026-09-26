@@ -89,18 +89,37 @@ def _aggregate(
     # do not count more heavily than normal five-minute checks.
     expected_seconds = max(1.0, (end - start).total_seconds())
     ordered = sorted(checks, key=lambda item: item[0])
+    # A manual/overlapping probe that repeats the same state within the
+    # minimum incident cadence is redundant for coverage. Keep the latest
+    # sample in that short cluster while retaining unknown rows as boundaries.
+    coverage_ordered = []
+    for item in ordered:
+        if (
+            item[1]["status"] in {"up", "down", "degraded"}
+            and coverage_ordered
+            and coverage_ordered[-1][1]["status"] == item[1]["status"]
+            and (item[0] - coverage_ordered[-1][0]).total_seconds()
+            < uptime.INCIDENT_UPTIME_INTERVAL_SECONDS
+        ):
+            coverage_ordered[-1] = item
+        else:
+            coverage_ordered.append(item)
     observed_seconds = available_seconds = 0.0
     # Each observation represents its state until the next check, capped at
     # twice its stored or inferred sampling interval. This keeps incident-mode sampling from
     # overweighting downtime in the percentage while still exposing gaps.
-    for index, (timestamp, check) in enumerate(ordered):
+    for index, (timestamp, check) in enumerate(coverage_ordered):
         if check["status"] == "unknown":
             continue
-        next_timestamp = ordered[index + 1][0] if index + 1 < len(ordered) else end
+        next_timestamp = (
+            coverage_ordered[index + 1][0]
+            if index + 1 < len(coverage_ordered)
+            else end
+        )
         cadence = uptime._sample_interval_seconds(
             check,
-            ordered[index - 1][0] if index else None,
-            next_timestamp if index + 1 < len(ordered) else None,
+            coverage_ordered[index - 1][0] if index else None,
+            next_timestamp if index + 1 < len(coverage_ordered) else None,
             interval,
         )
         span_end = min(next_timestamp, timestamp + timedelta(seconds=max(1, cadence * 2)), end)
@@ -159,6 +178,11 @@ async def _build_public_status() -> dict[str, Any]:
     rows = await uptime.user_metrics_db.get_uptime_checks(
         limit=-1, since=start.replace(tzinfo=None)
     )
+    get_incident_prefix = getattr(
+        uptime.user_metrics_db, "get_uptime_incident_prefix", None
+    )
+    if get_incident_prefix is not None:
+        rows.extend(await get_incident_prefix(start.replace(tzinfo=None)))
     get_previous_check = getattr(uptime.user_metrics_db, "get_previous_uptime_check", None)
     previous_row = (
         await get_previous_check(start.replace(tzinfo=None))
