@@ -684,8 +684,9 @@ async def run_uptime_check() -> dict[str, Any]:
 
 async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]:
     """Return current feature state and a rolling availability summary."""
+    now = _utcnow()
     history = await user_metrics_db.get_uptime_checks(limit=limit)
-    since = _utcnow() - timedelta(days=UPTIME_SUMMARY_DAYS)
+    since = now - timedelta(days=UPTIME_SUMMARY_DAYS)
     incident_checks = await user_metrics_db.get_uptime_checks(limit=-1, since=since)
     previous_check = await user_metrics_db.get_previous_uptime_check(since)
     if previous_check is not None:
@@ -707,12 +708,16 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
     for item in daily:
         day_start = datetime.fromisoformat(item["day"])
         window_start = max(day_start, since)
-        day_end = min(day_start + timedelta(days=1), _utcnow())
+        day_end = min(day_start + timedelta(days=1), now)
+        is_current_day = day_start.date() == now.date()
         while cursor < len(timed_checks) and timed_checks[cursor][0] < window_start:
             previous_check = timed_checks[cursor][1]
             cursor += 1
         day_checks = [previous_check] if previous_check else []
-        while cursor < len(timed_checks) and timed_checks[cursor][0] < day_end:
+        while cursor < len(timed_checks) and (
+            timed_checks[cursor][0] < day_end
+            or (is_current_day and timed_checks[cursor][0] == now)
+        ):
             day_checks.append(timed_checks[cursor][1])
             cursor += 1
         if day_checks:
@@ -735,7 +740,6 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             if not available
             else "degraded"
         )
-    now = _utcnow()
     windows = {
         key: _uptime_window(incident_checks, now - timedelta(days=days), now)
         for key, days in (("24h", 1), ("7d", 7), ("30d", 30), ("90d", 90))
