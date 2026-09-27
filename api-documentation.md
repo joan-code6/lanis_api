@@ -837,7 +837,7 @@ Retrieve a weekly view of course entries.
 
 #### GET `/meinunterricht/submissions`
 
-Retrieve all submissions/tasks that need attention.
+Retrieve all student upload assignments.
 
 **Headers:**
 - `X-Session-Token: {token}` (required)
@@ -848,13 +848,15 @@ Retrieve all submissions/tasks that need attention.
   "success": true,
   "submissions": [
     {
-      "id": "{submission_id}",
+      "id": "{opaque_detail_reference}",
+      "detail_ref": "{opaque_detail_reference}",
+      "course_id": "{course_id}",
+      "entry_id": "{entry_id}",
       "title": "{submission_title}",
-      "course": "{course_name}",
-      "due_date": "{date}",
-      "status": "{status}",
-      "url": "{submission_url}",
-      "..."
+      "course_name": "{course_name}",
+      "status": "open",
+      "date_text": "{portal_date_text}",
+      "uploaded_count": 0
     },
     "..."
   ]
@@ -864,6 +866,29 @@ Retrieve all submissions/tasks that need attention.
 **Status Codes:**
 - `200 OK` - Submissions retrieved successfully
 - `401 Unauthorized` - Invalid or expired session token
+
+---
+
+#### GET `/meinunterricht/submissions/{detail_ref}`
+
+Retrieve the requirements, current files, and upload state for one submission.
+The `detail_ref` is the opaque reference returned by the list endpoint.
+
+#### POST `/meinunterricht/submissions/upload`
+
+Upload one to five files using multipart form data. Required fields are
+`course_id`, `entry_id`, `upload_id`, and one or more `files` fields. The
+response contains an individual status for every file.
+
+#### DELETE `/meinunterricht/submissions/file`
+
+Delete an uploaded file using multipart form fields `course_id`, `entry_id`,
+`upload_id`, `file_index`, and `password`. The password is encrypted by the
+backend for the Schulportal request and is not persisted.
+
+#### GET `/meinunterricht/submissions/file/{file_ref}`
+
+Download a submission file through the authenticated backend session.
 
 ---
 

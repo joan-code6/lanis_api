@@ -2,9 +2,12 @@ from typing import Any, Dict, List, Optional
 import json
 import os
 import re
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
+
+import requests
 
 from schulportal_hessen.tools.cryptor import Cryptor
+from .submissions import extract_entry_uploads, meinunterricht_get_submissions as _get_submissions
 
 
 def _make_absolute_url(base_url: str, url: str) -> str:
@@ -18,7 +21,7 @@ def _extract_filename(content_disposition: Optional[str], fallback_url: str) -> 
     if content_disposition:
         match = re.search(r"filename\*=UTF-8''([^;]+)", content_disposition)
         if match:
-            return match.group(1)
+            return unquote(match.group(1))
         match = re.search(r'filename="?([^";]+)"?', content_disposition)
         if match:
             return match.group(1)
@@ -294,6 +297,7 @@ def meinunterricht_get_course(
                     "attendance": "",
                     "files": [],
                     "content": "",
+                    "uploads": [],
                 }
 
                 # Extract date and hours
@@ -399,6 +403,8 @@ def meinunterricht_get_course(
                             entry["files"].append(file_info)
 
                 entries.append(entry)
+
+                entry["uploads"] = extract_entry_uploads(row, self.BASE_START_URL)
 
         # Extract exams (Leistungskontrollen)
         exams = []
@@ -681,25 +687,8 @@ def meinunterricht_get_weekly_view(self) -> Dict[str, Any]:
 
 
 def meinunterricht_get_submissions(self) -> Dict[str, Any]:
-    """
-    Fetch student submissions/assignments (Abgaben)
-
-    Returns:
-        Dict with success status and submissions HTML
-    """
-    if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
-
-    try:
-        response = self.session.get(
-            f"{self.BASE_START_URL}/meinunterricht.php", params={"a": "sus_abgaben"}
-        )
-        response.raise_for_status()
-
-        return {"success": True, "html": response.text}
-
-    except Exception as e:
-        return {"success": False, "error": f"Failed to fetch submissions: {str(e)}"}
+    """Backward-compatible entry point for the typed submissions parser."""
+    return _get_submissions(self)
 
 
 def meinunterricht_set_homework_done(
@@ -767,7 +756,7 @@ def meinunterricht_download_file(self, url: str) -> Dict[str, Any]:
         {"success": True, "filename": "{file}", "content": b"..."}
     """
     if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
+        return {"success": False, "error": "Not logged in", "status_code": 401}
 
     try:
         download_url = _make_absolute_url(self.BASE_START_URL, url)
@@ -781,6 +770,20 @@ def meinunterricht_download_file(self, url: str) -> Dict[str, Any]:
             "content_type": response.headers.get("Content-Type"),
             "content": response.content,
             "url": download_url,
+        }
+    except requests.HTTPError as e:
+        upstream_status = e.response.status_code if e.response is not None else None
+        status_code = 401 if upstream_status == 401 else 404 if upstream_status == 404 else 502
+        return {
+            "success": False,
+            "error": f"Failed to download file: {str(e)}",
+            "status_code": status_code,
+        }
+    except requests.RequestException as e:
+        return {
+            "success": False,
+            "error": f"Failed to download file: {str(e)}",
+            "status_code": 502,
         }
     except Exception as e:
         return {"success": False, "error": f"Failed to download file: {str(e)}"}
