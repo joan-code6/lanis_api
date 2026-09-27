@@ -327,6 +327,17 @@ Fetch files and folders for a specific dateispeicher node.
 
 Search files in the dateispeicher by name.
 
+#### dateiverteilung_get_overview
+
+Fetch targeted file distributions for the authenticated user. Returns each
+distribution's title, provenance, date, unread state, files, and related links.
+
+#### dateiverteilung_download_file
+
+Stream a file from `dateiverteilung.php` through the authenticated portal
+session. Download URLs are restricted to the configured Schulportal origin,
+the Dateiverteilung endpoint, and known download actions.
+
 #### lerngruppen_get_overview
 
 Fetch study groups and exam data (lerngruppen.php).
