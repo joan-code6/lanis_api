@@ -14,6 +14,7 @@ Features:
 import hashlib
 import json
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -128,6 +129,7 @@ class UserMetricsDB:
     def __init__(self, db_path: Optional[Path] = None) -> None:
         self.db_path = db_path or DEFAULT_DB_PATH
         self._initialized = False
+        self._last_uptime_retention_cleanup = 0.0
     
     async def initialize(self) -> None:
         """Initialize the database and create tables if they don't exist."""
@@ -220,6 +222,7 @@ class UserMetricsDB:
                 CREATE TABLE IF NOT EXISTS uptime_checks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     checked_at TIMESTAMP NOT NULL,
+                    sample_interval_seconds INTEGER,
                     url TEXT NOT NULL,
                     status TEXT NOT NULL,
                     is_available INTEGER NOT NULL,
@@ -235,6 +238,10 @@ class UserMetricsDB:
             if "features_json" not in uptime_columns:
                 await db.execute(
                     "ALTER TABLE uptime_checks ADD COLUMN features_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "sample_interval_seconds" not in uptime_columns:
+                await db.execute(
+                    "ALTER TABLE uptime_checks ADD COLUMN sample_interval_seconds INTEGER"
                 )
             await db.execute(
                 """
@@ -255,6 +262,17 @@ class UserMetricsDB:
                 """
                 INSERT OR IGNORE INTO uptime_alert_state (id, is_issue, updated_at)
                 VALUES (1, NULL, NULL)
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS uptime_alert_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TIMESTAMP NOT NULL,
+                    transition TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    error_code TEXT
+                )
                 """
             )
             
@@ -796,16 +814,23 @@ class UserMetricsDB:
         """Persist one authenticated Schulportal synthetic check."""
         await self.initialize()
         checked_at = str(check.get("checked_at") or datetime.utcnow().isoformat())
+        now_monotonic = time.monotonic()
+        cleanup_retention = (
+            now_monotonic - self._last_uptime_retention_cleanup >= 86400
+        )
+        if cleanup_retention:
+            self._last_uptime_retention_cleanup = now_monotonic
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO uptime_checks (
-                    checked_at, url, status, is_available, status_code,
+                    checked_at, sample_interval_seconds, url, status, is_available, status_code,
                     latency_ms, error, features_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     checked_at,
+                    check.get("sample_interval_seconds"),
                     str(check.get("url") or ""),
                     str(check.get("status") or "down"),
                     1 if check.get("is_available") else 0,
@@ -815,14 +840,22 @@ class UserMetricsDB:
                     json.dumps(check.get("features") or [], ensure_ascii=False),
                 ),
             )
-            # At the default five-minute interval this keeps the local store
-            # bounded without removing the recent history shown in the admin UI.
-            await db.execute(
-                """
-                DELETE FROM uptime_checks
-                WHERE julianday(checked_at) < julianday('now', '-90 day')
-                """
-            )
+            if cleanup_retention:
+                cursor = await db.execute(
+                    "SELECT MAX(sample_interval_seconds) FROM uptime_checks"
+                )
+                (max_sample_interval,) = await cursor.fetchone()
+                retention_cadence = max(86400, int(max_sample_interval or 0))
+                retention_cutoff = datetime.utcnow() - timedelta(
+                    days=90, seconds=2 * retention_cadence
+                )
+                # Keep the report horizon plus two maximum sample intervals.
+                # Comparing the stored ISO timestamps directly lets SQLite use
+                # the checked_at index instead of converting every table row.
+                await db.execute(
+                    "DELETE FROM uptime_checks WHERE checked_at < ?",
+                    (retention_cutoff.isoformat(),),
+                )
             await db.commit()
 
     async def get_uptime_checks(
@@ -837,24 +870,96 @@ class UserMetricsDB:
             if since is None:
                 cursor = await db.execute(
                     """
-                    SELECT checked_at, url, status, is_available, status_code,
+                    SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                            latency_ms, error, features_json
                     FROM uptime_checks
-                    ORDER BY checked_at DESC LIMIT ?
+                    ORDER BY checked_at DESC, id DESC LIMIT ?
                     """,
                     (limit,),
                 )
             else:
                 cursor = await db.execute(
                     """
-                    SELECT checked_at, url, status, is_available, status_code,
+                    SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                            latency_ms, error, features_json
                     FROM uptime_checks
                     WHERE checked_at >= ?
-                    ORDER BY checked_at DESC LIMIT ?
+                    ORDER BY checked_at DESC, id DESC LIMIT ?
                     """,
                     (since.isoformat(), limit),
                 )
+            checks = []
+            for row in await cursor.fetchall():
+                check = dict(row)
+                check["is_available"] = bool(check["is_available"])
+                try:
+                    features = json.loads(check.pop("features_json") or "[]")
+                except (TypeError, ValueError):
+                    features = []
+                check["features"] = features if isinstance(features, list) else []
+                checks.append(check)
+            return checks
+
+    async def get_previous_uptime_check(self, before: datetime) -> Optional[Dict[str, Any]]:
+        """Return the latest stored check strictly before a reporting boundary."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
+                       latency_ms, error, features_json
+                FROM uptime_checks
+                WHERE checked_at < ?
+                ORDER BY checked_at DESC, id DESC LIMIT 1
+                """,
+                (before.isoformat(),),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            check = dict(row)
+            check["is_available"] = bool(check["is_available"])
+            try:
+                features = json.loads(check.pop("features_json") or "[]")
+            except (TypeError, ValueError):
+                features = []
+            check["features"] = features if isinstance(features, list) else []
+            return check
+
+    async def get_uptime_incident_prefix(self, before: datetime) -> List[Dict[str, Any]]:
+        """Return the retained observation chain for an incident crossing ``before``."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, checked_at FROM uptime_checks
+                WHERE status = 'up' AND checked_at < ?
+                ORDER BY checked_at DESC, id DESC LIMIT 1
+                """,
+                (before.isoformat(),),
+            )
+            last_up = await cursor.fetchone()
+            if last_up is not None:
+                where = "(checked_at > ? OR (checked_at = ? AND id >= ?)) AND checked_at < ?"
+                parameters = (
+                    last_up["checked_at"], last_up["checked_at"], last_up["id"],
+                    before.isoformat(),
+                )
+            else:
+                where = "julianday(checked_at) >= julianday(?) - (2.0 * MAX(86400, COALESCE((SELECT MAX(sample_interval_seconds) FROM uptime_checks), 0)) / 86400.0) AND checked_at < ?"
+                parameters = (before.isoformat(), before.isoformat())
+            cursor = await db.execute(
+                f"""
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
+                       latency_ms, error, features_json
+                FROM uptime_checks
+                WHERE {where}
+                ORDER BY checked_at DESC, id DESC
+                """,
+                parameters,
+            )
             checks = []
             for row in await cursor.fetchall():
                 check = dict(row)
@@ -877,11 +982,11 @@ class UserMetricsDB:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
-                SELECT checked_at, url, status, is_available, status_code,
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                        latency_ms, error, features_json
                 FROM uptime_checks
                 WHERE status != 'up'
-                ORDER BY checked_at DESC LIMIT ?
+                ORDER BY checked_at DESC, id DESC LIMIT ?
                 """,
                 (limit,),
             )
@@ -956,15 +1061,20 @@ class UserMetricsDB:
 
     async def get_uptime_alert_state(self) -> Optional[bool]:
         """Return the last delivered alert state, or ``None`` before first use."""
+        state, _ = await self.get_uptime_alert_state_details()
+        return state
+
+    async def get_uptime_alert_state_details(self) -> tuple[Optional[bool], Optional[str]]:
+        """Return the delivered state and its last transition/reset timestamp."""
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT is_issue FROM uptime_alert_state WHERE id = 1"
+                "SELECT is_issue, updated_at FROM uptime_alert_state WHERE id = 1"
             )
             row = await cursor.fetchone()
-            if row is None or row[0] is None:
-                return None
-            return bool(row[0])
+            if row is None:
+                return None, None
+            return (bool(row[0]) if row[0] is not None else None), row[1]
 
     async def set_uptime_alert_state(self, is_issue: bool) -> None:
         """Persist the last uptime alert state after a webhook is delivered."""
@@ -981,6 +1091,36 @@ class UserMetricsDB:
                 (1 if is_issue else 0, datetime.utcnow().isoformat()),
             )
             await db.commit()
+
+    async def touch_uptime_alert_state(self) -> None:
+        """Reset pending retries after an observation confirms the delivered state."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE uptime_alert_state SET updated_at = ? WHERE id = 1",
+                (datetime.utcnow().isoformat(),),
+            )
+            await db.commit()
+
+    async def record_uptime_alert_delivery(self, transition: str, outcome: str, error_code: str | None = None) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO uptime_alert_deliveries (created_at, transition, outcome, error_code) VALUES (?, ?, ?, ?)",
+                (datetime.utcnow().isoformat(), transition, outcome, error_code),
+            )
+            await db.execute("DELETE FROM uptime_alert_deliveries WHERE id NOT IN (SELECT id FROM uptime_alert_deliveries ORDER BY id DESC LIMIT 100)")
+            await db.commit()
+
+    async def get_uptime_alert_deliveries(self, limit: int = 20) -> List[Dict[str, Any]]:
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT created_at, transition, outcome, error_code FROM uptime_alert_deliveries ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
 
     async def record_admin_action(
         self, actor_user_id: str, action: str, target_user_id: str = ""
