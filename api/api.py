@@ -63,6 +63,7 @@ from .admin import AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
     DEFAULT_SIDEBAR_ORDER,
     allow_whatsapp_message,
+    clear_whatsapp_rate_limit,
     initialize as auth_db_initialize,
     store_refresh_token,
     get_refresh_token,
@@ -4679,10 +4680,6 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
         )
         return
 
-    if not await allow_whatsapp_message(incoming.sender_id):
-        logger.warning("Dropped rate-limited WhatsApp message")
-        return
-
     action_code = confirmation_code(incoming.text)
     if action_code:
         link = await get_whatsapp_link_for_sender(incoming.sender_id)
@@ -4696,6 +4693,9 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
                     current_link.get(field) == link.get(field)
                     for field in ("user_id", "linked_at")
                 ):
+                    if not await allow_whatsapp_message(incoming.sender_id):
+                        logger.warning("Dropped rate-limited WhatsApp message")
+                        return
                     await _confirm_whatsapp_action(
                         incoming, action_code, client
                     )
@@ -4705,11 +4705,21 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
                         "⚠️ Die Aktion konnte nicht bestätigt werden.",
                     )
         else:
-            await _confirm_whatsapp_action(incoming, action_code, client)
+            if not await allow_whatsapp_message(incoming.sender_id):
+                await clear_whatsapp_rate_limit(incoming.sender_id)
+                logger.warning("Dropped rate-limited WhatsApp message")
+                return
+            try:
+                await _confirm_whatsapp_action(incoming, action_code, client)
+            finally:
+                await clear_whatsapp_rate_limit(incoming.sender_id)
         return
 
     code = pairing_code(incoming.text)
     if code:
+        if not await allow_whatsapp_message(incoming.sender_id):
+            logger.warning("Dropped rate-limited WhatsApp message")
+            return
         user_id = await consume_whatsapp_pairing_code(code, incoming.sender_id)
         if user_id:
             await client.send_text(
@@ -4742,6 +4752,9 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
             current_link.get(field) != link.get(field)
             for field in ("user_id", "linked_at")
         ):
+            return
+        if not await allow_whatsapp_message(incoming.sender_id):
+            logger.warning("Dropped rate-limited WhatsApp message")
             return
         await _process_linked_whatsapp_message(incoming, config, client, intent, link)
 

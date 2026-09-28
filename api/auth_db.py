@@ -1104,6 +1104,18 @@ async def allow_whatsapp_message(
             return allowed
 
 
+async def clear_whatsapp_rate_limit(whatsapp_id: str) -> None:
+    """Remove a sender's transient rate-limit record after unlink/deletion races."""
+    sender_hash = _whatsapp_id_hash(whatsapp_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM whatsapp_rate_limits WHERE whatsapp_id_hash = ?",
+                (sender_hash,),
+            )
+            await db.commit()
+
+
 async def store_refresh_token(
     user_id: str, school_id: str, username: str, password: str
 ) -> str:
