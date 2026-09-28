@@ -3028,13 +3028,13 @@ async def meinunterricht_file(
 
     if not x_session_token:
         raise HTTPException(status_code=404, detail="File not found")
+    if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
+        raise HTTPException(status_code=404, detail="File not found")
     try:
         identity = await local_auth_dependency(x_session_token)
         user_id = identity.user_id
         if not await has_cached_file_reference(user_id, file_hash):
             raise HTTPException(status_code=404, detail="File not found")
-        session_data = await sessions._get_or_create_schulportal_client(user_id)
-        client = session_data.client
     except HTTPException:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -3049,6 +3049,12 @@ async def meinunterricht_file(
         )
 
     if meta and meta.get("download_url"):
+        try:
+            session_data = await sessions._get_or_create_schulportal_client(user_id)
+            client = session_data.client
+        except Exception:
+            logger.warning("Could not restore upstream session for file download")
+            raise HTTPException(status_code=404, detail="File not found")
         result = await run_in_threadpool(
             client.meinunterricht_download_file, meta["download_url"]
         )
