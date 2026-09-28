@@ -36,6 +36,20 @@ def get_file_hash(download_url: str) -> str:
     return hashlib.sha256(download_url.encode()).hexdigest()
 
 
+def delete_files(file_hashes: list[str]) -> int:
+    """Delete cached files after their final owning account is removed."""
+    deleted = 0
+    for file_hash in set(file_hashes):
+        if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
+            raise ValueError("Invalid cached file hash")
+        for path in (_content_path(file_hash), _meta_path(file_hash)):
+            if path.exists():
+                path.unlink()
+                deleted += 1
+        unmark_pending(file_hash)
+    return deleted
+
+
 def _content_path(file_hash: str) -> Path:
     _ensure_cache_dir()
     return FILE_CACHE_DIR / file_hash

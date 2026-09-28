@@ -77,6 +77,7 @@ async def build_account_export(user_id: str) -> dict:
         "whatsapp": persisted["whatsapp"],
         "notification_state": persisted["notification_state"],
         "cached_data": cached_data,
+        "cached_file_references": persisted["cached_file_references"],
         "activity": activity,
         "excluded_secrets": [
             "SPH password",

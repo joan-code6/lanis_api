@@ -61,6 +61,27 @@ def test_account_deletion_removes_auth_and_metrics_data(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_deletion_purges_orphaned_course_files_but_keeps_shared_files(tmp_path, monkeypatch):
+    from api import file_cache
+
+    async def scenario():
+        monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+        monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
+        monkeypatch.setattr(file_cache, "FILE_CACHE_DIR", tmp_path / "files")
+        await auth_db.initialize()
+        file_hash = "a" * 64
+        file_cache.save_file(file_hash, b"private attachment", "text/plain", "file.txt")
+        await auth_db.add_cached_file_reference("5201:a", file_hash)
+        await auth_db.add_cached_file_reference("5201:b", file_hash)
+
+        await auth_db.delete_user_data("5201:a")
+        assert file_cache.is_file_cached(file_hash)
+        await auth_db.delete_user_data("5201:b")
+        assert not file_cache.is_file_cached(file_hash)
+
+    asyncio.run(scenario())
+
+
 def test_account_deletion_uses_authenticated_identity_after_logout_race(
     tmp_path, monkeypatch
 ):

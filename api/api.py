@@ -80,6 +80,8 @@ from .auth_db import (
     sync_dashboard_notifications,
     mark_dashboard_notifications_read,
     save_push_subscription,
+    add_cached_file_reference,
+    has_cached_file_reference,
     get_class_link_overrides,
     save_class_link,
     delete_class_link,
@@ -2956,28 +2958,33 @@ async def meinunterricht_course(
 ) -> Dict[str, object]:
     params = _make_param_key({"course_id": course_id})
 
-    cached = await sessions.get_cached(
+    result = await sessions.get_cached(
         auth.user_id, "/meinunterricht/course", params
     )
-    if cached is not None:
-        return cached
-
-    result = await run_in_threadpool(auth.client.meinunterricht_get_course, course_id)
+    if result is None:
+        result = await run_in_threadpool(auth.client.meinunterricht_get_course, course_id)
 
     if result.get("success") and "entries" in result:
         for entry in result["entries"]:
             for file_info in entry.get("files", []):
                 original_url = file_info.get("download_url", "")
-                if not original_url:
-                    continue
-
-                file_hash = get_file_hash(original_url)
+                file_hash = str(file_info.get("file_hash") or "")
+                if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
+                    if not original_url or f"/meinunterricht/file/" in original_url:
+                        continue
+                    file_hash = get_file_hash(original_url)
+                await add_cached_file_reference(auth.user_id, file_hash)
                 local_url = f"{PUBLIC_BASE_URL}/meinunterricht/file/{file_hash}"
                 file_info["download_url"] = local_url
                 file_info["url"] = local_url
                 file_info["file_hash"] = file_hash
 
-                if not is_file_cached(file_hash) and not is_file_pending(file_hash):
+                if (
+                    original_url
+                    and "/meinunterricht/file/" not in original_url
+                    and not is_file_cached(file_hash)
+                    and not is_file_pending(file_hash)
+                ):
                     mark_pending(file_hash)
                     download_task: Task
 
@@ -3019,6 +3026,18 @@ async def meinunterricht_file(
 ):
     from fastapi.responses import FileResponse
 
+    if not x_session_token:
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        identity = await local_auth_dependency(x_session_token)
+        user_id = identity.user_id
+        if not await has_cached_file_reference(user_id, file_hash):
+            raise HTTPException(status_code=404, detail="File not found")
+        session_data = await sessions._get_or_create_schulportal_client(user_id)
+        client = session_data.client
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="File not found")
+
     meta = get_meta(file_hash)
     content_path = get_content_path(file_hash)
 
@@ -3028,17 +3047,6 @@ async def meinunterricht_file(
             media_type=meta.get("content_type", "application/octet-stream"),
             filename=meta.get("filename", "download"),
         )
-
-    if not x_session_token:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    try:
-        identity = await local_auth_dependency(x_session_token)
-        user_id = identity.user_id
-        session_data = await sessions._get_or_create_schulportal_client(user_id)
-        client = session_data.client
-    except HTTPException:
-        raise HTTPException(status_code=404, detail="File not found")
 
     if meta and meta.get("download_url"):
         result = await run_in_threadpool(

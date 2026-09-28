@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import base64
 import hashlib
 import hmac
@@ -331,6 +332,20 @@ async def initialize() -> None:
         await db.execute(
             "CREATE TABLE IF NOT EXISTS account_deletion_markers ("
             "user_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)"
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cached_file_references (
+                user_id TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, file_hash)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cached_file_references_hash "
+            "ON cached_file_references(file_hash)"
         )
         await db.execute(
             "DELETE FROM account_deletion_markers WHERE expires_at <= ?",
@@ -1344,6 +1359,7 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     message_state = await get_message_notification_state(user_id)
     vertretungsplan_state = await get_vertretungsplan_notification_state(user_id)
     dashboard_notifications = await get_dashboard_notifications(user_id)
+    cached_file_references = await get_cached_file_references(user_id)
     return {
         "account": {
             "school_id": credential["school_id"] if credential else None,
@@ -1370,7 +1386,53 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
             "vertretungsplan": vertretungsplan_state,
             "dashboard_notifications": dashboard_notifications,
         },
+        "cached_file_references": cached_file_references,
     }
+
+
+def _validate_cached_file_hash(file_hash: str) -> str:
+    value = str(file_hash).lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise ValueError("Invalid cached file hash")
+    return value
+
+
+async def add_cached_file_reference(user_id: str, file_hash: str) -> None:
+    """Record that a user is entitled to a shared cached attachment."""
+    user_id = _canonical_user_id(user_id)
+    file_hash = _validate_cached_file_hash(file_hash)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO cached_file_references (user_id, file_hash) VALUES (?, ?)",
+                (user_id, file_hash),
+            )
+            await db.commit()
+
+
+async def get_cached_file_references(user_id: str) -> List[str]:
+    """List hashes for shared file-cache entries referenced by one user."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT file_hash FROM cached_file_references WHERE user_id = ? ORDER BY file_hash",
+                (user_id,),
+            ) as cursor:
+                return [str(row[0]) for row in await cursor.fetchall()]
+
+
+async def has_cached_file_reference(user_id: str, file_hash: str) -> bool:
+    """Check that a logged-in user still owns a reference to the attachment."""
+    user_id = _canonical_user_id(user_id)
+    file_hash = _validate_cached_file_hash(file_hash)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT 1 FROM cached_file_references WHERE user_id = ? AND file_hash = ?",
+                (user_id, file_hash),
+            ) as cursor:
+                return await cursor.fetchone() is not None
 
 
 async def get_dashboard_notifications(user_id: str) -> List[Dict[str, Any]]:
@@ -1445,6 +1507,26 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                 counts["whatsapp_rate_limits"] = max(cursor.rowcount, 0)
             else:
                 counts["whatsapp_rate_limits"] = 0
+            async with db.execute(
+                "SELECT file_hash FROM cached_file_references WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                owned_file_hashes = [row[0] for row in await cursor.fetchall()]
+            cursor = await db.execute(
+                "DELETE FROM cached_file_references WHERE user_id = ?", (user_id,)
+            )
+            counts["cached_file_references"] = max(cursor.rowcount, 0)
+            orphaned_file_hashes = []
+            for file_hash in owned_file_hashes:
+                async with db.execute(
+                    "SELECT 1 FROM cached_file_references WHERE file_hash = ? LIMIT 1",
+                    (file_hash,),
+                ) as cursor:
+                    if await cursor.fetchone() is None:
+                        orphaned_file_hashes.append(file_hash)
+            from .file_cache import delete_files
+
+            counts["file_cache_files"] = delete_files(orphaned_file_hashes)
             for table in tables:
                 cursor = await db.execute(
                     f"DELETE FROM {table} WHERE user_id = ?", (user_id,)
