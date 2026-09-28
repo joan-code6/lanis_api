@@ -1045,6 +1045,17 @@ async def fetch_and_store_user_data(
             logger.error(f"Error storing user metrics for {username}@{school_id}: {e}")
 
 
+async def notify_new_user_if_account_active(
+    user_id: str, session_id: str, school_id: str, username: str
+) -> None:
+    """Serialize the personal-data webhook side effect with account deletion."""
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock:
+        if await get_refresh_token_by_session_id(session_id) is None:
+            return
+        await notify_new_user(school_id, username)
+
+
 # --- FastAPI App ---
 
 app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
@@ -1384,8 +1395,13 @@ async def _login_account(
             await task_queue.add_task(
                 Task(
                     name=f"notify_new_user:{username}@{school_id}",
-                    func=notify_new_user,
-                    args=(school_id, normalize_username(username)),
+                    func=notify_new_user_if_account_active,
+                    args=(
+                        user_id,
+                        session_id,
+                        school_id,
+                        normalize_username(username),
+                    ),
                     user_id=user_id,
                     priority=TaskPriority.LOW,
                     max_retries=2,
