@@ -389,6 +389,7 @@ SidebarItemId = Literal[
 class SidebarPreferencesRequest(BaseModel):
     order: Optional[List[str]] = None
     hidden_items: Optional[List[SidebarItemId]] = None
+    show_feedback_button: Optional[bool] = None
 
     @field_validator("order")
     def validate_order(cls, value):
