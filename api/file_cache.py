@@ -10,12 +10,16 @@ import hashlib
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("file_cache")
 
 FILE_CACHE_DIR = Path(__file__).parent.parent / "data" / "files"
+# Shared attachment files are not user-owned. They are retained for 30 days,
+# then removed by the periodic cleanup job to limit stale personal content.
+FILE_CACHE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 
 _pending_downloads: set[str] = set()
 
@@ -30,6 +34,20 @@ def _ensure_cache_dir() -> None:
 
 def get_file_hash(download_url: str) -> str:
     return hashlib.sha256(download_url.encode()).hexdigest()
+
+
+def delete_files(file_hashes: list[str]) -> int:
+    """Delete cached files after their final owning account is removed."""
+    deleted = 0
+    for file_hash in set(file_hashes):
+        if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
+            raise ValueError("Invalid cached file hash")
+        for path in (_content_path(file_hash), _meta_path(file_hash)):
+            if path.exists():
+                path.unlink()
+                deleted += 1
+        unmark_pending(file_hash)
+    return deleted
 
 
 def _content_path(file_hash: str) -> Path:
@@ -98,3 +116,23 @@ def get_meta(file_hash: str) -> Optional[dict]:
 
 def get_content_path(file_hash: str) -> Path:
     return _content_path(file_hash)
+
+
+def purge_expired_files() -> int:
+    """Delete shared cache entries older than the documented retention period."""
+    if not FILE_CACHE_DIR.exists():
+        return 0
+    cutoff = time.time() - FILE_CACHE_RETENTION_SECONDS
+    deleted = 0
+    for path in FILE_CACHE_DIR.iterdir():
+        try:
+            if (
+                path.name.split(".meta", 1)[0] in _pending_downloads
+                or path.stat().st_mtime >= cutoff
+            ):
+                continue
+            path.unlink()
+            deleted += 1
+        except OSError:
+            logger.warning("Could not remove expired cached file %s", path, exc_info=True)
+    return deleted
