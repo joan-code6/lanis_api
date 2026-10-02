@@ -52,7 +52,9 @@ from .identity import (
     normalize_school_id,
     normalize_username,
 )
-from .discord import notify_new_user
+from .discord import notify_feedback, notify_new_user
+from . import feedback_db
+from .feedback_db import FeedbackRateLimitError
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
 from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler
@@ -406,6 +408,13 @@ class SidebarPreferencesRequest(BaseModel):
         if value is not None and len(value) > len(SidebarItemId.__args__):
             raise ValueError("Too many hidden sidebar items")
         return value
+
+
+class FeedbackSubmissionRequest(BaseModel):
+    category: Literal["feature", "bug", "general"]
+    title: str = Field(..., min_length=1, max_length=120)
+    details: str = Field(..., min_length=1, max_length=5000)
+    page: Optional[str] = Field(None, max_length=300)
 
 
 class TimetablePreferencesRequest(BaseModel):
@@ -1113,6 +1122,7 @@ async def _startup() -> None:
     await purge_expired_whatsapp_ai_history()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
+    await feedback_db.initialize()
     await task_queue.start()
     await whatsapp_task_queue.start()
     _dsb_scheduler_task = await run_dsb_scheduler()
@@ -1856,6 +1866,37 @@ async def get_account_preferences(
         "stored": stored,
         "preferences": preferences,
     }
+
+
+@app.post("/feedback")
+async def submit_feedback(
+    payload: FeedbackSubmissionRequest,
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Dict[str, object]:
+    title = payload.title.strip()
+    details = payload.details.strip()
+    if not title or not details:
+        raise HTTPException(status_code=422, detail="Titel und Beschreibung sind erforderlich.")
+    page = payload.page.strip() if payload.page else None
+    if page and not page.startswith("/"):
+        page = None
+    if page:
+        page = page.split("?", 1)[0].split("#", 1)[0][:300]
+    try:
+        report = await feedback_db.create_feedback(
+            category=payload.category,
+            title=title,
+            details=details,
+            page=page,
+            submitter_user_id=auth.user_id,
+        )
+    except FeedbackRateLimitError as error:
+        raise HTTPException(
+            status_code=429,
+            detail="Du hast in kurzer Zeit zu oft Feedback gesendet. Bitte versuche es später erneut.",
+        ) from error
+    await notify_feedback(report)
+    return {"success": True, "id": report["id"]}
 
 
 @app.patch("/settings/preferences")
