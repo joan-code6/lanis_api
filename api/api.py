@@ -2978,7 +2978,8 @@ async def meinunterricht_course(
     result = await sessions.get_cached(
         auth.user_id, "/meinunterricht/course", params
     )
-    if result is None:
+    fetched_from_portal = result is None
+    if fetched_from_portal:
         result = await run_in_threadpool(auth.client.meinunterricht_get_course, course_id)
 
     if result.get("success") and "entries" in result:
@@ -3030,9 +3031,10 @@ async def meinunterricht_course(
                     )
                     await task_queue.add_task(download_task)
 
-    await sessions.set_cache(
-        auth.user_id, "/meinunterricht/course", result, params
-    )
+    if fetched_from_portal:
+        await sessions.set_cache(
+            auth.user_id, "/meinunterricht/course", result, params
+        )
     return result
 
 
