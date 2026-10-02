@@ -24,12 +24,41 @@ def test_cancelled_user_task_runs_cleanup_callback():
             )
         )
         await queue.cancel_user_tasks("5201:student")
+        assert queue._queue.empty()
+        assert cleanup_ran.is_set()
         await queue.allow_user_tasks("5201:student")
         await queue.start()
         try:
             await asyncio.wait_for(cleanup_ran.wait(), timeout=2)
         finally:
             await queue.stop(wait=False)
+
+    asyncio.run(scenario())
+
+
+def test_cancel_user_tasks_erases_pending_task_payloads():
+    async def scenario():
+        queue = TaskQueue(max_concurrent=1)
+
+        async def task_body(*_args):
+            return None
+
+        task = Task(
+            name="private-download",
+            user_id="5201:student",
+            args=("private-upstream-url",),
+            kwargs={"client": object()},
+            func=task_body,
+            priority=TaskPriority.LOW,
+        )
+        await queue.add_task(task)
+
+        await queue.cancel_user_tasks("5201:student")
+
+        assert queue._queue.empty()
+        assert task.args == ()
+        assert task.kwargs == {}
+        assert task.func is None
 
     asyncio.run(scenario())
 

@@ -196,15 +196,49 @@ class TaskQueue:
         return task.task_id
 
     async def cancel_user_tasks(self, user_id: str) -> None:
-        """Skip pending work and erase retained task arguments for a user."""
+        """Remove queued and retained work for a user and run cancellation hooks."""
+        cancelled: List[Task] = []
         async with self._lock:
             self._cancelled_users.add(user_id)
             self._user_generations[user_id] = (
                 self._user_generations.get(user_id, 0) + 1
             )
+            pending: List[Task] = []
+            while True:
+                try:
+                    task = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self._queue.task_done()
+                if task.user_id == user_id:
+                    cancelled.append(task)
+                else:
+                    pending.append(task)
+            for task in pending:
+                self._queue.put_nowait(task)
+
             for task_id, task in list(self._completed_tasks.items()):
                 if task.user_id == user_id:
                     self._completed_tasks.pop(task_id, None)
+
+        for task in cancelled:
+            if task.on_cancel is not None:
+                try:
+                    await task.on_cancel()
+                except Exception:
+                    logger.exception("Cancellation cleanup failed for %s", task.name)
+            # Do not retain callable closures, user identifiers, URLs, or arguments.
+            task.func = None
+            task.args = ()
+            task.kwargs.clear()
+            task.user_id = None
+            task.name = "cancelled"
+            task.user_generation = None
+            task.result = None
+            task.error = None
+            task.on_cancel = None
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.utcnow()
 
     async def allow_user_tasks(self, user_id: str) -> None:
         """Re-enable user-scoped work after a fresh login."""
