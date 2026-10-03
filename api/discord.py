@@ -72,13 +72,14 @@ def _send_feedback(
         "bug": "Fehler",
         "general": "Allgemeines Feedback",
     }.get(category, "Feedback")
+    admin_origin = os.getenv("LANIS_ADMIN_ORIGIN", "https://admin.lanis.arg-server.de").strip().rstrip("/")
     content = (
         f"📬 **Neues Feedback #{report_id} · {category_label}**\n"
         f"**{_escape_discord_markdown(title[:180])}**\n"
         f"{_escape_discord_markdown(details[:900])}\n"
         f"Eingereicht von `{_escape_discord_markdown(submitter_user_id)}` · "
-        "[Im Admin-Portal öffnen](https://admin.lanis.arg-server.de/#feedback)"
-    )
+        f"[Im Admin-Portal öffnen]({admin_origin}/#feedback)"
+    )[:2000]
     response = requests.post(
         webhook_url,
         json={"content": content, "allowed_mentions": {"parse": []}},
