@@ -114,6 +114,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     "sidebar": {
         "order": DEFAULT_SIDEBAR_ORDER,
         "hidden_items": [],
+        "show_feedback_button": True,
     },
     "dashboard": {
         "pinned_modules": [],

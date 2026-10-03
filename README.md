@@ -81,6 +81,9 @@ LANIS_UPTIME_TIMEOUT_SECONDS=15
 LANIS_UPTIME_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
 # Optional new-user notifications. Falls back to the uptime webhook above.
 LANIS_NEW_USER_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
+# Feedback notifications prefer this dedicated webhook, then fall back to the
+# new-user webhook or uptime webhook if those are configured.
+LANIS_FEEDBACK_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
 ```
 
 Keep that value unchanged across deployments; changing it invalidates issued
@@ -116,6 +119,14 @@ retained in the admin view. The new-user webhook receives one message after a fi
 login; it can be separate from the uptime webhook with
 `LANIS_NEW_USER_DISCORD_WEBHOOK_URL`. An immediate check can be triggered with
 `POST /admin/uptime/check`.
+
+Signed-in users can submit feature ideas, bug reports, and general feedback at
+`POST /feedback`. Reports are stored in the separate `data/feedback.db` SQLite
+database and can be reviewed or marked done in the admin portal at
+`GET /admin/feedback` and `PATCH /admin/feedback/{report_id}`. Configure
+`LANIS_FEEDBACK_DISCORD_WEBHOOK_URL` to post new submissions to a dedicated
+Discord channel. If it is unset, the new-user webhook (or uptime webhook) is
+used when configured. Discord delivery failures do not discard saved reports.
 
 ```bash
 uvicorn api.api:app
