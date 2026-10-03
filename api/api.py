@@ -29,7 +29,7 @@ from urllib.parse import quote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import requests as http_requests
-from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -1871,6 +1871,7 @@ async def get_account_preferences(
 @app.post("/feedback")
 async def submit_feedback(
     payload: FeedbackSubmissionRequest,
+    background_tasks: BackgroundTasks,
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     title = payload.title.strip()
@@ -1895,7 +1896,7 @@ async def submit_feedback(
             status_code=429,
             detail="Du hast in kurzer Zeit zu oft Feedback gesendet. Bitte versuche es später erneut.",
         ) from error
-    await notify_feedback(report)
+    background_tasks.add_task(notify_feedback, report)
     return {"success": True, "id": report["id"]}
 
 
