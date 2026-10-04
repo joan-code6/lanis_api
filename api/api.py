@@ -63,6 +63,7 @@ from .admin import AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
     DEFAULT_SIDEBAR_ORDER,
     allow_whatsapp_message,
+    purge_expired_whatsapp_rate_limits,
     clear_whatsapp_rate_limit,
     initialize as auth_db_initialize,
     store_refresh_token,
@@ -106,6 +107,7 @@ from .auth_db import (
 )
 from .outage_cache import OutageCacheRoute, snapshots
 from .account_data import (
+    AccountDeletionCleanupError,
     account_lifecycle_lock,
     build_account_export,
     delete_account_data,
@@ -990,6 +992,7 @@ async def _run_whatsapp_history_cleanup() -> None:
     while True:
         try:
             await purge_expired_whatsapp_ai_history()
+            await purge_expired_whatsapp_rate_limits()
         except Exception:
             logger.warning("WhatsApp history cleanup failed", exc_info=True)
         await asyncio.sleep(3600)
@@ -1520,6 +1523,9 @@ async def delete_account_endpoint(
         report = await delete_account_data(
             auth.user_id, school_id=auth.school_id, username=auth.username
         )
+    except AccountDeletionCleanupError as error:
+        logger.exception("Account deletion cleanup failed for %s", auth.user_id)
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except Exception:
         logger.exception("Account deletion failed for %s", auth.user_id)
         raise HTTPException(status_code=500, detail="Account deletion failed")
@@ -4724,13 +4730,9 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
                     )
         else:
             if not await allow_whatsapp_message(incoming.sender_id):
-                await clear_whatsapp_rate_limit(incoming.sender_id)
                 logger.warning("Dropped rate-limited WhatsApp message")
                 return
-            try:
-                await _confirm_whatsapp_action(incoming, action_code, client)
-            finally:
-                await clear_whatsapp_rate_limit(incoming.sender_id)
+            await _confirm_whatsapp_action(incoming, action_code, client)
         return
 
     code = pairing_code(incoming.text)

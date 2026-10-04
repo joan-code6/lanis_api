@@ -853,10 +853,6 @@ async def delete_whatsapp_link_for_sender(whatsapp_id: str) -> None:
                 "DELETE FROM whatsapp_pending_actions WHERE whatsapp_id_hash = ?",
                 (_whatsapp_id_hash(whatsapp_id),),
             )
-            await db.execute(
-                "DELETE FROM whatsapp_rate_limits WHERE whatsapp_id_hash = ?",
-                (_whatsapp_id_hash(whatsapp_id),),
-            )
             await db.commit()
 
 
@@ -1117,6 +1113,19 @@ async def allow_whatsapp_message(
             )
             await db.commit()
             return allowed
+
+
+async def purge_expired_whatsapp_rate_limits(max_age_seconds: int = 300) -> int:
+    """Remove sender hashes after their rate-limit window has expired."""
+    cutoff = int(time.time()) - max(max_age_seconds, 300)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "DELETE FROM whatsapp_rate_limits WHERE window_started < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            return max(cursor.rowcount, 0)
 
 
 async def clear_whatsapp_rate_limit(whatsapp_id: str) -> None:
@@ -1569,18 +1578,39 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                 (datetime.utcnow().isoformat(),),
             )
             await db.commit()
-    # The database transaction is authoritative. A failed filesystem cleanup leaves
-    # inaccessible orphan files for the normal cache expiry job to remove rather
-    # than breaking a still-valid shared reference on rollback.
-    if orphaned_file_hashes:
-        from .file_cache import delete_files
-        try:
-            counts["file_cache_files"] = delete_files(orphaned_file_hashes)
-        except OSError:
-            # Database references are already gone; cache expiry can retry cleanup.
+            # Recheck under a fresh SQLite write lock immediately before unlinking,
+            # so another process cannot add a shared reference in the gap after the
+            # account deletion transaction commits.
             counts["file_cache_files"] = 0
-    else:
-        counts["file_cache_files"] = 0
+            if orphaned_file_hashes:
+                from .file_cache import delete_files
+
+                await db.execute("BEGIN IMMEDIATE")
+                try:
+                    still_orphaned = []
+                    for file_hash in orphaned_file_hashes:
+                        async with db.execute(
+                            "SELECT 1 FROM cached_file_references WHERE file_hash = ? LIMIT 1",
+                            (file_hash,),
+                        ) as cursor:
+                            if await cursor.fetchone() is None:
+                                still_orphaned.append(file_hash)
+                    for attempt in range(3):
+                        try:
+                            counts["file_cache_files"] = await asyncio.to_thread(
+                                delete_files, still_orphaned
+                            )
+                            break
+                        except OSError:
+                            if attempt == 2:
+                                # The account data transaction has committed; the
+                                # endpoint reports incomplete file cleanup.
+                                raise
+                            await asyncio.sleep(0.1 * (attempt + 1))
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    raise
     return counts
 
 

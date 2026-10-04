@@ -18,6 +18,10 @@ class DeletionReport:
     upstream_sph_data_deleted: bool = False
 
 
+class AccountDeletionCleanupError(RuntimeError):
+    """Account rows were removed, but cached attachment cleanup is incomplete."""
+
+
 _lifecycle_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
     weakref.WeakValueDictionary()
 )
@@ -127,7 +131,12 @@ async def delete_account_data(
             metrics_counts = await user_metrics_db.delete_user_data(
                 school_id, username, user_id
             )
-        auth_counts = await auth_db.delete_user_data(user_id)
+        try:
+            auth_counts = await auth_db.delete_user_data(user_id)
+        except OSError as error:
+            raise AccountDeletionCleanupError(
+                "Account data was deleted, but cached attachment cleanup is incomplete."
+            ) from error
         return DeletionReport(
             success=True,
             deleted={
