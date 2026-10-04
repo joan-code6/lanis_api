@@ -24,11 +24,24 @@ def _escape_discord_markdown(value: str) -> str:
     return escaped
 
 
+def _discord_length(value: str) -> int:
+    """Count the UTF-16 units used for Discord content limits."""
+    return len(value.encode("utf-16-le")) // 2
+
+
 def _truncate_escaped(value: str, limit: int) -> str:
-    """Truncate escaped text without leaving a dangling Markdown escape."""
-    if len(value) <= limit:
+    """Truncate escaped text to Discord units without cutting a character."""
+    if _discord_length(value) <= limit:
         return value
-    truncated = value[:limit]
+    chars: list[str] = []
+    used = 0
+    for char in value:
+        units = _discord_length(char)
+        if used + units > limit:
+            break
+        chars.append(char)
+        used += units
+    truncated = "".join(chars)
     trailing_slashes = len(truncated) - len(truncated.rstrip("\\"))
     return truncated[:-1] if trailing_slashes % 2 else truncated
 
@@ -91,7 +104,14 @@ def _send_feedback(
         f"\nEingereicht von `{submitter}` · "
         f"[Im Admin-Portal öffnen]({admin_origin}/#feedback)"
     )
-    details_budget = max(0, 2000 - len(heading) - len(safe_title) - len("**\n") - len(footer))
+    details_budget = max(
+        0,
+        2000
+        - _discord_length(heading)
+        - _discord_length(safe_title)
+        - _discord_length("**\n")
+        - _discord_length(footer),
+    )
     safe_details = _truncate_escaped(_escape_discord_markdown(details), details_budget)
     content = f"{heading}{safe_title}**\n{safe_details}{footer}"
     response = requests.post(
