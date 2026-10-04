@@ -807,6 +807,17 @@ async def delete_whatsapp_link(user_id: str) -> None:
     user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT whatsapp_id_hash FROM whatsapp_links WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                sender_hashes = [row[0] for row in await cursor.fetchall()]
+            if sender_hashes:
+                placeholders = ", ".join("?" for _ in sender_hashes)
+                await db.execute(
+                    f"DELETE FROM whatsapp_rate_limits WHERE whatsapp_id_hash IN ({placeholders})",
+                    sender_hashes,
+                )
             await db.execute("DELETE FROM whatsapp_links WHERE user_id = ?", (user_id,))
             await db.execute(
                 "DELETE FROM whatsapp_ai_conversations WHERE user_id = ?", (user_id,)
@@ -840,6 +851,10 @@ async def delete_whatsapp_link_for_sender(whatsapp_id: str) -> None:
                 )
             await db.execute(
                 "DELETE FROM whatsapp_pending_actions WHERE whatsapp_id_hash = ?",
+                (_whatsapp_id_hash(whatsapp_id),),
+            )
+            await db.execute(
+                "DELETE FROM whatsapp_rate_limits WHERE whatsapp_id_hash = ?",
                 (_whatsapp_id_hash(whatsapp_id),),
             )
             await db.commit()
@@ -1502,6 +1517,7 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
         "whatsapp_pending_actions",
     )
     counts: Dict[str, int] = {}
+    orphaned_file_hashes: List[str] = []
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -1536,9 +1552,6 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                 ) as cursor:
                     if await cursor.fetchone() is None:
                         orphaned_file_hashes.append(file_hash)
-            from .file_cache import delete_files
-
-            counts["file_cache_files"] = delete_files(orphaned_file_hashes)
             for table in tables:
                 cursor = await db.execute(
                     f"DELETE FROM {table} WHERE user_id = ?", (user_id,)
@@ -1556,6 +1569,18 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                 (datetime.utcnow().isoformat(),),
             )
             await db.commit()
+    # The database transaction is authoritative. A failed filesystem cleanup leaves
+    # inaccessible orphan files for the normal cache expiry job to remove rather
+    # than breaking a still-valid shared reference on rollback.
+    if orphaned_file_hashes:
+        from .file_cache import delete_files
+        try:
+            counts["file_cache_files"] = delete_files(orphaned_file_hashes)
+        except OSError:
+            # Database references are already gone; cache expiry can retry cleanup.
+            counts["file_cache_files"] = 0
+    else:
+        counts["file_cache_files"] = 0
     return counts
 
 
@@ -1564,11 +1589,18 @@ async def account_deletion_marker_is_active(user_id: str) -> bool:
     user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            now = datetime.utcnow().isoformat()
+            await db.execute(
+                "DELETE FROM account_deletion_markers WHERE user_id = ? AND expires_at <= ?",
+                (user_id, now),
+            )
             async with db.execute(
                 "SELECT 1 FROM account_deletion_markers WHERE user_id = ? AND expires_at > ?",
-                (user_id, datetime.utcnow().isoformat()),
+                (user_id, now),
             ) as cursor:
-                return await cursor.fetchone() is not None
+                active = await cursor.fetchone() is not None
+            await db.commit()
+            return active
 
 
 async def clear_account_deletion_marker(user_id: str) -> None:
