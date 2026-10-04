@@ -9,10 +9,12 @@ the same file twice.
 import hashlib
 import json
 import logging
+import os
 import re
 import time
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 logger = logging.getLogger("file_cache")
 
@@ -47,6 +49,48 @@ def delete_files(file_hashes: list[str]) -> int:
                 path.unlink()
                 deleted += 1
         unmark_pending(file_hash)
+    return deleted
+
+
+def stage_files_for_deletion(file_hashes: list[str]) -> List[Path]:
+    """Move unreferenced cache files out of the live namespace quickly.
+
+    Callers must hold the database write lock while checking references and
+    staging these paths. Unlinking staged files can then happen after releasing
+    that lock without risking deletion of a newly shared live cache entry.
+    """
+    staged: List[tuple[Path, Path]] = []
+    try:
+        for file_hash in set(file_hashes):
+            if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
+                raise ValueError("Invalid cached file hash")
+            for path in (_content_path(file_hash), _meta_path(file_hash)):
+                if not path.exists():
+                    continue
+                staged_path = path.with_name(
+                    f".{file_hash}.{uuid.uuid4().hex}.deleting"
+                )
+                os.replace(path, staged_path)
+                staged.append((staged_path, path))
+    except Exception:
+        for staged_path, original_path in reversed(staged):
+            try:
+                os.replace(staged_path, original_path)
+            except OSError:
+                logger.exception("Could not restore staged cached file %s", original_path)
+        raise
+    return [staged_path for staged_path, _ in staged]
+
+
+def delete_staged_files(staged_paths: List[Path]) -> int:
+    """Unlink paths already removed from the live cache namespace."""
+    deleted = 0
+    for path in staged_paths:
+        try:
+            path.unlink()
+            deleted += 1
+        except FileNotFoundError:
+            continue
     return deleted
 
 

@@ -1527,6 +1527,7 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     )
     counts: Dict[str, int] = {}
     orphaned_file_hashes: List[str] = []
+    staged_file_paths = []
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -1578,13 +1579,12 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                 (datetime.utcnow().isoformat(),),
             )
             await db.commit()
-            # Recheck under a fresh SQLite write lock immediately before unlinking,
-            # so another process cannot add a shared reference in the gap after the
-            # account deletion transaction commits.
             counts["file_cache_files"] = 0
             if orphaned_file_hashes:
-                from .file_cache import delete_files
+                from .file_cache import stage_files_for_deletion
 
+                # Keep reference writes blocked only for the quick atomic rename.
+                # Slow unlink retries happen below after releasing the auth DB lock.
                 await db.execute("BEGIN IMMEDIATE")
                 try:
                     still_orphaned = []
@@ -1595,22 +1595,27 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                         ) as cursor:
                             if await cursor.fetchone() is None:
                                 still_orphaned.append(file_hash)
-                    for attempt in range(3):
-                        try:
-                            counts["file_cache_files"] = await asyncio.to_thread(
-                                delete_files, still_orphaned
-                            )
-                            break
-                        except OSError:
-                            if attempt == 2:
-                                # The account data transaction has committed; the
-                                # endpoint reports incomplete file cleanup.
-                                raise
-                            await asyncio.sleep(0.1 * (attempt + 1))
+                    staged_file_paths = await asyncio.to_thread(
+                        stage_files_for_deletion, still_orphaned
+                    )
+                    counts["file_cache_files"] = len(staged_file_paths)
                     await db.commit()
                 except Exception:
                     await db.rollback()
                     raise
+    if staged_file_paths:
+        from .file_cache import delete_staged_files
+
+        for attempt in range(3):
+            try:
+                await asyncio.to_thread(delete_staged_files, staged_file_paths)
+                break
+            except OSError:
+                if attempt == 2:
+                    # The account data transaction has committed; the endpoint
+                    # reports incomplete file cleanup.
+                    raise
+                await asyncio.sleep(0.1 * (attempt + 1))
     return counts
 
 
