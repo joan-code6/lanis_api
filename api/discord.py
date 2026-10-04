@@ -24,6 +24,15 @@ def _escape_discord_markdown(value: str) -> str:
     return escaped
 
 
+def _truncate_escaped(value: str, limit: int) -> str:
+    """Truncate escaped text without leaving a dangling Markdown escape."""
+    if len(value) <= limit:
+        return value
+    truncated = value[:limit]
+    trailing_slashes = len(truncated) - len(truncated.rstrip("\\"))
+    return truncated[:-1] if trailing_slashes % 2 else truncated
+
+
 def _webhook_url() -> str | None:
     """Return the configured Discord webhook, rejecting non-Discord URLs."""
     value = (
@@ -72,14 +81,19 @@ def _send_feedback(
         "bug": "Fehler",
         "general": "Allgemeines Feedback",
     }.get(category, "Feedback")
-    admin_origin = os.getenv("LANIS_ADMIN_ORIGIN", "https://admin.lanis.arg-server.de").strip().rstrip("/")
-    content = (
-        f"📬 **Neues Feedback #{report_id} · {category_label}**\n"
-        f"**{_escape_discord_markdown(title[:180])}**\n"
-        f"{_escape_discord_markdown(details[:900])}\n"
-        f"Eingereicht von `{_escape_discord_markdown(submitter_user_id)}` · "
+    admin_origin = os.getenv(
+        "LANIS_ADMIN_ORIGIN", "https://admin.lanis.arg-server.de"
+    ).strip().rstrip("/")[:250]
+    heading = f"📬 **Neues Feedback #{report_id} · {category_label}**\n**"
+    safe_title = _truncate_escaped(_escape_discord_markdown(title), 240)
+    submitter = _truncate_escaped(_escape_discord_markdown(submitter_user_id), 100)
+    footer = (
+        f"\nEingereicht von `{submitter}` · "
         f"[Im Admin-Portal öffnen]({admin_origin}/#feedback)"
-    )[:2000]
+    )
+    details_budget = max(0, 2000 - len(heading) - len(safe_title) - len("**\n") - len(footer))
+    safe_details = _truncate_escaped(_escape_discord_markdown(details), details_budget)
+    content = f"{heading}{safe_title}**\n{safe_details}{footer}"
     response = requests.post(
         webhook_url,
         json={"content": content, "allowed_mentions": {"parse": []}},
