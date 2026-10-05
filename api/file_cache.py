@@ -6,6 +6,7 @@ Hash-based deduplication ensures two students in the same class don't store
 the same file twice.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -24,6 +25,7 @@ FILE_CACHE_DIR = Path(__file__).parent.parent / "data" / "files"
 FILE_CACHE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 
 _pending_downloads: set[str] = set()
+_staged_cleanup_tasks: set[asyncio.Task] = set()
 
 
 def _sanitize_filename(filename: str) -> str:
@@ -92,6 +94,46 @@ def delete_staged_files(staged_paths: List[Path]) -> int:
         except FileNotFoundError:
             continue
     return deleted
+
+
+def purge_staged_files() -> int:
+    """Remove staged attachment files left by an interrupted deletion."""
+    if not FILE_CACHE_DIR.exists():
+        return 0
+    deleted = 0
+    staged_name = re.compile(r"\.[a-f0-9]{64}\.[a-f0-9]{32}\.deleting\Z")
+    for path in FILE_CACHE_DIR.iterdir():
+        if not staged_name.fullmatch(path.name):
+            continue
+        try:
+            path.unlink()
+            deleted += 1
+        except FileNotFoundError:
+            continue
+        except OSError:
+            logger.warning("Could not remove staged cached file %s", path, exc_info=True)
+    return deleted
+
+
+async def _retry_staged_file_cleanup(staged_paths: List[Path]) -> None:
+    for attempt in range(3):
+        await asyncio.sleep(0.5 * (attempt + 1))
+        try:
+            await asyncio.to_thread(delete_staged_files, staged_paths)
+            return
+        except OSError:
+            logger.warning(
+                "Retry %s failed to remove staged cached files",
+                attempt + 1,
+                exc_info=True,
+            )
+
+
+def schedule_staged_file_cleanup_retry(staged_paths: List[Path]) -> None:
+    """Retry failed unlinks soon; staged names also allow startup recovery."""
+    task = asyncio.create_task(_retry_staged_file_cleanup(staged_paths))
+    _staged_cleanup_tasks.add(task)
+    task.add_done_callback(_staged_cleanup_tasks.discard)
 
 
 def _content_path(file_hash: str) -> Path:
@@ -167,7 +209,7 @@ def purge_expired_files() -> int:
     if not FILE_CACHE_DIR.exists():
         return 0
     cutoff = time.time() - FILE_CACHE_RETENTION_SECONDS
-    deleted = 0
+    deleted = purge_staged_files()
     for path in FILE_CACHE_DIR.iterdir():
         try:
             if (

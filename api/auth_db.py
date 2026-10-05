@@ -1604,7 +1604,10 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                     await db.rollback()
                     raise
     if staged_file_paths:
-        from .file_cache import delete_staged_files
+        from .file_cache import (
+            delete_staged_files,
+            schedule_staged_file_cleanup_retry,
+        )
 
         for attempt in range(3):
             try:
@@ -1613,7 +1616,8 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
             except OSError:
                 if attempt == 2:
                     # The account data transaction has committed; the endpoint
-                    # reports incomplete file cleanup.
+                    # reports incomplete cleanup while a background retry runs.
+                    schedule_staged_file_cleanup_retry(staged_file_paths)
                     raise
                 await asyncio.sleep(0.1 * (attempt + 1))
     return counts

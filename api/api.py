@@ -1087,8 +1087,27 @@ async def serialize_account_requests(request: Request, call_next):
         # Let the normal auth dependency return the appropriate error response.
         return await call_next(request)
     lifecycle_lock = await account_lifecycle_lock(user_id)
-    async with lifecycle_lock:
-        return await call_next(request)
+    await lifecycle_lock.acquire()
+    try:
+        response = await call_next(request)
+    except BaseException:
+        lifecycle_lock.release()
+        raise
+
+    body_iterator = getattr(response, "body_iterator", None)
+    if body_iterator is None:
+        lifecycle_lock.release()
+        return response
+
+    async def stream_while_locked():
+        try:
+            async for chunk in body_iterator:
+                yield chunk
+        finally:
+            lifecycle_lock.release()
+
+    response.body_iterator = stream_while_locked()
+    return response
 
 
 async def local_auth_dependency(
@@ -1260,6 +1279,7 @@ async def _startup() -> None:
     """Initialize stores and start the API's background schedulers."""
     global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
     await auth_db_initialize()
+    await run_in_threadpool(purge_expired_files)
     await purge_expired_whatsapp_ai_history()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
