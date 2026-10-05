@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Deque, Dict, List, Literal, Optional
@@ -33,6 +34,7 @@ from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, 
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 try:
@@ -1065,6 +1067,41 @@ app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
 app.router.route_class = OutageCacheRoute
 
 
+def _copy_download_stream_to_file(stream, destination) -> None:
+    """Detach an upstream download from its session before serving it."""
+    try:
+        for chunk in stream:
+            if chunk:
+                destination.write(chunk)
+        destination.seek(0)
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+
+
+def _iter_open_file(file_handle):
+    try:
+        while chunk := file_handle.read(64 * 1024):
+            yield chunk
+    finally:
+        file_handle.close()
+
+
+def _stream_file_handle(file_handle, media_type: str, filename: str, size: int):
+    filename = re.sub(r'[\r\n"]', "_", str(filename or "download"))
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+        "Content-Length": str(size),
+    }
+    return StreamingResponse(
+        _iter_open_file(file_handle),
+        media_type=media_type,
+        headers=headers,
+        background=BackgroundTask(file_handle.close),
+    )
+
+
 @app.middleware("http")
 async def serialize_account_requests(request: Request, call_next):
     """Serialize authenticated requests with login and account deletion."""
@@ -1095,6 +1132,13 @@ async def serialize_account_requests(request: Request, call_next):
         raise
 
     body_iterator = getattr(response, "body_iterator", None)
+    if request.url.path.startswith(
+        ("/dateispeicher/file/", "/meinunterricht/file/")
+    ):
+        # These routes detach the file from the upstream session or open its
+        # descriptor before returning. A slow client must not block deletion.
+        lifecycle_lock.release()
+        return response
     if body_iterator is None:
         lifecycle_lock.release()
         return response
@@ -2302,10 +2346,25 @@ async def download_dateispeicher_file(
     response_headers = {"Content-Disposition": content_disposition}
     media_type = result.get("content_type") or "application/octet-stream"
     if stream is not None:
+        buffered_file = tempfile.SpooledTemporaryFile(
+            max_size=16 * 1024 * 1024, mode="w+b"
+        )
+        try:
+            await run_in_threadpool(
+                _copy_download_stream_to_file, stream, buffered_file
+            )
+        except Exception as error:
+            buffered_file.close()
+            logger.warning("Could not buffer dateispeicher download", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to download file",
+            ) from error
         return StreamingResponse(
-            content=stream,
+            content=_iter_open_file(buffered_file),
             media_type=media_type,
             headers=response_headers,
+            background=BackgroundTask(buffered_file.close),
         )
     return Response(
         content=content,
@@ -3072,8 +3131,6 @@ async def meinunterricht_file(
     file_hash: str,
     x_session_token: str = Header(None, alias="X-Session-Token"),
 ):
-    from fastapi.responses import FileResponse
-
     if not x_session_token:
         raise HTTPException(status_code=404, detail="File not found")
     if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
@@ -3090,10 +3147,12 @@ async def meinunterricht_file(
     content_path = get_content_path(file_hash)
 
     if content_path.exists() and meta and meta.get("content_type"):
-        return FileResponse(
-            content_path,
-            media_type=meta.get("content_type", "application/octet-stream"),
-            filename=meta.get("filename", "download"),
+        file_handle = content_path.open("rb")
+        return _stream_file_handle(
+            file_handle,
+            meta.get("content_type", "application/octet-stream"),
+            meta.get("filename", "download"),
+            os.fstat(file_handle.fileno()).st_size,
         )
 
     if meta and meta.get("download_url"):
@@ -3119,10 +3178,12 @@ async def meinunterricht_file(
                 result.get("content_type", "application/octet-stream"),
                 result.get("filename", "download"),
             )
-            return FileResponse(
-                content_path,
-                media_type=result.get("content_type", "application/octet-stream"),
-                filename=result.get("filename", "download"),
+            file_handle = content_path.open("rb")
+            return _stream_file_handle(
+                file_handle,
+                result.get("content_type", "application/octet-stream"),
+                result.get("filename", "download"),
+                os.fstat(file_handle.fileno()).st_size,
             )
 
     raise HTTPException(
