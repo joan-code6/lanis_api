@@ -1067,11 +1067,22 @@ app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
 app.router.route_class = OutageCacheRoute
 
 
+MAX_DATEISPEICHER_DOWNLOAD_BYTES = 256 * 1024 * 1024
+
+
+class DownloadTooLargeError(Exception):
+    pass
+
+
 def _copy_download_stream_to_file(stream, destination) -> None:
     """Detach an upstream download from its session before serving it."""
     try:
+        total_bytes = 0
         for chunk in stream:
             if chunk:
+                total_bytes += len(chunk)
+                if total_bytes > MAX_DATEISPEICHER_DOWNLOAD_BYTES:
+                    raise DownloadTooLargeError
                 destination.write(chunk)
         destination.seek(0)
     finally:
@@ -2348,6 +2359,12 @@ async def download_dateispeicher_file(
             await run_in_threadpool(
                 _copy_download_stream_to_file, stream, buffered_file
             )
+        except DownloadTooLargeError as error:
+            buffered_file.close()
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File exceeds the 256 MiB download limit",
+            ) from error
         except Exception as error:
             buffered_file.close()
             logger.warning("Could not buffer dateispeicher download", exc_info=True)
@@ -2360,6 +2377,11 @@ async def download_dateispeicher_file(
             media_type=media_type,
             headers=response_headers,
             background=BackgroundTask(buffered_file.close),
+        )
+    if len(content) > MAX_DATEISPEICHER_DOWNLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File exceeds the 256 MiB download limit",
         )
     return Response(
         content=content,
@@ -2875,6 +2897,60 @@ async def mark_read(
 # --- Mein Unterricht ---
 
 
+_course_file_interests: dict[str, dict[str, str]] = {}
+_course_file_interests_lock = asyncio.Lock()
+
+
+async def _queue_course_file_download(
+    user_id: str, download_url: str, file_hash: str
+) -> None:
+    async def download_for_task(
+        task_user_id: str, task_download_url: str, task_file_hash: str
+    ) -> None:
+        await _download_course_file(
+            task_user_id,
+            task_download_url,
+            task_file_hash,
+            task_generation=download_task.user_generation,
+        )
+
+    download_task = Task(
+        name=f"download_file:{file_hash[:12]}",
+        func=download_for_task,
+        args=(user_id, download_url, file_hash),
+        user_id=user_id,
+        priority=TaskPriority.LOW,
+        max_retries=2,
+        on_cancel=lambda owner=user_id, pending_hash=file_hash: _reschedule_shared_course_file(
+            pending_hash, owner
+        ),
+    )
+    await task_queue.add_task(download_task)
+
+
+async def _reschedule_shared_course_file(file_hash: str, cancelled_user_id: str) -> None:
+    """Use another interested account if the queued downloader is deleted."""
+    async with _course_file_interests_lock:
+        interested = _course_file_interests.get(file_hash, {})
+        interested.pop(cancelled_user_id, None)
+        replacement = next(iter(interested.items()), None)
+        if replacement is None:
+            _course_file_interests.pop(file_hash, None)
+            unmark_pending(file_hash)
+            return
+        replacement_user_id, replacement_url = replacement
+        mark_pending(file_hash)
+    try:
+        await _queue_course_file_download(
+            replacement_user_id, replacement_url, file_hash
+        )
+    except Exception:
+        async with _course_file_interests_lock:
+            _course_file_interests.pop(file_hash, None)
+            unmark_pending(file_hash)
+        logger.exception("Could not reschedule shared course file %s", file_hash[:12])
+
+
 async def _download_course_file(
     user_id: str,
     download_url: str,
@@ -2884,6 +2960,8 @@ async def _download_course_file(
 ) -> None:
     if is_file_cached(file_hash):
         unmark_pending(file_hash)
+        async with _course_file_interests_lock:
+            _course_file_interests.pop(file_hash, None)
         return
 
     from .account_data import account_deletion_is_recent, account_lifecycle_lock
@@ -2897,6 +2975,8 @@ async def _download_course_file(
             )
         ):
             unmark_pending(file_hash)
+            async with _course_file_interests_lock:
+                _course_file_interests.pop(file_hash, None)
             return
         write_pending_meta(file_hash, download_url)
         session_data = await sessions._get_or_create_schulportal_client(user_id)
@@ -2911,6 +2991,8 @@ async def _download_course_file(
             )
         ):
             unmark_pending(file_hash)
+            async with _course_file_interests_lock:
+                _course_file_interests.pop(file_hash, None)
             return
         if result.get("success"):
             save_file(
@@ -2921,16 +3003,13 @@ async def _download_course_file(
             )
         else:
             unmark_pending(file_hash)
+        async with _course_file_interests_lock:
+            _course_file_interests.pop(file_hash, None)
 
     if not result.get("success"):
         logger.warning(
             "File download failed for %s: %s", file_hash[:12], result.get("error")
         )
-
-
-async def _clear_pending_course_file(file_hash: str) -> None:
-    """Release a shared-file reservation when its owner task is cancelled."""
-    unmark_pending(file_hash)
 
 
 @app.get("/meinunterricht")
@@ -3084,35 +3163,28 @@ async def meinunterricht_course(
                     original_url
                     and "/meinunterricht/file/" not in original_url
                     and not is_file_cached(file_hash)
+                ):
+                    async with _course_file_interests_lock:
+                        _course_file_interests.setdefault(file_hash, {})[
+                            auth.user_id
+                        ] = original_url
+
+                if (
+                    original_url
+                    and "/meinunterricht/file/" not in original_url
+                    and not is_file_cached(file_hash)
                     and not is_file_pending(file_hash)
                 ):
                     mark_pending(file_hash)
-                    download_task: Task
-
-                    async def download_course_file_for_task(
-                        task_user_id: str,
-                        task_download_url: str,
-                        task_file_hash: str,
-                    ) -> None:
-                        await _download_course_file(
-                            task_user_id,
-                            task_download_url,
-                            task_file_hash,
-                            task_generation=download_task.user_generation,
+                    try:
+                        await _queue_course_file_download(
+                            auth.user_id, original_url, file_hash
                         )
-
-                    download_task = Task(
-                        name=f"download_file:{file_hash[:12]}",
-                        func=download_course_file_for_task,
-                        args=(auth.user_id, original_url, file_hash),
-                        user_id=auth.user_id,
-                        priority=TaskPriority.LOW,
-                        max_retries=2,
-                        on_cancel=lambda pending_hash=file_hash: _clear_pending_course_file(
-                            pending_hash
-                        ),
-                    )
-                    await task_queue.add_task(download_task)
+                    except Exception:
+                        unmark_pending(file_hash)
+                        async with _course_file_interests_lock:
+                            _course_file_interests.pop(file_hash, None)
+                        raise
 
     if fetched_from_portal:
         await sessions.set_cache(
@@ -4836,6 +4908,9 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
 
     link = await get_whatsapp_link_for_sender(incoming.sender_id)
     if link is None:
+        if not await allow_whatsapp_message(incoming.sender_id):
+            logger.warning("Dropped rate-limited WhatsApp message")
+            return
         await client.send_text(
             incoming.sender_id, not_linked_message(config.ui_base_url)
         )
