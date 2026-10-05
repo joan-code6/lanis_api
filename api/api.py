@@ -1088,20 +1088,6 @@ def _iter_open_file(file_handle):
         file_handle.close()
 
 
-def _stream_file_handle(file_handle, media_type: str, filename: str, size: int):
-    filename = re.sub(r'[\r\n"]', "_", str(filename or "download"))
-    headers = {
-        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
-        "Content-Length": str(size),
-    }
-    return StreamingResponse(
-        _iter_open_file(file_handle),
-        media_type=media_type,
-        headers=headers,
-        background=BackgroundTask(file_handle.close),
-    )
-
-
 @app.middleware("http")
 async def serialize_account_requests(request: Request, call_next):
     """Serialize authenticated requests with login and account deletion."""
@@ -1132,23 +1118,32 @@ async def serialize_account_requests(request: Request, call_next):
         raise
 
     body_iterator = getattr(response, "body_iterator", None)
-    if request.url.path.startswith(
-        ("/dateispeicher/file/", "/meinunterricht/file/")
-    ):
-        # These routes detach the file from the upstream session or open its
-        # descriptor before returning. A slow client must not block deletion.
+    if request.url.path.startswith("/dateispeicher/file/"):
+        # The upstream stream is fully detached to a temporary file before the
+        # route returns, so a slow client no longer needs this lock.
         lifecycle_lock.release()
         return response
     if body_iterator is None:
         lifecycle_lock.release()
         return response
 
+    release_after_file_open = request.url.path.startswith("/meinunterricht/file/")
+    lock_held = True
+
     async def stream_while_locked():
+        nonlocal lock_held
         try:
             async for chunk in body_iterator:
+                if release_after_file_open and lock_held:
+                    # Starlette's FileResponse opens and reads the file before
+                    # yielding the first body chunk. Its descriptor remains
+                    # readable after account deletion unlinks the cache path.
+                    lifecycle_lock.release()
+                    lock_held = False
                 yield chunk
         finally:
-            lifecycle_lock.release()
+            if lock_held:
+                lifecycle_lock.release()
 
     response.body_iterator = stream_while_locked()
     return response
@@ -3131,6 +3126,8 @@ async def meinunterricht_file(
     file_hash: str,
     x_session_token: str = Header(None, alias="X-Session-Token"),
 ):
+    from fastapi.responses import FileResponse
+
     if not x_session_token:
         raise HTTPException(status_code=404, detail="File not found")
     if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
@@ -3147,12 +3144,10 @@ async def meinunterricht_file(
     content_path = get_content_path(file_hash)
 
     if content_path.exists() and meta and meta.get("content_type"):
-        file_handle = content_path.open("rb")
-        return _stream_file_handle(
-            file_handle,
-            meta.get("content_type", "application/octet-stream"),
-            meta.get("filename", "download"),
-            os.fstat(file_handle.fileno()).st_size,
+        return FileResponse(
+            content_path,
+            media_type=meta.get("content_type", "application/octet-stream"),
+            filename=meta.get("filename", "download"),
         )
 
     if meta and meta.get("download_url"):
@@ -3178,12 +3173,10 @@ async def meinunterricht_file(
                 result.get("content_type", "application/octet-stream"),
                 result.get("filename", "download"),
             )
-            file_handle = content_path.open("rb")
-            return _stream_file_handle(
-                file_handle,
-                result.get("content_type", "application/octet-stream"),
-                result.get("filename", "download"),
-                os.fstat(file_handle.fileno()).st_size,
+            return FileResponse(
+                content_path,
+                media_type=result.get("content_type", "application/octet-stream"),
+                filename=result.get("filename", "download"),
             )
 
     raise HTTPException(
