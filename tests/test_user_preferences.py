@@ -48,7 +48,11 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "theme_mode": "system",
         "theme_color": "cyan",
     }
-    assert defaults["sidebar"] == {"order": auth_db.DEFAULT_SIDEBAR_ORDER, "hidden_items": []}
+    assert defaults["sidebar"] == {
+        "order": auth_db.DEFAULT_SIDEBAR_ORDER,
+        "hidden_items": [],
+        "show_feedback_button": True,
+    }
     assert defaults["dashboard"]["pinned_modules"] == []
     assert defaults["dashboard"]["hidden_modules"] == []
     assert defaults["dashboard"]["notifications_enabled"] is True

@@ -13,7 +13,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -36,6 +36,7 @@ from .identity import (
     normalize_school_id,
     normalize_username,
 )
+from . import feedback_db
 from .metrics import user_metrics_db
 from .school_locations import city_coordinates as _city_coordinates
 from .school_locations import geocode_school as _geocode_school
@@ -100,6 +101,10 @@ class AdminUsersResponse(BaseModel):
     limit: int
     offset: int
     users: list[AdminUserSummary]
+
+
+class FeedbackStatusRequest(BaseModel):
+    status: Literal["open", "done"]
 
 
 @dataclass(frozen=True)
@@ -643,6 +648,48 @@ async def admin_audit(
         "limit": limit,
         "offset": offset,
     }
+
+
+@router.get("/feedback")
+async def admin_feedback(
+    status: Literal["open", "done", "all"] = Query("open"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    _: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    reports, total = await feedback_db.list_feedback(
+        status=None if status == "all" else status,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "success": True,
+        "reports": reports,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.patch("/feedback/{report_id}")
+async def update_admin_feedback(
+    report_id: int,
+    payload: FeedbackStatusRequest,
+    principal: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    report = await feedback_db.update_feedback_status(
+        report_id,
+        payload.status,
+        principal.user_id,
+    )
+    if report is None:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    await _record_admin_action(
+        principal.user_id,
+        f"feedback_{payload.status}",
+        str(report_id),
+    )
+    return {"success": True, "report": report}
 
 
 @router.get("/metrics/overview")
