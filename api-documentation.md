@@ -46,7 +46,7 @@ List schools with configured landing page content (`school_id`, `name`, and `cit
 
 #### GET `/schools/{school_id}/landing-page`
 
-Return the school's display name, city, short name, Schulportal login URL, color palette,
+Return the school's display name, city, short name, Schulportal login URL, Lanis theme, color palette,
 and static asset paths. Unknown numeric school IDs return `404`; malformed IDs return `422`.
 
 Example response:
@@ -59,6 +59,7 @@ Example response:
     "city": "Heusenstamm",
     "short_name": "ARG",
     "login_url": "https://login.schulportal.hessen.de/?i=5201",
+    "theme_color": "cyan",
     "palette": {"primary": "#00bcd5", "primary_dark": "#0099ae", "accent": "#69ddea"},
     "assets": {
       "logo": "/schools/5201/logo.png",

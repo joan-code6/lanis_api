@@ -19,6 +19,7 @@ SCHOOL_PAGES: dict[str, dict[str, Any]] = {
         "city": "Heusenstamm",
         "short_name": "ARG",
         "login_url": "https://login.schulportal.hessen.de/?i=5201",
+        "theme_color": "cyan",
         "palette": {
             "primary": "#00bcd5",
             "primary_dark": "#0099ae",
