@@ -143,8 +143,9 @@ async def get_school_directory() -> dict[str, dict[str, Any]]:
             for school in schools:
                 school_id = normalize_school_id(str(school.get("id", "")))
                 if school_id:
+                    name = school.get("name")
                     directory[school_id] = {
-                        "name": school.get("name") or school_id,
+                        "name": name if isinstance(name, str) and name else school_id,
                         "location": school.get("location") or "",
                         "district": district.get("name") or "",
                     }
