@@ -96,6 +96,7 @@ DEFAULT_SIDEBAR_ORDER = [
     "dashboard",
     "messages",
     "dateispeicher",
+    "dateiverteilung",
     "vertretungsplan",
     "dsb",
     "courses",
