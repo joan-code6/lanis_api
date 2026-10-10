@@ -36,18 +36,18 @@ X-Session-Token: {token}
 
 ## Endpoints
 
-### Public school landing pages
+### Public school data and images
 
 These endpoints load public school information directly from Schulportal Hessen (SPH).
 They do not require authentication or a manually maintained school configuration.
 
-#### GET `/schools/landing-pages`
+#### GET `/schools`
 
 List all schools from SPH's public school directory (`school_id`, `name`, and `city`).
 This reuses the shared 12-hour directory cache and does not fetch individual school
 profiles or images. An unavailable directory returns `503`.
 
-#### GET `/schools/{school_id}/landing-page`
+#### GET `/schools/{school_id}/data`
 
 Load the school's public profile from
 `https://startcache.schulportal.hessen.de/exporteur.php?a=school&i={school_id}`.
@@ -56,22 +56,40 @@ The response maps SPH's `Name`, `Ort`, `Kurzname`, `Farben`, `Logo`, `CSS`, `bgi
 
 - `palette.primary`, `primary_dark`, and `accent` come from `bg`, `border`, and
   `activeBG`. The other palette fields preserve text, active text, footer, and heading colors.
-- `assets.logo`, `assets.stylesheet`, and `assets.campus` contain HTTPS asset URLs
-  returned by SPH. Images stay on SPH's static servers; the API does not download
-  every background or require copies in the frontend repository.
+- `assets.logo` and `assets.campus` contain backend image URLs. Image bytes are
+  fetched from SPH on demand and served by LANIS; clients are never redirected to SPH.
+  URLs use `PUBLIC_BASE_URL` when configured, otherwise the incoming request base URL.
+- `assets.stylesheet` preserves the upstream SPH stylesheet URL.
 - `assets.campus_widths` contains SPH's image widths for responsive layouts.
 - Missing assets or invalid colors are `null`. An empty SPH short name stays empty.
 - `support_html` contains upstream support HTML; render as text or sanitize before
   inserting it as HTML. `last_modified` preserves SPH's modification timestamp.
 
 Successful profiles are cached for 12 hours in a bounded 512-entry cache. Concurrent
-requests for one school share a fetch, with at most four upstream profile requests
+requests for one school share a fetch, with at most four upstream profile/image requests
 running at once. Failed lookups are cached for 60 seconds to avoid repeated upstream requests.
 
 Unknown schools return `404`; malformed IDs return `422`; upstream failures return
 `502`; upstream timeouts return `504`.
 
-Example response (values come from SPH):
+#### GET `/schools/{school_id}/logo`
+
+Returns the logo as image bytes with its upstream image content type.
+
+#### GET `/schools/{school_id}/campus?size=lg`
+
+Returns the campus/background image as image bytes. `size` accepts `xs`, `sm`,
+`md`, or `lg` and defaults to `lg`. An unavailable image or size returns `404`;
+invalid sizes return `422`. No fallback image from another school is used.
+
+Images are fetched on demand and cached for 12 hours. The in-memory image cache
+is limited to 128 entries and 64 MiB in total; each image is limited to 8 MiB.
+Concurrent requests for the same image share one download. Image failures are
+cached for 60 seconds. Responses include `Cache-Control`, `nosniff`, and a
+restrictive content security policy. Redirects are followed only within HTTPS
+SPH hosts. Upstream failures return `502`, and timeouts return `504`.
+
+Example response (school values come from SPH; image URLs use your backend base URL):
 ```json
 {
   "success": true,
@@ -91,13 +109,13 @@ Example response (values come from SPH):
       "heading": "#606060"
     },
     "assets": {
-      "logo": "https://start.schulportal.hessen.de/exporteur.php?a=schoollogo&i=5201",
+      "logo": "https://api.example.com/schools/5201/logo",
       "stylesheet": "https://start.schulportal.hessen.de/exporteur.php?a=schoolcss&i=5201",
       "campus": {
-        "xs": "https://start.schulportal.hessen.de/exporteur.php?a=schoolbg&i=5201&s=xs",
-        "sm": "https://start.schulportal.hessen.de/exporteur.php?a=schoolbg&i=5201&s=sm",
-        "md": "https://start.schulportal.hessen.de/exporteur.php?a=schoolbg&i=5201&s=md",
-        "lg": "https://start.schulportal.hessen.de/exporteur.php?a=schoolbg&i=5201&s=lg"
+        "xs": "https://api.example.com/schools/5201/campus?size=xs",
+        "sm": "https://api.example.com/schools/5201/campus?size=sm",
+        "md": "https://api.example.com/schools/5201/campus?size=md",
+        "lg": "https://api.example.com/schools/5201/campus?size=lg"
       },
       "campus_widths": {"xs": 768, "sm": 990, "md": 1200, "lg": 1600}
     },

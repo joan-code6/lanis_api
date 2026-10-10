@@ -1,4 +1,4 @@
-"""Public school landing page data loaded from Schulportal Hessen."""
+"""Public school data and proxied images loaded from Schulportal Hessen."""
 
 from __future__ import annotations
 
@@ -6,13 +6,15 @@ import asyncio
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
+import os
 import re
 import time
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, Literal
+from urllib.parse import urljoin, urlparse
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from fastapi.concurrency import run_in_threadpool
 
 from .school_locations import get_school_directory
@@ -152,8 +154,8 @@ def _remember(school_id: str, entry: _CacheEntry) -> None:
         _profile_cache.popitem(last=False)
 
 
-@router.get("/landing-pages")
-async def list_school_landing_pages() -> dict[str, Any]:
+@router.get("")
+async def list_schools() -> dict[str, Any]:
     """List all schools from the shared, cached SPH school directory."""
     directory = await get_school_directory()
     if not directory:
@@ -166,8 +168,7 @@ async def list_school_landing_pages() -> dict[str, Any]:
     return {"success": True, "schools": schools}
 
 
-@router.get("/{school_id}/landing-page")
-async def get_school_landing_page(school_id: str) -> dict[str, Any]:
+async def _get_school_profile(school_id: str) -> dict[str, Any]:
     """Load one school's public identity, colors, and assets directly from SPH."""
     normalized_id = school_id.strip()
     if not re.fullmatch(r"[0-9]{1,10}", normalized_id):
@@ -188,4 +189,147 @@ async def get_school_landing_page(school_id: str) -> dict[str, Any]:
                     ))
                     raise
                 _remember(normalized_id, _CacheEntry(time.monotonic() + _CACHE_TTL, profile))
-    return {"success": True, "school": deepcopy(profile)}
+    return deepcopy(profile)
+
+
+@router.get("/{school_id}/data")
+async def get_school_data(school_id: str, request: Request) -> dict[str, Any]:
+    """Return school information with image URLs served by this backend."""
+    profile = await _get_school_profile(school_id)
+    base_url = os.getenv("PUBLIC_BASE_URL", str(request.base_url)).rstrip("/")
+    image_base = f"{base_url}/schools/{profile['school_id']}"
+    assets = profile["assets"]
+    if assets["logo"] is not None:
+        assets["logo"] = f"{image_base}/logo"
+    assets["campus"] = {
+        size: f"{image_base}/campus?size={size}" if url is not None else None
+        for size, url in assets["campus"].items()
+    }
+    return {"success": True, "school": profile}
+
+
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_MAX_IMAGE_CACHE_BYTES = 64 * 1024 * 1024
+_MAX_IMAGE_CACHE_ENTRIES = 128
+_image_locks = [asyncio.Lock() for _ in range(64)]
+
+
+@dataclass
+class _ImageEntry:
+    expires_at: float
+    content: bytes = b""
+    media_type: str | None = None
+    error_status: int | None = None
+    error_detail: str | None = None
+
+
+_image_cache: OrderedDict[str, _ImageEntry] = OrderedDict()
+
+
+def _fetch_image(url: str) -> tuple[bytes, str]:
+    """Download a bounded image, validating every redirect before following it."""
+    try:
+        for _ in range(6):
+            if _asset_url(url) is None:
+                raise HTTPException(status_code=502, detail="Invalid SPH image URL")
+            with requests.get(url, timeout=(5, 15), stream=True, allow_redirects=False) as response:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    location = response.headers.get("Location")
+                    if not location:
+                        raise HTTPException(status_code=502, detail="Invalid SPH image redirect")
+                    url = urljoin(url, location)
+                    continue
+                if response.status_code == 404:
+                    raise HTTPException(status_code=404, detail="School image not found")
+                response.raise_for_status()
+                media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if media_type not in {
+                    "image/png", "image/jpeg", "image/gif", "image/webp",
+                    "image/avif", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon",
+                }:
+                    raise HTTPException(status_code=502, detail="SPH did not return an image")
+                content = bytearray()
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if len(content) + len(chunk) > _MAX_IMAGE_BYTES:
+                        raise HTTPException(status_code=502, detail="SPH image is too large")
+                    content.extend(chunk)
+                if not content:
+                    raise HTTPException(status_code=502, detail="SPH returned an empty image")
+                return bytes(content), media_type
+        raise HTTPException(status_code=502, detail="Too many SPH image redirects")
+    except requests.Timeout as exc:
+        raise HTTPException(status_code=504, detail="SPH image request timed out") from exc
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="Could not load SPH image") from exc
+
+
+def _cached_image(url: str) -> _ImageEntry | None:
+    entry = _image_cache.get(url)
+    if entry is None:
+        return None
+    if entry.expires_at <= time.monotonic():
+        del _image_cache[url]
+        return None
+    _image_cache.move_to_end(url)
+    if entry.error_status is not None:
+        raise HTTPException(status_code=entry.error_status, detail=entry.error_detail)
+    return entry
+
+
+def _remember_image(url: str, entry: _ImageEntry) -> None:
+    now = time.monotonic()
+    for key in list(_image_cache):
+        if _image_cache[key].expires_at <= now:
+            del _image_cache[key]
+    _image_cache[url] = entry
+    _image_cache.move_to_end(url)
+    while (
+        len(_image_cache) > _MAX_IMAGE_CACHE_ENTRIES
+        or sum(len(item.content) for item in _image_cache.values()) > _MAX_IMAGE_CACHE_BYTES
+    ):
+        _image_cache.popitem(last=False)
+
+
+async def _serve_image(url: str | None) -> Response:
+    if url is None:
+        raise HTTPException(status_code=404, detail="School image not available")
+    entry = _cached_image(url)
+    if entry is None:
+        async with _image_locks[hash(url) % len(_image_locks)]:
+            entry = _cached_image(url)
+            if entry is None:
+                try:
+                    async with _fetch_slots:
+                        content, media_type = await run_in_threadpool(_fetch_image, url)
+                except HTTPException as exc:
+                    _remember_image(url, _ImageEntry(
+                        time.monotonic() + _ERROR_CACHE_TTL,
+                        error_status=exc.status_code, error_detail=exc.detail,
+                    ))
+                    raise
+                entry = _ImageEntry(time.monotonic() + _CACHE_TTL, content, media_type)
+                _remember_image(url, entry)
+    max_age = max(0, int(entry.expires_at - time.monotonic()))
+    return Response(content=entry.content, media_type=entry.media_type, headers={
+        "Cache-Control": f"public, max-age={max_age}",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+    })
+
+
+@router.get("/{school_id}/logo", response_class=Response,
+            responses={200: {"content": {"image/png": {}, "image/jpeg": {}, "image/svg+xml": {}}}})
+async def get_school_logo(school_id: str) -> Response:
+    """Serve the school's SPH logo bytes through the backend."""
+    profile = await _get_school_profile(school_id)
+    return await _serve_image(profile["assets"]["logo"])
+
+
+@router.get("/{school_id}/campus", response_class=Response,
+            responses={200: {"content": {"image/jpeg": {}, "image/png": {}}}})
+async def get_school_campus(
+    school_id: str, size: Literal["xs", "sm", "md", "lg"] = "lg",
+) -> Response:
+    """Serve a school's SPH background image; default to the large variant."""
+    profile = await _get_school_profile(school_id)
+    return await _serve_image(profile["assets"]["campus"][size])

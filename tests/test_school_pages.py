@@ -70,8 +70,8 @@ def test_profiles_load_distinct_school_identity_colors_and_assets_from_sph(monke
         return ExportResponse(school_export(params["i"], color))
 
     monkeypatch.setattr(school_pages.requests, "get", get)
-    first = asyncio.run(school_pages.get_school_landing_page("1001"))["school"]
-    second = asyncio.run(school_pages.get_school_landing_page("2002"))["school"]
+    first = asyncio.run(school_pages._get_school_profile("1001"))
+    second = asyncio.run(school_pages._get_school_profile("2002"))
     assert first["name"] == "School 1001"
     assert second["name"] == "School 2002"
     assert first["city"] == "Town 1001"
@@ -96,7 +96,7 @@ def test_missing_or_unsafe_branding_is_not_replaced_with_another_school(monkeypa
     payload["CSS"] = "javascript:alert(1)"
     payload["bgimg"] = False
     monkeypatch.setattr(school_pages.requests, "get", lambda *_args, **_kwargs: ExportResponse(payload))
-    result = asyncio.run(school_pages.get_school_landing_page("1001"))["school"]
+    result = asyncio.run(school_pages._get_school_profile("1001"))
     assert result["palette"]["primary"] is None
     assert result["assets"]["logo"] is None
     assert result["assets"]["stylesheet"] is None
@@ -110,7 +110,7 @@ def test_invalid_ids_do_not_contact_sph(monkeypatch, school_id):
 
     monkeypatch.setattr(school_pages.requests, "get", unexpected)
     with pytest.raises(HTTPException) as error:
-        asyncio.run(school_pages.get_school_landing_page(school_id))
+        asyncio.run(school_pages._get_school_profile(school_id))
     assert error.value.status_code == 422
 
 
@@ -126,7 +126,7 @@ def test_invalid_ids_do_not_contact_sph(monkeypatch, school_id):
 def test_upstream_errors_are_reported_instead_of_static_profiles(monkeypatch, response, expected_status):
     monkeypatch.setattr(school_pages.requests, "get", lambda *_args, **_kwargs: response)
     with pytest.raises(HTTPException) as error:
-        asyncio.run(school_pages.get_school_landing_page("1001"))
+        asyncio.run(school_pages._get_school_profile("1001"))
     assert error.value.status_code == expected_status
 
 
@@ -136,7 +136,7 @@ def test_timeout_returns_gateway_timeout(monkeypatch):
 
     monkeypatch.setattr(school_pages.requests, "get", timeout)
     with pytest.raises(HTTPException) as error:
-        asyncio.run(school_pages.get_school_landing_page("1001"))
+        asyncio.run(school_pages._get_school_profile("1001"))
     assert error.value.status_code == 504
 
 
@@ -154,15 +154,15 @@ def test_concurrent_requests_share_one_fetch_and_expired_profiles_refresh(monkey
 
     async def scenario():
         responses = await asyncio.gather(*[
-            school_pages.get_school_landing_page("1001") for _ in range(8)
+            school_pages._get_school_profile("1001") for _ in range(8)
         ])
         assert calls == ["1001"]
-        responses[0]["school"]["name"] = "mutated by caller"
-        cached = await school_pages.get_school_landing_page("1001")
-        assert cached["school"]["name"] == "revision 1"
+        responses[0]["name"] = "mutated by caller"
+        cached = await school_pages._get_school_profile("1001")
+        assert cached["name"] == "revision 1"
         now[0] += school_pages._CACHE_TTL + 1
-        refreshed = await school_pages.get_school_landing_page("1001")
-        assert refreshed["school"]["name"] == "revision 2"
+        refreshed = await school_pages._get_school_profile("1001")
+        assert refreshed["name"] == "revision 2"
 
     asyncio.run(scenario())
 
@@ -179,11 +179,11 @@ def test_failed_requests_are_temporarily_cached_and_then_retried(monkeypatch):
     monkeypatch.setattr(school_pages, "_fetch_school_profile", missing)
     for _ in range(2):
         with pytest.raises(HTTPException):
-            asyncio.run(school_pages.get_school_landing_page("1001"))
+            asyncio.run(school_pages._get_school_profile("1001"))
     assert calls == ["1001"]
     now[0] += school_pages._ERROR_CACHE_TTL + 1
     with pytest.raises(HTTPException):
-        asyncio.run(school_pages.get_school_landing_page("1001"))
+        asyncio.run(school_pages._get_school_profile("1001"))
     assert calls == ["1001", "1001"]
 
 
@@ -195,7 +195,7 @@ def test_directory_lists_all_sph_schools_without_fetching_each_profile(monkeypat
         }
 
     monkeypatch.setattr(school_pages, "get_school_directory", directory)
-    result = asyncio.run(school_pages.list_school_landing_pages())
+    result = asyncio.run(school_pages.list_schools())
     assert result["schools"] == [
         {"school_id": "1001", "name": "Alpha school", "city": "Town A"},
         {"school_id": "2002", "name": "Zulu school", "city": "Town Z"},
