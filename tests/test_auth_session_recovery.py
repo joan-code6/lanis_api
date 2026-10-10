@@ -20,13 +20,14 @@ def _refresh_token_data():
         "school_id": "5201",
         "username": "Student",
         "password": "password",
+        "session_id": "session-id",
     }
 
 
 def test_refresh_does_not_require_a_live_schulportal_session(monkeypatch):
     class FakeSessions:
-        def create_access_token(self, user_id, school_id, username):
-            return f"access:{user_id}:{school_id}:{username}"
+        def create_access_token(self, user_id, school_id, username, session_id):
+            return f"access:{user_id}:{school_id}:{username}:{session_id}"
 
         async def _get_or_create_schulportal_client(self, _user_id):
             raise AssertionError("refresh must not contact Schulportal")
@@ -41,7 +42,7 @@ def test_refresh_does_not_require_a_live_schulportal_session(monkeypatch):
         refresh_endpoint(TokenRefreshRequest(refresh_token="refresh-token"))
     )
 
-    assert response.access_token == "access:5201:student:5201:Student"
+    assert response.access_token == "access:5201:student:5201:Student:session-id"
 
 
 def test_failed_restore_is_retryable_and_keeps_the_refresh_token(monkeypatch):

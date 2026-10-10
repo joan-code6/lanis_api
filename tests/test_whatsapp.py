@@ -1070,8 +1070,16 @@ def test_confirmation_attempts_are_rate_limited(monkeypatch) -> None:
     async def confirm(*args):
         confirmed.append(args)
 
+    async def no_link(_sender_id):
+        return None
+
+    async def clear_rate_limit(_sender_id):
+        return None
+
     monkeypatch.setattr(api_module, "reserve_whatsapp_message", reserve)
     monkeypatch.setattr(api_module, "allow_whatsapp_message", rate_limit)
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", no_link)
+    monkeypatch.setattr(api_module, "clear_whatsapp_rate_limit", clear_rate_limit)
     monkeypatch.setattr(api_module, "_confirm_whatsapp_action", confirm)
     monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
 

@@ -895,21 +895,34 @@ async def run_message_notification_cycle(
     async def check_with_limit(user: Dict[str, Any]) -> None:
         async with semaphore:
             try:
-                if invalidate_cache is None and get_preferences is None:
-                    await check_user_messages(user, get_client)
-                else:
-                    await check_user_messages(
+                # Serialize polling with account deletion. The user list is a
+                # snapshot, so re-check the persisted account after acquiring
+                # the lock before doing any fetch, write, or push delivery.
+                from .account_data import account_lifecycle_lock
+                from .auth_db import get_refresh_token_by_user_id
+
+                user_id = str(user.get("user_id") or "")
+                if not user_id:
+                    return
+                lock = await account_lifecycle_lock(user_id)
+                async with lock:
+                    if not await get_refresh_token_by_user_id(user_id):
+                        return
+                    if invalidate_cache is None and get_preferences is None:
+                        await check_user_messages(user, get_client)
+                    else:
+                        await check_user_messages(
+                            user,
+                            get_client,
+                            invalidate_cache=invalidate_cache,
+                            get_preferences=get_preferences,
+                        )
+                    await check_user_vertretungsplan(
                         user,
                         get_client,
                         invalidate_cache=invalidate_cache,
                         get_preferences=get_preferences,
                     )
-                await check_user_vertretungsplan(
-                    user,
-                    get_client,
-                    invalidate_cache=invalidate_cache,
-                    get_preferences=get_preferences,
-                )
             except asyncio.CancelledError:
                 raise
             except Exception as error:
