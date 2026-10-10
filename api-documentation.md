@@ -36,6 +36,43 @@ X-Session-Token: {token}
 
 ## Endpoints
 
+### Public school landing pages
+
+These endpoints return public school branding only. They do not require authentication.
+
+#### GET `/schools/landing-pages`
+
+List schools with configured landing page content (`school_id`, `name`, and `city`).
+
+#### GET `/schools/{school_id}/landing-page`
+
+Return the school's display name, city, short name, Schulportal login URL, color palette,
+and static asset paths. Unknown numeric school IDs return `404`; malformed IDs return `422`.
+
+Example response:
+```json
+{
+  "success": true,
+  "school": {
+    "school_id": "5201",
+    "name": "Adolf-Reichwein-Gymnasium",
+    "city": "Heusenstamm",
+    "short_name": "ARG",
+    "login_url": "https://login.schulportal.hessen.de/?i=5201",
+    "palette": {"primary": "#00bcd5", "primary_dark": "#0099ae", "accent": "#69ddea"},
+    "assets": {
+      "logo": "/schools/5201/logo.png",
+      "campus": {
+        "xs": "/schools/5201/background-xs.jpg",
+        "sm": "/schools/5201/background-sm.jpg",
+        "md": "/schools/5201/background-md.jpg",
+        "lg": "/schools/5201/background-lg.jpg"
+      }
+    }
+  }
+}
+```
+
 ### Authentication
 
 #### POST `/login`
