@@ -38,18 +38,40 @@ X-Session-Token: {token}
 
 ### Public school landing pages
 
-These endpoints return public school branding only. They do not require authentication.
+These endpoints load public school information directly from Schulportal Hessen (SPH).
+They do not require authentication or a manually maintained school configuration.
 
 #### GET `/schools/landing-pages`
 
-List schools with configured landing page content (`school_id`, `name`, and `city`).
+List all schools from SPH's public school directory (`school_id`, `name`, and `city`).
+This reuses the shared 12-hour directory cache and does not fetch individual school
+profiles or images. An unavailable directory returns `503`.
 
 #### GET `/schools/{school_id}/landing-page`
 
-Return the school's display name, city, short name, Schulportal login URL, Lanis theme, color palette,
-and static asset paths. Unknown numeric school IDs return `404`; malformed IDs return `422`.
+Load the school's public profile from
+`https://startcache.schulportal.hessen.de/exporteur.php?a=school&i={school_id}`.
+The response maps SPH's `Name`, `Ort`, `Kurzname`, `Farben`, `Logo`, `CSS`, `bgimg`,
+`Hint`, `Support`, and `LetzteAenderung` into a stable JSON contract.
 
-Example response:
+- `palette.primary`, `primary_dark`, and `accent` come from `bg`, `border`, and
+  `activeBG`. The other palette fields preserve text, active text, footer, and heading colors.
+- `assets.logo`, `assets.stylesheet`, and `assets.campus` contain HTTPS asset URLs
+  returned by SPH. Images stay on SPH's static servers; the API does not download
+  every background or require copies in the frontend repository.
+- `assets.campus_widths` contains SPH's image widths for responsive layouts.
+- Missing assets or invalid colors are `null`. An empty SPH short name stays empty.
+- `support_html` contains upstream support HTML; render as text or sanitize before
+  inserting it as HTML. `last_modified` preserves SPH's modification timestamp.
+
+Successful profiles are cached for 12 hours in a bounded 512-entry cache. Concurrent
+requests for one school share a fetch, with at most four upstream profile requests
+running at once. Failed lookups are cached for 60 seconds to avoid repeated upstream requests.
+
+Unknown schools return `404`; malformed IDs return `422`; upstream failures return
+`502`; upstream timeouts return `504`.
+
+Example response (values come from SPH):
 ```json
 {
   "success": true,
@@ -57,19 +79,31 @@ Example response:
     "school_id": "5201",
     "name": "Adolf-Reichwein-Gymnasium",
     "city": "Heusenstamm",
-    "short_name": "ARG",
+    "short_name": "",
     "login_url": "https://login.schulportal.hessen.de/?i=5201",
-    "theme_color": "cyan",
-    "palette": {"primary": "#00bcd5", "primary_dark": "#0099ae", "accent": "#69ddea"},
+    "palette": {
+      "primary": "#00bcd5",
+      "primary_dark": "#00a5bb",
+      "accent": "#00bcd4",
+      "text": "#fffffe",
+      "active_text": "#dfdfdf",
+      "footer": "#00a5bc",
+      "heading": "#606060"
+    },
     "assets": {
-      "logo": "/schools/5201/logo.png",
+      "logo": "https://start.schulportal.hessen.de/exporteur.php?a=schoollogo&i=5201",
+      "stylesheet": "https://start.schulportal.hessen.de/exporteur.php?a=schoolcss&i=5201",
       "campus": {
-        "xs": "/schools/5201/background-xs.jpg",
-        "sm": "/schools/5201/background-sm.jpg",
-        "md": "/schools/5201/background-md.jpg",
-        "lg": "/schools/5201/background-lg.jpg"
-      }
-    }
+        "xs": "https://start.schulportal.hessen.de/exporteur.php?a=schoolbg&i=5201&s=xs",
+        "sm": "https://start.schulportal.hessen.de/exporteur.php?a=schoolbg&i=5201&s=sm",
+        "md": "https://start.schulportal.hessen.de/exporteur.php?a=schoolbg&i=5201&s=md",
+        "lg": "https://start.schulportal.hessen.de/exporteur.php?a=schoolbg&i=5201&s=lg"
+      },
+      "campus_widths": {"xs": 768, "sm": 990, "md": 1200, "lg": 1600}
+    },
+    "hint": false,
+    "support_html": "...",
+    "last_modified": 1607888404
   }
 }
 ```
