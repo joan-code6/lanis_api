@@ -61,6 +61,7 @@ from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler
 from .public_status import get_public_status
 from .documentation import router as documentation_router
 from .homepage import router as homepage_router
+from .school_pages import router as school_pages_router
 from .admin import AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
     DEFAULT_SIDEBAR_ORDER,
@@ -1112,6 +1113,7 @@ app.add_middleware(
 app.include_router(documentation_router)
 app.include_router(admin_router)
 app.include_router(homepage_router)
+app.include_router(school_pages_router)
 
 
 @app.on_event("startup")
