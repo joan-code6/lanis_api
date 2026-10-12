@@ -69,10 +69,9 @@ from .auth_db import (
     store_refresh_token,
     get_refresh_token,
     get_refresh_token_by_user_id,
-    delete_refresh_token,
-    delete_user_tokens,
+    get_refresh_token_by_session_id,
+    delete_refresh_token_by_session_id,
     delete_push_subscription,
-    delete_user_push_subscriptions,
     get_notification_preferences,
     save_notification_preferences,
     get_user_preferences,
@@ -499,6 +498,7 @@ class AuthSession:
     user_id: str
     school_id: str
     username: str
+    session_id: str = ""
 
 
 @dataclass
@@ -542,7 +542,11 @@ class AuthManager:
 
     # -- JWT helpers -------------------------------------------------
 
-    def create_access_token(self, user_id: str, school_id: str, username: str) -> str:
+    def create_access_token(
+        self, user_id: str, school_id: str, username: str, session_id: str
+    ) -> str:
+        if not session_id:
+            raise ValueError("session_id is required for access tokens")
         user_id = canonicalize_user_id(user_id)
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         payload = {
@@ -551,6 +555,7 @@ class AuthManager:
             "username": username,
             "iat": datetime.utcnow(),
             "exp": expire,
+            "jti": session_id,
         }
         return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -961,10 +966,19 @@ async def local_auth_dependency(
     """Validate LANIS identity and persisted session without contacting Schulportal."""
     payload = sessions.decode_access_token(x_session_token)
     user_id = canonicalize_user_id(payload["sub"])
-    stored = await get_refresh_token_by_user_id(user_id)
+    session_id = payload.get("jti")
+    stored = await get_refresh_token_by_session_id(session_id) if session_id else None
+    if stored and canonicalize_user_id(stored["user_id"]) != user_id:
+        stored = None
     if not stored:
         raise HTTPException(status_code=401, detail="No valid session found — please log in again")
-    return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"])
+    return AuthSession(
+        client=None,
+        user_id=user_id,
+        school_id=stored["school_id"],
+        username=stored["username"],
+        session_id=session_id,
+    )
 
 
 @app.get("/cache/status")
@@ -995,6 +1009,7 @@ async def client_dependency(
         user_id=user_id,
         school_id=session_data.school_id,
         username=session_data.username,
+        session_id=identity.session_id if identity is not None else payload["jti"],
     )
 
 
@@ -1219,12 +1234,16 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
         username=username,
         password=payload.password,
     )
+    refresh_data = await get_refresh_token(refresh_token)
+    if not refresh_data:
+        raise HTTPException(status_code=500, detail="Could not initialize login session")
 
     # 3. Issue short-term access token (JWT)
     access_token = sessions.create_access_token(
         user_id=user_id,
         school_id=school_id,
         username=username,
+        session_id=refresh_data["session_id"],
     )
 
     # 4. Read encryption state
@@ -1286,6 +1305,7 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
         user_id=rt_data["user_id"],
         school_id=rt_data["school_id"],
         username=rt_data["username"],
+        session_id=rt_data["session_id"],
     )
 
     return TokenRefreshResponse(access_token=access_token)
@@ -1295,10 +1315,7 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
 async def logout_endpoint(
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, str]:
-    await delete_user_tokens(auth.user_id)
-    await delete_user_push_subscriptions(auth.user_id)
-    await delete_whatsapp_link(auth.user_id)
-    await sessions.drop_schulportal_session(auth.user_id)
+    await delete_refresh_token_by_session_id(auth.session_id)
     return {"status": "logged_out"}
 
 

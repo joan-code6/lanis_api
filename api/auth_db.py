@@ -323,10 +323,28 @@ async def initialize() -> None:
                 school_id TEXT NOT NULL,
                 username TEXT NOT NULL,
                 password TEXT NOT NULL,
+                session_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 expires_at TIMESTAMP NOT NULL
             )
             """
+        )
+        async with db.execute("PRAGMA table_info(refresh_tokens)") as cursor:
+            refresh_token_columns = {row[1] for row in await cursor.fetchall()}
+        if "session_id" not in refresh_token_columns:
+            await db.execute("ALTER TABLE refresh_tokens ADD COLUMN session_id TEXT")
+        async with db.execute(
+            "SELECT token FROM refresh_tokens WHERE session_id IS NULL OR session_id = ''"
+        ) as cursor:
+            legacy_tokens = [row[0] for row in await cursor.fetchall()]
+        for token in legacy_tokens:
+            await db.execute(
+                "UPDATE refresh_tokens SET session_id = ? WHERE token = ?",
+                (secrets.token_urlsafe(32), token),
+            )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_refresh_tokens_session_id "
+            "ON refresh_tokens(session_id)"
         )
         await db.execute(
             """
@@ -1052,6 +1070,7 @@ async def store_refresh_token(
     """
     user_id = _canonical_user_id(user_id)
     token = uuid.uuid4().hex
+    session_id = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
 
     async with _lock:
@@ -1061,9 +1080,18 @@ async def store_refresh_token(
                 (user_id, datetime.utcnow()),
             )
             await db.execute(
-                "INSERT INTO refresh_tokens (token, user_id, school_id, username, password, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (token, user_id, school_id, username, _encrypt_password(password), expires_at),
+                "INSERT INTO refresh_tokens "
+                "(token, user_id, school_id, username, password, session_id, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    token,
+                    user_id,
+                    school_id,
+                    username,
+                    _encrypt_password(password),
+                    session_id,
+                    expires_at,
+                ),
             )
             await db.commit()
 
@@ -1130,6 +1158,7 @@ async def get_refresh_token(token: str) -> Optional[dict]:
         "school_id": row["school_id"],
         "username": row["username"],
         "password": _decrypt_password(row["password"]),
+        "session_id": row["session_id"],
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
     }
@@ -1160,6 +1189,7 @@ async def get_refresh_token_by_user_id(user_id: str) -> Optional[dict]:
         "school_id": row["school_id"],
         "username": row["username"],
         "password": _decrypt_password(row["password"]),
+        "session_id": row["session_id"],
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
     }
@@ -1199,6 +1229,32 @@ async def delete_refresh_token(token: str) -> None:
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM refresh_tokens WHERE token = ?", (token,))
+            await db.commit()
+
+
+async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
+    """Return the active login session represented by an access-token JWT ID."""
+    if not session_id:
+        return None
+    await _revoke_expired_sessions()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT user_id, school_id, username, session_id, created_at, expires_at "
+            "FROM refresh_tokens WHERE session_id = ? AND expires_at > ?",
+            (session_id, datetime.utcnow()),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def delete_refresh_token_by_session_id(session_id: str) -> None:
+    """Revoke one browser session without signing out the account elsewhere."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM refresh_tokens WHERE session_id = ?", (session_id,)
+            )
             await db.commit()
 
 

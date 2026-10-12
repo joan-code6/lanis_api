@@ -244,32 +244,19 @@ def test_notification_subscription_rejects_malformed_push_keys(monkeypatch):
     assert saved == []
 
 
-def test_logout_removes_user_push_subscriptions(monkeypatch):
+def test_logout_revokes_only_the_current_browser_session(monkeypatch):
     calls = []
 
-    async def delete_tokens(user_id):
-        calls.append(("tokens", user_id))
+    async def delete_session(session_id):
+        calls.append(("session", session_id))
 
-    async def delete_subscriptions(user_id):
-        calls.append(("subscriptions", user_id))
+    monkeypatch.setattr(
+        api_module, "delete_refresh_token_by_session_id", delete_session
+    )
 
-    async def delete_whatsapp(user_id):
-        calls.append(("whatsapp", user_id))
-
-    async def drop_session(user_id):
-        calls.append(("session", user_id))
-
-    monkeypatch.setattr(api_module, "delete_user_tokens", delete_tokens)
-    monkeypatch.setattr(api_module, "delete_user_push_subscriptions", delete_subscriptions)
-    monkeypatch.setattr(api_module, "delete_whatsapp_link", delete_whatsapp)
-    monkeypatch.setattr(api_module.sessions, "drop_schulportal_session", drop_session)
-
-    assert asyncio.run(logout_endpoint(SimpleNamespace(user_id="user-a"))) == {
+    assert asyncio.run(
+        logout_endpoint(SimpleNamespace(user_id="user-a", session_id="browser-a"))
+    ) == {
         "status": "logged_out"
     }
-    assert calls == [
-        ("tokens", "user-a"),
-        ("subscriptions", "user-a"),
-        ("whatsapp", "user-a"),
-        ("session", "user-a"),
-    ]
+    assert calls == [("session", "browser-a")]
