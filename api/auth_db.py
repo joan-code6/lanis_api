@@ -432,6 +432,7 @@ async def initialize() -> None:
             CREATE TABLE IF NOT EXISTS push_subscriptions (
                 endpoint TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
+                session_id TEXT,
                 p256dh TEXT NOT NULL,
                 auth TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -439,11 +440,21 @@ async def initialize() -> None:
             )
             """
         )
+        async with db.execute("PRAGMA table_info(push_subscriptions)") as cursor:
+            push_subscription_columns = {row[1] for row in await cursor.fetchall()}
+        if "session_id" not in push_subscription_columns:
+            await db.execute(
+                "ALTER TABLE push_subscriptions ADD COLUMN session_id TEXT"
+            )
         await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id
             ON push_subscriptions(user_id)
             """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_session_id "
+            "ON push_subscriptions(session_id)"
         )
         await db.execute(
             """
@@ -1104,12 +1115,22 @@ async def _revoke_expired_sessions() -> None:
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT DISTINCT user_id FROM refresh_tokens WHERE expires_at <= ?",
+                "SELECT user_id, session_id FROM refresh_tokens WHERE expires_at <= ?",
                 (now,),
             ) as cursor:
-                user_ids = [row[0] for row in await cursor.fetchall()]
+                expired_rows = await cursor.fetchall()
+            user_ids = list({row[0] for row in expired_rows})
             if not user_ids:
                 return
+
+            session_ids = [row[1] for row in expired_rows if row[1]]
+            if session_ids:
+                session_placeholders = ", ".join("?" for _ in session_ids)
+                await db.execute(
+                    f"DELETE FROM push_subscriptions "
+                    f"WHERE session_id IN ({session_placeholders})",
+                    session_ids,
+                )
 
             placeholders = ", ".join("?" for _ in user_ids)
             async with db.execute(
@@ -1249,9 +1270,12 @@ async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
 
 
 async def delete_refresh_token_by_session_id(session_id: str) -> None:
-    """Revoke one browser session without signing out the account elsewhere."""
+    """Revoke one browser session and its push endpoints only."""
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM push_subscriptions WHERE session_id = ?", (session_id,)
+            )
             await db.execute(
                 "DELETE FROM refresh_tokens WHERE session_id = ?", (session_id,)
             )
@@ -1714,7 +1738,11 @@ async def get_enabled_notification_users() -> List[Dict[str, Any]]:
     ]
 
 
-async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> None:
+async def save_push_subscription(
+    user_id: str,
+    subscription: Dict[str, Any],
+    session_id: Optional[str] = None,
+) -> None:
     """Associate a browser push subscription with a user."""
     user_id = _canonical_user_id(user_id)
     keys = subscription.get("keys") or {}
@@ -1723,10 +1751,11 @@ async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> 
             await db.execute(
                 """
                 INSERT INTO push_subscriptions
-                    (endpoint, user_id, p256dh, auth, created_at, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    (endpoint, user_id, session_id, p256dh, auth, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(endpoint) DO UPDATE SET
                     user_id = excluded.user_id,
+                    session_id = excluded.session_id,
                     p256dh = excluded.p256dh,
                     auth = excluded.auth,
                     updated_at = CURRENT_TIMESTAMP
@@ -1734,6 +1763,7 @@ async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> 
                 (
                     subscription["endpoint"],
                     user_id,
+                    session_id,
                     keys["p256dh"],
                     keys["auth"],
                 ),

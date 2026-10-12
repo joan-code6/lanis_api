@@ -993,10 +993,8 @@ async def client_dependency(
     """Validate access token (JWT) and return the AuthSession with a live Schulportal client."""
     identity = getattr(request.state, "lanis_auth", None)
     if identity is None:
-        payload = sessions.decode_access_token(x_session_token)
-        user_id = canonicalize_user_id(payload["sub"])
-    else:
-        user_id = identity.user_id
+        identity = await local_auth_dependency(x_session_token)
+    user_id = identity.user_id
     session_data = await sessions._get_or_create_schulportal_client(user_id)
     try:
         await user_metrics_db.record_activity(
@@ -1009,7 +1007,7 @@ async def client_dependency(
         user_id=user_id,
         school_id=session_data.school_id,
         username=session_data.username,
-        session_id=identity.session_id if identity is not None else payload["jti"],
+        session_id=identity.session_id,
     )
 
 
@@ -2210,7 +2208,7 @@ async def register_notification_subscription(
             status_code=422,
             detail="Push subscription keys are invalid",
         )
-    await save_push_subscription(auth.user_id, subscription)
+    await save_push_subscription(auth.user_id, subscription, auth.session_id)
     return {"success": True}
 
 

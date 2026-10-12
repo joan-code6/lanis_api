@@ -165,7 +165,7 @@ def test_notification_subscription_requires_complete_vapid_configuration(monkeyp
         endpoint="https://push.example/subscription",
         keys={"p256dh": "public-key", "auth": "auth-key"},
     )
-    auth = SimpleNamespace(user_id="user")
+    auth = SimpleNamespace(user_id="user", session_id="browser-a")
 
     async def scenario():
         try:
@@ -186,7 +186,7 @@ def test_notification_subscription_rejects_untrusted_push_endpoints(monkeypatch)
         endpoint="https://127.0.0.1/metadata",
         keys={"p256dh": "public-key", "auth": "auth-key"},
     )
-    auth = SimpleNamespace(user_id="user")
+    auth = SimpleNamespace(user_id="user", session_id="browser-a")
     saved = []
 
     async def save_subscription(*args):
@@ -214,6 +214,7 @@ def test_notification_subscription_rejects_untrusted_push_endpoints(monkeypatch)
     }
     assert saved[0][0] == "user"
     assert saved[0][1]["endpoint"] == valid_payload.endpoint
+    assert saved[0][2] == "browser-a"
 
 
 def test_notification_subscription_rejects_malformed_push_keys(monkeypatch):
@@ -224,7 +225,7 @@ def test_notification_subscription_rejects_malformed_push_keys(monkeypatch):
         endpoint="https://fcm.googleapis.com/fcm/send/subscription",
         keys={"p256dh": "not-a-public-key", "auth": "not-auth"},
     )
-    auth = SimpleNamespace(user_id="user")
+    auth = SimpleNamespace(user_id="user", session_id="browser-a")
     saved = []
 
     async def save_subscription(*args):

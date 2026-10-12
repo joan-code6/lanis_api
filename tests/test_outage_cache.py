@@ -91,7 +91,20 @@ def setup(monkeypatch):
             "session_id": session_id,
         }
 
+    async def stored_by_user(user_id):
+        if state.revoked:
+            return None
+        username = user_id.split(":", 1)[-1]
+        return {
+            "user_id": user_id,
+            "school_id": "5201",
+            "username": username,
+            "password": "unused",
+            "session_id": f"{username}-test-session",
+        }
+
     monkeypatch.setattr(api_module, "get_refresh_token_by_session_id", stored)
+    monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", stored_by_user)
 
     def request(self, method, url, **kwargs):
         assert kwargs["timeout"] == (5, 15)
