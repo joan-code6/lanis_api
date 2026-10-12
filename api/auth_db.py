@@ -1111,12 +1111,11 @@ async def store_refresh_token(
     session_id = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
 
+    # Keep refresh-token and push-subscription cleanup coordinated so an
+    # expired browser cannot retain a notification endpoint after a new login.
+    await _revoke_expired_sessions()
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "DELETE FROM refresh_tokens WHERE user_id = ? AND expires_at < ?",
-                (user_id, datetime.utcnow()),
-            )
             await db.execute(
                 "INSERT INTO refresh_tokens "
                 "(token, user_id, school_id, username, password, session_id, expires_at) "
