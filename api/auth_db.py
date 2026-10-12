@@ -432,7 +432,7 @@ async def initialize() -> None:
             CREATE TABLE IF NOT EXISTS push_subscriptions (
                 endpoint TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
-                session_id TEXT,
+                session_id TEXT NOT NULL,
                 p256dh TEXT NOT NULL,
                 auth TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -446,6 +446,33 @@ async def initialize() -> None:
             await db.execute(
                 "ALTER TABLE push_subscriptions ADD COLUMN session_id TEXT"
             )
+        # Existing endpoints cannot be attributed safely when an account has
+        # more than one login. Browsers with notifications enabled will
+        # register again under their current session.
+        await db.execute(
+            "DELETE FROM push_subscriptions "
+            "WHERE session_id IS NULL OR session_id = ''"
+        )
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS push_subscriptions_session_id_insert
+            BEFORE INSERT ON push_subscriptions
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'push subscription session_id is required');
+            END
+            """
+        )
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS push_subscriptions_session_id_update
+            BEFORE UPDATE OF session_id ON push_subscriptions
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'push subscription session_id is required');
+            END
+            """
+        )
         await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id
@@ -1741,7 +1768,7 @@ async def get_enabled_notification_users() -> List[Dict[str, Any]]:
 async def save_push_subscription(
     user_id: str,
     subscription: Dict[str, Any],
-    session_id: Optional[str] = None,
+    session_id: str,
 ) -> None:
     """Associate a browser push subscription with a user."""
     user_id = _canonical_user_id(user_id)

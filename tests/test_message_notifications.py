@@ -60,6 +60,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
                 "endpoint": "https://push.example/subscription",
                 "keys": {"p256dh": "public-key", "auth": "auth-key"},
             },
+            "browser-a",
         )
         await auth_db.save_message_notification_state(
             "user-a",
