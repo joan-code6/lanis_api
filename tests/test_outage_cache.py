@@ -80,12 +80,31 @@ def setup(monkeypatch):
     monkeypatch.setattr(outage_cache, "snapshots", store)
     state = SimpleNamespace(mode="ok", revoked=False, value=1)
 
-    async def stored(user):
+    async def stored(session_id):
         if state.revoked:
             return None
-        return {"school_id": "5201", "username": user, "password": "unused"}
+        username = "other" if session_id == "other-test-session" else "student"
+        return {
+            "user_id": f"5201:{username}",
+            "school_id": "5201",
+            "username": username,
+            "session_id": session_id,
+        }
 
-    monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", stored)
+    async def stored_by_user(user_id):
+        if state.revoked:
+            return None
+        username = user_id.split(":", 1)[-1]
+        return {
+            "user_id": user_id,
+            "school_id": "5201",
+            "username": username,
+            "password": "unused",
+            "session_id": f"{username}-test-session",
+        }
+
+    monkeypatch.setattr(api_module, "get_refresh_token_by_session_id", stored)
+    monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", stored_by_user)
 
     def request(self, method, url, **kwargs):
         assert kwargs["timeout"] == (5, 15)
@@ -120,7 +139,9 @@ def setup(monkeypatch):
         await manager.set_cache(auth.user_id, "/kalender", result)
         return result
 
-    token = manager.create_access_token("5201:student", "5201", "student")
+    token = manager.create_access_token(
+        "5201:student", "5201", "student", "test-session"
+    )
     return app, manager, store, state, {"X-Session-Token": token}
 
 
@@ -226,7 +247,7 @@ def test_auth_parameters_user_isolation_revocation_and_write_invalidation(setup)
         )
         other = {
             "X-Session-Token": manager.create_access_token(
-                "5201:other", "5201", "other"
+                "5201:other", "5201", "other", "other-test-session"
             )
         }
         assert (
