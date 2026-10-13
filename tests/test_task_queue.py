@@ -84,6 +84,7 @@ def test_cancel_user_tasks_purges_completed_task_arguments():
             assert task.task_id in queue._completed_tasks
             await queue.cancel_user_tasks("5201:student")
             assert task.task_id not in queue._completed_tasks
+            assert task.args == () and task.func is None
         finally:
             await queue.stop(wait=False)
 

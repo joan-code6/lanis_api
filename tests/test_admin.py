@@ -7,7 +7,10 @@ from api import admin as admin_module
 from api.admin import AdminLoginRequest, AdminPrincipal, admin_dependency, admin_login
 
 
-def test_admin_login_requires_allowlisted_sph_identity(monkeypatch):
+def test_admin_login_requires_allowlisted_sph_identity(tmp_path, monkeypatch):
+    from api import auth_db
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
     monkeypatch.setenv("LANIS_ADMIN_ACCOUNTS", "5201:Bennet.Wegener,1234:Other.Admin")
     monkeypatch.setenv("LANIS_ADMIN_JWT_SECRET", "a" * 64)
 
@@ -37,7 +40,10 @@ def test_admin_login_requires_allowlisted_sph_identity(monkeypatch):
     assert principal == AdminPrincipal("5201:bennet.wegener", "5201", "bennet.wegener")
 
 
-def test_admin_login_holds_lifecycle_lock_during_verification_and_audit(monkeypatch):
+def test_admin_login_holds_lifecycle_lock_during_verification_and_audit(tmp_path, monkeypatch):
+    from api import auth_db
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
     monkeypatch.setenv("LANIS_ADMIN_ACCOUNTS", "5201:admin.one")
     monkeypatch.setenv("LANIS_ADMIN_JWT_SECRET", "a" * 64)
     state = {"held": False}
@@ -129,3 +135,33 @@ def test_activity_state_becomes_inactive_after_seven_days(monkeypatch):
         == "inactive"
     )
     assert summary((now - timedelta(days=30, seconds=1)).isoformat()).activity_state == "dormant"
+
+
+def test_account_deletion_permanently_revokes_admin_tokens_across_relogin(tmp_path, monkeypatch):
+    from api import auth_db
+    monkeypatch.setenv('LANIS_ADMIN_ACCOUNTS', '5201:admin')
+    monkeypatch.setenv('LANIS_ADMIN_JWT_SECRET', 'a' * 64)
+    async def scenario():
+        monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+        monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+        await auth_db.initialize()
+        old_id = await auth_db.create_admin_session('5201:admin', datetime.utcnow() + timedelta(minutes=30))
+        old_token = admin_module._issue_token(AdminPrincipal('5201:admin', '5201', 'admin', old_id))
+        assert (await admin_dependency(old_token)).user_id == '5201:admin'
+        counts = await auth_db.delete_user_data('5201:admin')
+        assert counts['admin_sessions'] == 1
+        with pytest.raises(Exception) as rejected:
+            await admin_dependency(old_token)
+        assert rejected.value.status_code == 401
+        await auth_db.clear_account_deletion_marker('5201:admin')
+        new_id = await auth_db.create_admin_session('5201:admin', datetime.utcnow() + timedelta(minutes=30))
+        new_token = admin_module._issue_token(AdminPrincipal('5201:admin', '5201', 'admin', new_id))
+        assert (await admin_dependency(new_token)).user_id == '5201:admin'
+        with pytest.raises(Exception) as still_rejected:
+            await admin_dependency(old_token)
+        assert still_rejected.value.status_code == 401
+        # Old stateless JWTs from before this migration cannot bypass revocation.
+        with pytest.raises(Exception) as legacy_rejected:
+            await admin_dependency(admin_module._issue_token(AdminPrincipal('5201:admin', '5201', 'admin')))
+        assert legacy_rejected.value.status_code == 401
+    asyncio.run(scenario())

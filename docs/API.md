@@ -663,3 +663,22 @@ before sending DELETE and preserves it until browser cleanup finishes.
 For attachments cached before ownership tracking, the UI re-fetches course
 metadata and retries the download, establishing access through the authenticated
 course response without granting access based on possession of a file hash.
+
+
+### Account deletion and administrator sessions
+
+Administrator JWTs now have a `jti` backed by a short-lived `admin_sessions`
+record in auth.db. Deleting an account revokes its administrator sessions as
+well as its regular sessions. A fresh login creates a new session; it does not
+reactivate old JWTs. The administrator allowlist still applies.
+
+Existing stateless administrator JWTs from before this migration are rejected.
+Administrators must sign in again after deploying this change. The JWT lifetime
+and admin frontend response schema remain unchanged. Session metadata expires
+and is purged on lookup, login and periodic cleanup.
+
+Stale `/apps`, `/modules` and `/benutzer` caches are revalidated through tracked
+account tasks. Pending refresh tasks hold identifiers, not private clients;
+running upstream fetches hold the lifecycle lock so deletion waits for them.
+Completed refresh work is not retained. Revoked regular JWTs release the
+lifecycle lock before downstream request-body parsing.

@@ -334,6 +334,10 @@ async def initialize() -> None:
             "user_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)"
         )
         await db.execute(
+            "CREATE TABLE IF NOT EXISTS admin_sessions ("
+            "session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL)"
+        )
+        await db.execute(
             """
             CREATE TABLE IF NOT EXISTS cached_file_references (
                 user_id TEXT NOT NULL,
@@ -1557,6 +1561,7 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     user_id = _canonical_user_id(user_id)
     tables = (
         "refresh_tokens",
+        "admin_sessions",
         "notification_preferences",
         "custom_lessons",
         "class_link_overrides",
@@ -2478,4 +2483,39 @@ async def purge_expired_account_deletion_markers() -> None:
                 'DELETE FROM account_deletion_markers WHERE expires_at <= ?',
                 (datetime.utcnow(),),
             )
+            await db.execute(
+                'DELETE FROM admin_sessions WHERE expires_at <= ?',
+                (datetime.utcnow().isoformat(),),
+            )
             await db.commit()
+
+
+async def create_admin_session(user_id: str, expires_at: datetime) -> str:
+    """Persist a revocable admin JWT identity without storing credentials."""
+    await initialize()
+    session_id = secrets.token_urlsafe(32)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute('DELETE FROM admin_sessions WHERE expires_at <= ?', (datetime.utcnow().isoformat(),))
+            await db.execute(
+                'INSERT INTO admin_sessions (session_id, user_id, expires_at) VALUES (?, ?, ?)',
+                (session_id, _canonical_user_id(user_id), expires_at.isoformat()),
+            )
+            await db.commit()
+    return session_id
+
+
+async def admin_session_is_active(user_id: str, session_id: str) -> bool:
+    """Validate an admin session; deleted sessions never return after fresh login."""
+    if not session_id:
+        return False
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute('DELETE FROM admin_sessions WHERE expires_at <= ?', (datetime.utcnow().isoformat(),))
+            async with db.execute(
+                'SELECT 1 FROM admin_sessions WHERE session_id = ? AND user_id = ?',
+                (session_id, _canonical_user_id(user_id)),
+            ) as cursor:
+                active = await cursor.fetchone() is not None
+            await db.commit()
+    return active

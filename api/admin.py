@@ -12,7 +12,7 @@ from contextlib import AsyncExitStack
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field
 from schulportal_hessen.base import SchulportalHessenAPI
 
 from .auth_db import (
+    admin_session_is_active,
+    create_admin_session,
     get_class_link_overrides,
     get_custom_lessons,
     get_notification_preferences,
@@ -98,6 +100,7 @@ class AdminPrincipal:
     user_id: str
     school_id: str
     username: str
+    session_id: str = field(default='', compare=False)
 
 
 def _configured_accounts() -> set[str]:
@@ -145,6 +148,7 @@ def _issue_token(principal: AdminPrincipal) -> str:
             "username": principal.username,
             "aud": "lanis-admin",
             "typ": "admin",
+            "jti": principal.session_id,
             "iat": now,
             "exp": now + timedelta(minutes=ADMIN_TOKEN_EXPIRE_MINUTES),
         },
@@ -166,7 +170,7 @@ def _decode_token(token: str, expected_type: str) -> AdminPrincipal:
             secret,
             algorithms=["HS256"],
             audience="lanis-admin",
-            options={"require": ["exp", "sub", "aud", "typ"]},
+            options={"require": ["exp", "sub", "aud", "typ", "jti"]},
         )
     except jwt.InvalidTokenError as error:
         raise HTTPException(
@@ -186,13 +190,16 @@ def _decode_token(token: str, expected_type: str) -> AdminPrincipal:
         )
     school_id, _, canonical_username = user_id.partition(":")
     username = normalize_username(str(payload.get("username") or canonical_username))
-    return AdminPrincipal(user_id=user_id, school_id=school_id, username=username)
+    return AdminPrincipal(user_id=user_id, school_id=school_id, username=username, session_id=str(payload.get('jti') or ''))
 
 
 async def admin_dependency(
     x_admin_token: str = Header(..., alias="X-Admin-Token"),
 ) -> AdminPrincipal:
-    return _decode_token(x_admin_token, "admin")
+    principal = _decode_token(x_admin_token, "admin")
+    if not await admin_session_is_active(principal.user_id, principal.session_id):
+        raise HTTPException(status_code=401, detail='Admin session was revoked')
+    return principal
 
 
 async def _verify_sph_credentials(school_id: str, username: str, password: str) -> bool:
@@ -271,8 +278,12 @@ async def admin_login(payload: AdminLoginRequest) -> AdminTokenResponse:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid admin credentials",
             )
+        session_id = await create_admin_session(
+            user_id, _utcnow() + timedelta(minutes=ADMIN_TOKEN_EXPIRE_MINUTES),
+        )
         principal = AdminPrincipal(
-            user_id=user_id, school_id=school_id, username=normalize_username(username)
+            user_id=user_id, school_id=school_id, username=normalize_username(username),
+            session_id=session_id,
         )
         await _record_login(school_id, username, locks_held=True)
         await _record_admin_action(principal.user_id, "admin_login", locks_held=True)

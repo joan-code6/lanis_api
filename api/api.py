@@ -1144,6 +1144,16 @@ async def serialize_account_requests(request: Request, call_next):
     lifecycle_lock = await account_lifecycle_lock(user_id)
     await lifecycle_lock.acquire()
     try:
+        stored = await get_refresh_token_by_session_id(payload.get('jti') or '')
+    except BaseException:
+        lifecycle_lock.release()
+        raise
+    if not stored or canonicalize_user_id(stored['user_id']) != user_id:
+        # Public routes may still accept this request. Let route authentication
+        # reject the obsolete token, without holding a lock during body parsing.
+        lifecycle_lock.release()
+        return await call_next(request)
+    try:
         response = await call_next(request)
     except BaseException:
         lifecycle_lock.release()
@@ -1729,32 +1739,52 @@ def _fetch_modules(client: SchulportalHessenAPI) -> Dict[str, object]:
     }
 
 
-async def _revalidate_endpoint(
-    user_id: str, endpoint: str, fetch_func
-) -> None:
-    try:
-        fresh_data = await run_in_threadpool(fetch_func)
-        if not isinstance(fresh_data, dict) or not fresh_data.get("success"):
+async def _revalidate_account_endpoint(user_id: str, session_id: str, endpoint: str) -> None:
+    """Refresh cached portal data while deletion waits for all upstream work.
+
+    Queued tasks carry identifiers only. The private client is acquired after
+    the lifecycle lock and original session validation, so obsolete queued work
+    cannot retain a bound client or fetch data after deletion/re-login.
+    """
+    lock = await account_lifecycle_lock(user_id)
+    async with lock:
+        stored = await get_refresh_token_by_session_id(session_id)
+        if not stored or canonicalize_user_id(stored['user_id']) != user_id:
             return
-        cached_data = await sessions.get_cached(user_id, endpoint)
-        if cached_data is not None and not _responses_equal(cached_data, fresh_data):
-            await sessions.set_cache(user_id, endpoint, fresh_data, is_long_term=True)
-    except Exception:
-        pass
+        try:
+            session_data = await sessions._get_or_create_schulportal_client(user_id)
+            client = session_data.client
+            if endpoint == '/modules':
+                fresh_data = await run_in_threadpool(_fetch_modules, client)
+            else:
+                fetch = {'/apps': client.get_apps, '/benutzer': client.benutzer_get_data}[endpoint]
+                fresh_data = await run_in_threadpool(fetch)
+            if not isinstance(fresh_data, dict) or not fresh_data.get('success'):
+                return
+            cached_data = await sessions.get_cached(user_id, endpoint)
+            if cached_data is not None and not _responses_equal(cached_data, fresh_data):
+                await sessions.set_cache(user_id, endpoint, fresh_data, is_long_term=True)
+        except Exception:
+            logger.debug('Background account cache refresh failed', exc_info=True)
 
 
-async def _revalidate_modules(user_id: str, client: SchulportalHessenAPI) -> None:
+async def _schedule_account_revalidation(auth: AuthSession, endpoint: str) -> None:
+    """Queue refresh work without capturing the request's private client."""
+    if not auth.session_id:
+        return
     try:
-        fresh_data = await run_in_threadpool(_fetch_modules, client)
-        if not fresh_data.get("success"):
-            return
-        cached_data = await sessions.get_cached(user_id, "/modules")
-        if cached_data is not None and not _responses_equal(cached_data, fresh_data):
-            await sessions.set_cache(
-                user_id, "/modules", fresh_data, is_long_term=True
-            )
-    except Exception:
-        pass
+        await task_queue.add_task(Task(
+            name=f'revalidate:{endpoint}',
+            user_id=auth.user_id,
+            func=_revalidate_account_endpoint,
+            args=(auth.user_id, auth.session_id, endpoint),
+            priority=TaskPriority.LOW,
+            max_retries=0,
+            retain_completed=False,
+        ))
+    except asyncio.QueueFull:
+        # Cached responses remain available when background capacity is full.
+        logger.debug('Skipped background cache refresh because the queue is full')
 
 
 @app.get("/apps")
@@ -1766,9 +1796,7 @@ async def get_apps(
     )
 
     if needs_revalidation:
-        asyncio.create_task(
-            _revalidate_endpoint(auth.user_id, "/apps", auth.client.get_apps)
-        )
+        await _schedule_account_revalidation(auth, '/apps')
 
     if cached_data is not None:
         return cached_data
@@ -1788,9 +1816,7 @@ async def get_modules(
     )
 
     if needs_revalidation:
-        asyncio.create_task(
-            _revalidate_modules(auth.user_id, auth.client)
-        )
+        await _schedule_account_revalidation(auth, '/modules')
 
     if cached_data is not None:
         return cached_data
@@ -1887,11 +1913,7 @@ async def get_user_data(
     )
 
     if needs_revalidation:
-        asyncio.create_task(
-            _revalidate_endpoint(
-                auth.user_id, "/benutzer", auth.client.benutzer_get_data
-            )
-        )
+        await _schedule_account_revalidation(auth, '/benutzer')
 
     if cached_data is not None:
         return cached_data
@@ -3069,9 +3091,11 @@ async def _download_course_file(
         write_pending_meta(file_hash, download_url)
         session_data = await sessions._get_or_create_schulportal_client(user_id)
         client = session_data.client
-    result = await run_in_threadpool(client.meinunterricht_download_file, download_url)
+        # Keep the private upstream client inside the account lifecycle, just
+        # like profile revalidation. Browser delivery uses a detached file and
+        # does not keep this lock while the recipient receives the bytes.
+        result = await run_in_threadpool(client.meinunterricht_download_file, download_url)
 
-    async with lifecycle_lock:
         if (
             await account_deletion_is_recent(user_id)
             or (session_id is not None and not await get_refresh_token_by_session_id(session_id))

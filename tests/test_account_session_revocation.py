@@ -171,8 +171,13 @@ def test_query_token_app_launch_request_uses_account_lifecycle_lock(monkeypatch)
         monkeypatch.setattr(
             api_module.sessions,
             "decode_access_token",
-            lambda token: {"sub": user_id} if token == "signed-query-token" else {},
+            lambda token: {"sub": user_id, "jti": "query-session"} if token == "signed-query-token" else {},
         )
+        async def persisted_session(session_id):
+            assert session_id == 'query-session'
+            return {'user_id': user_id}
+
+        monkeypatch.setattr(api_module, 'get_refresh_token_by_session_id', persisted_session)
         request = Request(
             {
                 "type": "http",

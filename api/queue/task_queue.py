@@ -84,6 +84,7 @@ class Task:
         default=None, compare=False
     )
     user_generation: Optional[int] = field(default=None, compare=False)
+    retain_completed: bool = field(default=True, compare=False)
     
     # Runtime state
     status: str = field(default=TaskStatus.PENDING, compare=False)
@@ -223,6 +224,7 @@ class TaskQueue:
             for task_id, task in list(self._completed_tasks.items()):
                 if task.user_id == user_id:
                     self._completed_tasks.pop(task_id, None)
+                    self._scrub_task(task)
 
         for task in cancelled:
             if task.on_cancel is not None:
@@ -230,21 +232,25 @@ class TaskQueue:
                     await task.on_cancel()
                 except Exception:
                     logger.exception("Cancellation cleanup failed for %s", task.name)
-            # Do not retain callable closures, user identifiers, URLs, or arguments.
-            task.func = None
-            task.args = ()
-            task.kwargs.clear()
-            task.user_id = None
-            task.name = "cancelled"
-            task.user_generation = None
-            task.result = None
-            task.error = None
-            task.on_cancel = None
-            task.status = TaskStatus.COMPLETED
-            task.completed_at = datetime.utcnow()
+            self._scrub_task(task)
 
         async with self._lock:
             self._retire_user_generation(user_id)
+
+    @staticmethod
+    def _scrub_task(task: Task) -> None:
+        """Erase account payloads even if an idle worker still references the task."""
+        task.func = None
+        task.args = ()
+        task.kwargs.clear()
+        task.user_id = None
+        task.name = 'cancelled'
+        task.user_generation = None
+        task.result = None
+        task.error = None
+        task.on_cancel = None
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = datetime.utcnow()
 
     def _retire_user_generation(self, user_id: str) -> None:
         """Drop identifying cancellation state once all affected work is gone.
@@ -298,8 +304,11 @@ class TaskQueue:
                             await task.on_cancel()
                         except Exception:
                             logger.exception("Cancellation cleanup failed for %s", task.name)
-                    task.status = TaskStatus.COMPLETED
-                    task.completed_at = datetime.utcnow()
+                    owner = task.user_id
+                    self._scrub_task(task)
+                    async with self._lock:
+                        self._retire_user_generation(owner)
+                    del owner
                     self._queue.task_done()
                     continue
                 
@@ -354,10 +363,13 @@ class TaskQueue:
                 and task.user_generation
                 == self._user_generations.get(task.user_id, 0)
             )
-            if self.retain_completed_tasks and task_is_current:
+            owner = task.user_id
+            if self.retain_completed_tasks and task.retain_completed and task_is_current:
                 self._completed_tasks[task.task_id] = task
-            if task.user_id:
-                self._retire_user_generation(task.user_id)
+            else:
+                self._scrub_task(task)
+            if owner:
+                self._retire_user_generation(owner)
     
     def get_task_status(self, task_id: str) -> Optional[Task]:
         """Get the status of a task by ID."""

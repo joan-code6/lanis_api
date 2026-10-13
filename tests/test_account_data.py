@@ -259,3 +259,70 @@ def test_deletion_withdraws_non_owning_download_interests(monkeypatch):
         await api_module.clear_course_file_interests('5201:deleted')
         assert interests == {'file': {'5201:live': ('url-b', 'session-b')}}
     asyncio.run(scenario())
+
+
+def test_deletion_waits_for_tracked_revalidation_and_purges_queued_clients(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from api import api as api_module
+    from api.queue.task_queue import TaskQueue
+    async def scenario():
+        monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+        monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+        await auth_db.initialize()
+        refresh = await auth_db.store_refresh_token('5201:student', '5201', 'student', 'test-password')
+        stored = await auth_db.get_refresh_token(refresh)
+        metrics = UserMetricsDB(tmp_path / 'metrics.db')
+        await metrics.initialize()
+        monkeypatch.setattr(account_data, 'user_metrics_db', metrics)
+        queue = TaskQueue(max_concurrent=1)
+        monkeypatch.setattr(api_module, 'task_queue', queue)
+        started = threading.Event()
+        release = threading.Event()
+        completed = threading.Event()
+        class Client:
+            def get_apps(self):
+                started.set()
+                assert release.wait(timeout=3)
+                completed.set()
+                return {'success': True, 'apps': ['new']}
+            def benutzer_get_data(self):
+                raise AssertionError('Queued work must be removed before fetching')
+        client = Client()
+        class Sessions:
+            def __init__(self): self.cache = {'success': True, 'apps': ['old']}
+            async def _get_or_create_schulportal_client(self, user_id):
+                return SimpleNamespace(client=client)
+            async def get_cached(self, *args): return self.cache
+            async def set_cache(self, user_id, endpoint, data, **kwargs): self.cache = data
+            async def delete_user_runtime_data(self, user_id):
+                assert completed.is_set(), 'Deletion must wait for the upstream thread to finish'
+                self.cache = None
+                return {'cache': 1}
+        session_manager = Sessions()
+        monkeypatch.setattr(api_module, 'sessions', session_manager)
+        auth = api_module.AuthSession(client, '5201:student', '5201', 'student', stored['session_id'])
+        await api_module._schedule_account_revalidation(auth, '/apps')
+        queued = next(iter(queue._queue._queue))
+        assert all(arg is not client for arg in queued.args)
+        await queue.start()
+        deletion = None
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            await api_module._schedule_account_revalidation(auth, '/benutzer')
+            waiting = next(iter(queue._queue._queue))
+            deletion = asyncio.create_task(account_data.delete_account_data('5201:student'))
+            await asyncio.sleep(0)
+            assert not deletion.done()
+            release.set()
+            report = await asyncio.wait_for(deletion, timeout=3)
+            assert report.success
+            await asyncio.wait_for(queue._queue.join(), timeout=2)
+            assert session_manager.cache is None
+            assert waiting.args == () and waiting.func is None
+            assert queue._completed_tasks == {}
+        finally:
+            release.set()
+            if deletion is not None and not deletion.done(): await deletion
+            await queue.stop(wait=False)
+    asyncio.run(scenario())

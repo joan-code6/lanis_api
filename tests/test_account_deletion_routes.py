@@ -80,3 +80,34 @@ def test_account_routes_export_confirmation_deletion_and_recovery(tmp_path, monk
             assert forged.status_code == 401
 
     asyncio.run(scenario())
+
+
+def test_revoked_jwt_does_not_hold_account_lock_during_downstream_body_wait(tmp_path, monkeypatch):
+    from starlette.requests import Request
+    from starlette.responses import Response
+    async def scenario():
+        monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+        monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+        await auth_db.initialize()
+        refresh = await auth_db.store_refresh_token('5201:student', '5201', 'student', 'test-password')
+        stored = await auth_db.get_refresh_token(refresh)
+        token = api_module.sessions.create_access_token('5201:student', '5201', 'student', stored['session_id'])
+        await auth_db.delete_user_tokens('5201:student')
+        request = Request({'type':'http', 'method':'PUT', 'scheme':'https', 'path':'/settings/preferences',
+                           'query_string':b'', 'headers':[(b'x-session-token', token.encode())]})
+        entered = asyncio.Event()
+        body_ready = asyncio.Event()
+        lock = await account_data.account_lifecycle_lock('5201:student')
+        async def delayed_body(_request):
+            entered.set()
+            await body_ready.wait()
+            return Response(status_code=401)
+        work = asyncio.create_task(api_module.serialize_account_requests(request, delayed_body))
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=0.2)
+            lock.release()
+        finally:
+            body_ready.set()
+            await work
+    asyncio.run(scenario())
