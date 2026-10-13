@@ -1295,15 +1295,46 @@ async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
 
 
 async def delete_refresh_token_by_session_id(session_id: str) -> None:
-    """Revoke one browser session and its push endpoints only."""
+    """Revoke one browser session and unlink WhatsApp after the final session."""
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT user_id FROM refresh_tokens WHERE session_id = ?",
+                (session_id,),
+            ) as cursor:
+                session = await cursor.fetchone()
             await db.execute(
                 "DELETE FROM push_subscriptions WHERE session_id = ?", (session_id,)
             )
             await db.execute(
                 "DELETE FROM refresh_tokens WHERE session_id = ?", (session_id,)
             )
+            if session is not None:
+                user_id = _canonical_user_id(session["user_id"])
+                async with db.execute(
+                    "SELECT 1 FROM refresh_tokens "
+                    "WHERE user_id = ? AND expires_at > ? LIMIT 1",
+                    (user_id, datetime.utcnow()),
+                ) as cursor:
+                    has_active_session = await cursor.fetchone()
+                if has_active_session is None:
+                    await db.execute(
+                        "DELETE FROM whatsapp_links WHERE user_id = ?", (user_id,)
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_ai_conversations WHERE user_id = ?",
+                        (user_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_pending_actions WHERE user_id = ?",
+                        (user_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_pairing_codes WHERE user_id = ?",
+                        (user_id,),
+                    )
             await db.commit()
 
 
