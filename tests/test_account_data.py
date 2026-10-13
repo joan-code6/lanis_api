@@ -173,6 +173,36 @@ def test_admin_cannot_reveal_credentials_or_request_step_up_tokens():
     assert "/admin/auth/step-up" not in paths
 
 
+def test_deletion_anonymizes_legacy_admin_actor_and_removes_target_rows(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+        monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+        await auth_db.initialize()
+        await auth_db.record_admin_action('5201:admin', 'user_view', '5201:student')
+        await auth_db.record_admin_action('5201:admin', 'admin_login')
+        await auth_db.record_admin_action('5201:other', 'user_view', '5201:admin')
+        await auth_db.record_admin_action('5201:admin', 'self_view', '5201:admin')
+        await auth_db.record_admin_action('5201:other', 'school_view', '5201:student')
+        before = await auth_db.get_admin_audit()
+
+        counts = await auth_db.delete_user_data('5201:admin')
+
+        after = await auth_db.get_admin_audit()
+        assert counts['admin_audit'] == 2
+        assert counts['admin_audit_anonymized'] == 2
+        assert len(after) == 3
+        assert all(row['actor_user_id'] != '5201:admin' and row['target_user_id'] != '5201:admin' for row in after)
+        for row in after:
+            original = next(item for item in before if item['action'] == row['action'] and item['target_user_id'] == row['target_user_id'])
+            assert row['occurred_at'] == original['occurred_at']
+            assert row['actor_user_id'] == ('' if original['actor_user_id'] == '5201:admin' else original['actor_user_id'])
+        repeated = await auth_db.delete_user_data('5201:admin')
+        assert repeated['admin_audit'] == repeated['admin_audit_anonymized'] == 0
+        assert await auth_db.get_admin_audit() == after
+
+    asyncio.run(scenario())
+
+
 def test_shared_download_never_requeues_a_deleted_interest_after_relogin(tmp_path, monkeypatch):
     from api import api as api_module
     from api.queue.task_queue import TaskQueue

@@ -1612,9 +1612,17 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                     f"DELETE FROM {table} WHERE user_id = ?", (user_id,)
                 )
                 counts[table] = max(cursor.rowcount, 0)
-            await db.execute(
+            cursor = await db.execute(
                 "DELETE FROM admin_audit WHERE target_user_id = ?", (user_id,)
             )
+            counts["admin_audit"] = max(cursor.rowcount, 0)
+            # Preserve other accounts' audit history without retaining the
+            # deleted administrator's identity. This legacy column is NOT NULL.
+            cursor = await db.execute(
+                "UPDATE admin_audit SET actor_user_id = '' WHERE actor_user_id = ?",
+                (user_id,),
+            )
+            counts["admin_audit_anonymized"] = max(cursor.rowcount, 0)
             await db.execute(
                 "INSERT OR REPLACE INTO account_deletion_markers (user_id, expires_at) VALUES (?, ?)",
                 (user_id, (datetime.utcnow() + timedelta(hours=1)).isoformat()),
