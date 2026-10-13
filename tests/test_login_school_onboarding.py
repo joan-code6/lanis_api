@@ -32,3 +32,5 @@ def test_login_returns_school_onboarding_flag(monkeypatch, first_user):
     assert response.is_first_school_user is (first_user is True)
     assert response.access_token == "access"
     lookup.assert_awaited_once_with("5201", "student")
+    tasks = [call.args[0].name for call in api_module.task_queue.add_task.await_args_list]
+    assert tasks == ["notify_new_user:student@5201", "fetch_user_data:student@5201"]

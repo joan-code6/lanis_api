@@ -596,11 +596,13 @@ class UserMetricsDB:
         school_id = normalize_school_id(school_id)
         login = normalize_username(login)
         await self.initialize()
+        # SQLite serializes inserts; AUTOINCREMENT IDs follow that order even
+        # when a waiting login captured an earlier first_seen timestamp.
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
                 SELECT login FROM users WHERE school_id = ?
-                ORDER BY first_seen, id LIMIT 1
+                ORDER BY id LIMIT 1
                 """,
                 (school_id,),
             )

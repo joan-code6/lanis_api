@@ -1241,9 +1241,6 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
     is_first_school_user = False
     try:
         is_new_user = await user_metrics_db.record_login(school_id, username)
-        is_first_school_user = await user_metrics_db.is_first_school_user(
-            school_id, username
-        )
         if is_new_user:
             await task_queue.add_task(
                 Task(
@@ -1256,6 +1253,13 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
             )
     except Exception:
         logger.warning("Could not record login metric", exc_info=True)
+
+    try:
+        is_first_school_user = await user_metrics_db.is_first_school_user(
+            school_id, username
+        )
+    except Exception:
+        logger.warning("Could not identify first school user", exc_info=True)
 
     # 6. Queue background metrics fetch
     user_data_task = Task(

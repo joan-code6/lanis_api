@@ -293,12 +293,34 @@ def test_concurrent_school_logins_identify_exactly_one_first_user(tmp_path):
 
     async def scenario():
         await database.initialize()
-        await asyncio.gather(*(
-            database.record_login("5201", login) for login in ("alice", "bob", "charlie")
-        ))
+        async def login_and_check(login):
+            await database.record_login("5201", login)
+            return await database.is_first_school_user("5201", login)
+
         flags = await asyncio.gather(*(
-            database.is_first_school_user("5201", login) for login in ("alice", "bob", "charlie")
+            login_and_check(login) for login in ("alice", "bob", "charlie")
         ))
         assert sum(flags) == 1
+
+    asyncio.run(scenario())
+
+
+def test_earlier_captured_timestamp_cannot_replace_committed_first_user(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from importlib import import_module
+    metrics_module = import_module("api.metrics.user_metrics_db")
+
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        # A waiting login can capture its timestamp before the login that commits first.
+        timestamps = iter([datetime(2026, 1, 1, 12, 1), datetime(2026, 1, 1, 12, 0)])
+        monkeypatch.setattr(metrics_module, "datetime", SimpleNamespace(utcnow=lambda: next(timestamps)))
+        await database.record_login("5201", "committed-first")
+        assert await database.is_first_school_user("5201", "committed-first")
+        await database.record_login("5201", "captured-earlier")
+        assert not await database.is_first_school_user("5201", "captured-earlier")
+        assert await database.is_first_school_user("5201", "committed-first")
 
     asyncio.run(scenario())
