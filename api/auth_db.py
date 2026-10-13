@@ -1431,10 +1431,26 @@ async def fence_interrupted_deletion(
             return {**dict(row), 'session_id': new_session_id}
 
 
+async def get_refresh_metadata_by_user_id(user_id: str) -> Optional[dict]:
+    """Return current session metadata without decrypting stored credentials."""
+    user_id = _canonical_user_id(user_id)
+    await _revoke_expired_sessions()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT user_id, school_id, username, session_id, created_at, expires_at "
+            "FROM refresh_tokens WHERE user_id = ? AND expires_at > ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (user_id, datetime.utcnow()),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     """Return user-owned persisted data without exposing authentication secrets."""
     user_id = _canonical_user_id(user_id)
-    credential = await get_refresh_token_by_user_id(user_id)
+    credential = await get_refresh_metadata_by_user_id(user_id)
     preferences, _ = await get_user_preferences(user_id)
     notification_preferences = await get_notification_preferences(user_id)
     custom_lessons = await get_custom_lessons(user_id)

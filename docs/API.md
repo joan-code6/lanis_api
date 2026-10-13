@@ -698,3 +698,8 @@ already-running handlers, and handlers waiting behind deletion reject the
 revoked session. User-detail routes acquire actor and target access in a stable
 order, and nested audit helpers reuse those leases. Admin login keeps its
 exclusive lifecycle context.
+
+Account export and deletion read refresh-session metadata without decrypting the
+stored Schulportal password. Rotating the encryption key or corrupting a stored
+ciphertext therefore does not prevent a user from exporting LANIS-held data or
+deleting the account.

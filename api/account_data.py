@@ -195,7 +195,7 @@ async def delete_account_data(
             session = await auth_db.get_refresh_token_by_session_id(expected_session_id)
             if not session or canonicalize_user_id(session['user_id']) != user_id:
                 raise AccountDeletionSessionChanged('Deletion session was revoked')
-        credential = await auth_db.get_refresh_token_by_user_id(user_id)
+        credential = await auth_db.get_refresh_metadata_by_user_id(user_id)
         if credential:
             school_id = credential["school_id"]
             username = credential["username"]
