@@ -28,7 +28,7 @@ def test_recovery_fences_delayed_delete_and_is_retryable(tmp_path, monkeypatch):
             assert await auth_db.get_refresh_token_by_session_id(stored['session_id'])
             body = {'access_token': expired, 'refresh_token': refresh}
             for _ in range(2):
-                recovered = await client.post('/account/deletion/recover', json=body)
+                recovered = await asyncio.wait_for(client.post('/account/deletion/recover', json=body, headers={'X-Session-Token': original}), timeout=2)
                 assert recovered.status_code == 200
                 assert recovered.json()['state'] == 'cancelled'
                 assert recovered.headers['cache-control'] == 'no-store'

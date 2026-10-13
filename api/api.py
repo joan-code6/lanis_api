@@ -14,6 +14,7 @@ Run locally:
 
 import asyncio
 from collections import deque
+from contextvars import ContextVar
 import copy
 import hashlib
 import hmac
@@ -196,20 +197,27 @@ WHATSAPP_MAX_PENDING_PER_SENDER = 10
 @dataclass
 class _WhatsAppSenderQueue:
     messages: Deque[IncomingWhatsAppMessage] = field(default_factory=deque)
+    active_message: IncomingWhatsAppMessage | None = None
+    cancelled: bool = False
 
 
 _whatsapp_sender_queues: Dict[str, _WhatsAppSenderQueue] = {}
 _whatsapp_dispatch_lock = asyncio.Lock()
 _whatsapp_pending_messages = 0
+_active_whatsapp_sender_queue: ContextVar[_WhatsAppSenderQueue | None] = ContextVar(
+    'active_whatsapp_sender_queue', default=None,
+)
 
 
 async def clear_whatsapp_user_queue(user_id: str) -> None:
-    """Remove queued WhatsApp messages belonging to a LANIS account."""
+    """Remove queued messages and cancel active WhatsApp turns for an account."""
     global _whatsapp_pending_messages
     candidates: set[str] = set()
     async with _whatsapp_dispatch_lock:
         for sender_queue in _whatsapp_sender_queues.values():
             candidates.update(message.sender_id for message in sender_queue.messages)
+            if sender_queue.active_message is not None:
+                candidates.add(sender_queue.active_message.sender_id)
     owned_senders = set()
     for sender_id in candidates:
         link = await get_whatsapp_link_for_sender(sender_id)
@@ -221,7 +229,9 @@ async def clear_whatsapp_user_queue(user_id: str) -> None:
         for sender_key in list(owned_senders):
             sender_queue = _whatsapp_sender_queues.pop(sender_key, None)
             if sender_queue is not None:
+                sender_queue.cancelled = True
                 _whatsapp_pending_messages -= len(sender_queue.messages)
+                sender_queue.messages.clear()
 
 
 SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive Schulportal sessions after 1 hour
@@ -1114,6 +1124,7 @@ async def serialize_account_requests(request: Request, call_next):
     """Serialize authenticated requests with login and account deletion."""
     if (
         request.url.path == "/login"
+        or request.url.path == "/account/deletion/recover"
         or request.url.path == "/admin"
         or request.url.path.startswith("/admin/")
         or (request.method == "DELETE" and request.url.path == "/account")
@@ -4888,14 +4899,20 @@ async def _process_whatsapp_sender_turn(sender_key: str) -> None:
                 _whatsapp_sender_queues.pop(sender_key, None)
                 return
             incoming = sender_queue.messages.popleft()
+            sender_queue.active_message = incoming
             _whatsapp_pending_messages -= 1
+        context_token = _active_whatsapp_sender_queue.set(sender_queue)
         try:
             await _process_whatsapp_message(incoming)
         except Exception:
             logger.exception("Unhandled WhatsApp message processing failure")
+        finally:
+            sender_queue.active_message = None
+            _active_whatsapp_sender_queue.reset(context_token)
 
         async with _whatsapp_dispatch_lock:
-            sender_queue = _whatsapp_sender_queues.get(sender_key)
+            if _whatsapp_sender_queues.get(sender_key) is not sender_queue:
+                return
             if sender_queue is None or not sender_queue.messages:
                 _whatsapp_sender_queues.pop(sender_key, None)
                 return
@@ -4913,6 +4930,20 @@ async def _process_whatsapp_sender_turn(sender_key: str) -> None:
             if sender_queue is not None:
                 _whatsapp_pending_messages -= len(sender_queue.messages)
         raise
+
+
+async def _allow_active_whatsapp_message(sender_id: str) -> bool:
+    """Do not persist a sender hash for account work cancelled during deletion."""
+    sender_queue = _active_whatsapp_sender_queue.get()
+    if sender_queue is not None and sender_queue.cancelled:
+        return False
+    allowed = await allow_whatsapp_message(sender_id)
+    if sender_queue is not None and sender_queue.cancelled:
+        # Cancellation can occur while the DB operation is awaiting its lock.
+        # Undo that late write before the popped message is allowed to continue.
+        await clear_whatsapp_rate_limit(sender_id)
+        return False
+    return allowed
 
 
 async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
@@ -4946,7 +4977,7 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
                     current_link.get(field) == link.get(field)
                     for field in ("user_id", "linked_at")
                 ):
-                    if not await allow_whatsapp_message(incoming.sender_id):
+                    if not await _allow_active_whatsapp_message(incoming.sender_id):
                         logger.warning("Dropped rate-limited WhatsApp message")
                         return
                     await _confirm_whatsapp_action(
@@ -4958,7 +4989,7 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
                         "⚠️ Die Aktion konnte nicht bestätigt werden.",
                     )
         else:
-            if not await allow_whatsapp_message(incoming.sender_id):
+            if not await _allow_active_whatsapp_message(incoming.sender_id):
                 logger.warning("Dropped rate-limited WhatsApp message")
                 return
             await _confirm_whatsapp_action(incoming, action_code, client)
@@ -4966,7 +4997,7 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
 
     code = pairing_code(incoming.text)
     if code:
-        if not await allow_whatsapp_message(incoming.sender_id):
+        if not await _allow_active_whatsapp_message(incoming.sender_id):
             logger.warning("Dropped rate-limited WhatsApp message")
             return
         user_id = await consume_whatsapp_pairing_code(code, incoming.sender_id)
@@ -4988,7 +5019,7 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
 
     link = await get_whatsapp_link_for_sender(incoming.sender_id)
     if link is None:
-        if not await allow_whatsapp_message(incoming.sender_id):
+        if not await _allow_active_whatsapp_message(incoming.sender_id):
             logger.warning("Dropped rate-limited WhatsApp message")
             return
         await client.send_text(
@@ -5005,7 +5036,7 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
             for field in ("user_id", "linked_at")
         ):
             return
-        if not await allow_whatsapp_message(incoming.sender_id):
+        if not await _allow_active_whatsapp_message(incoming.sender_id):
             logger.warning("Dropped rate-limited WhatsApp message")
             return
         await _process_linked_whatsapp_message(incoming, config, client, intent, link)
