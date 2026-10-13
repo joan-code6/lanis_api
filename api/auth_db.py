@@ -355,6 +355,8 @@ async def initialize() -> None:
             refresh_columns = {row[1] for row in await cursor.fetchall()}
         if "session_id" not in refresh_columns:
             await db.execute("ALTER TABLE refresh_tokens ADD COLUMN session_id TEXT")
+        if "deletion_recovery_origin" not in refresh_columns:
+            await db.execute("ALTER TABLE refresh_tokens ADD COLUMN deletion_recovery_origin TEXT")
         async with db.execute(
             "SELECT token FROM refresh_tokens WHERE session_id IS NULL OR session_id = ''"
         ) as cursor:
@@ -1380,6 +1382,49 @@ async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
     }
+
+
+async def fence_interrupted_deletion(
+    user_id: str, session_id: str, refresh_token: str
+) -> Optional[dict]:
+    """Rotate a surviving session so a delayed DELETE cannot authenticate.
+
+    The caller holds the account lifecycle lock. Looking up the refresh token
+    also makes recovery retryable if the response to a prior rotation was lost.
+    No credentials are decrypted and the session lifetime is not extended.
+    """
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute('BEGIN IMMEDIATE')
+            async with db.execute(
+                'SELECT user_id, school_id, username, session_id, expires_at, deletion_recovery_origin '
+                'FROM refresh_tokens WHERE token = ? AND user_id = ?',
+                (refresh_token, user_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                async with db.execute(
+                    'SELECT 1 FROM refresh_tokens WHERE session_id = ? AND user_id = ?',
+                    (session_id, user_id),
+                ) as cursor:
+                    if await cursor.fetchone():
+                        raise ValueError('Recovery requires the matching refresh token')
+                return None
+            if row['session_id'] != session_id and row['deletion_recovery_origin'] != session_id:
+                raise ValueError('Recovery identity does not match the refresh session')
+            if datetime.fromisoformat(row['expires_at']) <= datetime.utcnow():
+                await db.execute('DELETE FROM refresh_tokens WHERE token = ?', (refresh_token,))
+                await db.commit()
+                return None
+            new_session_id = uuid.uuid4().hex
+            await db.execute(
+                'UPDATE refresh_tokens SET session_id = ?, deletion_recovery_origin = ? WHERE token = ?',
+                (new_session_id, session_id, refresh_token),
+            )
+            await db.commit()
+            return {**dict(row), 'session_id': new_session_id}
 
 
 async def get_user_account_data(user_id: str) -> Dict[str, Any]:
@@ -2415,3 +2460,14 @@ async def mark_dashboard_notifications_read(
                 )
             await db.commit()
             return max(cursor.rowcount, 0)
+
+
+async def purge_expired_account_deletion_markers() -> None:
+    """Retire temporary deletion identities even when the user never returns."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                'DELETE FROM account_deletion_markers WHERE expires_at <= ?',
+                (datetime.utcnow(),),
+            )
+            await db.commit()

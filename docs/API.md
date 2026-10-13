@@ -635,3 +635,31 @@ Example:
 #### _filter_tables_by_klasse
 
 Filter tables to only include rows matching the given class name.
+
+
+### Interrupted account deletion recovery
+
+`POST /account/deletion/recover` accepts `{ "access_token": "...", "refresh_token": "..." }`
+from the session that requested deletion. It returns `Cache-Control: no-store`.
+An expired access token is accepted only to verify this recovery identity; it
+cannot authorize account deletion or an account export.
+
+The route holds the account lifecycle lock until any ongoing deletion settles.
+If the original refresh session survives, it rotates that session's JWT ID and
+returns `{ "state": "cancelled", "access_token": "...", "expires_in": 3600 }`.
+Every DELETE rechecks its original JWT ID after taking the same lock, so a delayed
+request cannot erase an account that recovery has restored. Retrying recovery
+with the saved original tokens is safe if its response was interrupted.
+
+`{ "state": "revoked" }` means the saved session no longer exists or has expired.
+It authorizes clearing local data for that obsolete session; it does not assert
+that the user's Schulportal account or all server-side account data was deleted.
+A missing or mismatched refresh token for a surviving session returns HTTP 409;
+a forged recovery identity returns HTTP 401. These responses do not authorize
+browser cleanup.
+
+Deploy the API change before the UI change. The UI persists recovery identity
+before sending DELETE and preserves it until browser cleanup finishes.
+For attachments cached before ownership tracking, the UI re-fetches course
+metadata and retries the download, establishing access through the authenticated
+course response without granting access based on possession of a file hash.

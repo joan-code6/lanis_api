@@ -125,6 +125,7 @@ class TaskQueue:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._cancelled_users: set[str] = set()
         self._user_generations: Dict[str, int] = {}
+        self._generation_counter = 0
     
     async def start(self) -> None:
         """Start the task queue workers."""
@@ -187,7 +188,10 @@ class TaskQueue:
         
         task.status = TaskStatus.PENDING
         if task.user_id:
-            generation = self._user_generations.get(task.user_id, 0)
+            if task.user_id not in self._user_generations:
+                self._generation_counter += 1
+                self._user_generations[task.user_id] = self._generation_counter
+            generation = self._user_generations[task.user_id]
             task.user_generation = generation - int(
                 task.user_id in self._cancelled_users
             )
@@ -200,9 +204,8 @@ class TaskQueue:
         cancelled: List[Task] = []
         async with self._lock:
             self._cancelled_users.add(user_id)
-            self._user_generations[user_id] = (
-                self._user_generations.get(user_id, 0) + 1
-            )
+            self._generation_counter += 1
+            self._user_generations[user_id] = self._generation_counter
             pending: List[Task] = []
             while True:
                 try:
@@ -239,6 +242,22 @@ class TaskQueue:
             task.on_cancel = None
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.utcnow()
+
+        async with self._lock:
+            self._retire_user_generation(user_id)
+
+    def _retire_user_generation(self, user_id: str) -> None:
+        """Drop identifying cancellation state once all affected work is gone.
+
+        Epochs come from one monotonic counter, so removing an idle user's map
+        entry cannot make a stale task current after that account logs in again.
+        """
+        if any(task.user_id == user_id for task in self._active_tasks.values()):
+            return
+        if any(task.user_id == user_id for task in self._queue._queue):
+            return
+        self._cancelled_users.discard(user_id)
+        self._user_generations.pop(user_id, None)
 
     async def allow_user_tasks(self, user_id: str) -> None:
         """Re-enable user-scoped work after a fresh login."""
@@ -337,6 +356,8 @@ class TaskQueue:
             )
             if self.retain_completed_tasks and task_is_current:
                 self._completed_tasks[task.task_id] = task
+            if task.user_id:
+                self._retire_user_generation(task.user_id)
     
     def get_task_status(self, task_id: str) -> Optional[Task]:
         """Get the status of a task by ID."""

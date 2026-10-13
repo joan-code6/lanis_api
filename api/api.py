@@ -66,12 +66,14 @@ from .auth_db import (
     DEFAULT_SIDEBAR_ORDER,
     allow_whatsapp_message,
     purge_expired_whatsapp_rate_limits,
+    purge_expired_account_deletion_markers,
     clear_whatsapp_rate_limit,
     initialize as auth_db_initialize,
     store_refresh_token,
     get_refresh_token,
     get_refresh_token_by_user_id,
     get_refresh_token_by_session_id,
+    fence_interrupted_deletion,
     delete_refresh_token,
     delete_user_tokens,
     delete_push_subscription,
@@ -110,6 +112,7 @@ from .auth_db import (
 from .outage_cache import OutageCacheRoute, snapshots
 from .account_data import (
     AccountDeletionCleanupError,
+    AccountDeletionSessionChanged,
     account_lifecycle_lock,
     build_account_export,
     delete_account_data,
@@ -292,6 +295,11 @@ class TokenRefreshResponse(BaseModel):
 
 class AccountDeleteRequest(BaseModel):
     confirmation: str
+
+
+class AccountDeletionRecoveryRequest(BaseModel):
+    access_token: str = Field(..., max_length=4096)
+    refresh_token: str = Field('', max_length=4096)
 
 
 class NotificationPreferencesRequest(BaseModel):
@@ -528,6 +536,7 @@ class AuthSession:
     user_id: str
     school_id: str
     username: str
+    session_id: str = ''
 
 
 @dataclass
@@ -995,6 +1004,7 @@ async def _run_whatsapp_history_cleanup() -> None:
         try:
             await purge_expired_whatsapp_ai_history()
             await purge_expired_whatsapp_rate_limits()
+            await purge_expired_account_deletion_markers()
         except Exception:
             logger.warning("WhatsApp history cleanup failed", exc_info=True)
         await asyncio.sleep(3600)
@@ -1174,7 +1184,7 @@ async def local_auth_dependency(
         stored = None
     if not stored:
         raise HTTPException(status_code=401, detail="No valid session found — please log in again")
-    return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"])
+    return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"], session_id=session_id)
 
 
 @app.get("/cache/status")
@@ -1594,8 +1604,11 @@ async def delete_account_endpoint(
         raise HTTPException(status_code=400, detail='confirmation must be exactly "DELETE"')
     try:
         report = await delete_account_data(
-            auth.user_id, school_id=auth.school_id, username=auth.username
+            auth.user_id, school_id=auth.school_id, username=auth.username,
+            expected_session_id=auth.session_id,
         )
+    except AccountDeletionSessionChanged as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except AccountDeletionCleanupError as error:
         logger.exception("Account deletion cleanup failed for %s", auth.user_id)
         raise HTTPException(status_code=503, detail=str(error)) from error
@@ -1607,6 +1620,45 @@ async def delete_account_endpoint(
         "deleted": report.deleted,
         "upstream_sph_data_deleted": report.upstream_sph_data_deleted,
     }
+
+
+@app.post('/account/deletion/recover')
+async def recover_account_deletion(payload: AccountDeletionRecoveryRequest) -> Response:
+    """Settle an interrupted DELETE before allowing browser data to be restored.
+
+    An expired, signed JWT is accepted only to identify the original session.
+    It cannot authorize deletion or data access. Recovery waits for an active
+    deletion, or rotates a surviving session to fence any delayed DELETE.
+    """
+    try:
+        identity = jwt.decode(
+            payload.access_token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+            options={'verify_exp': False, 'require': ['exp', 'sub', 'jti']},
+        )
+        user_id = canonicalize_user_id(identity['sub'])
+    except (jwt.InvalidTokenError, ValueError, TypeError) as error:
+        raise HTTPException(status_code=401, detail='Invalid recovery identity') from error
+    lock = await account_lifecycle_lock(user_id)
+    async with lock:
+        try:
+            stored = await fence_interrupted_deletion(
+                user_id, identity['jti'], payload.refresh_token,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        result = {'state': 'revoked'}
+        if stored:
+            result = {
+                'state': 'cancelled',
+                'access_token': sessions.create_access_token(
+                    user_id, stored['school_id'], stored['username'], stored['session_id'],
+                ),
+                'expires_in': ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            }
+        return Response(
+            json.dumps(result), media_type='application/json',
+            headers={'Cache-Control': 'no-store'},
+        )
 
 
 # --- DSB Endpoints ---
@@ -2974,9 +3026,7 @@ async def _download_course_file(
                 user_id, task_generation
             )
         ):
-            unmark_pending(file_hash)
-            async with _course_file_interests_lock:
-                _course_file_interests.pop(file_hash, None)
+            await _reschedule_shared_course_file(file_hash, user_id)
             return
         write_pending_meta(file_hash, download_url)
         session_data = await sessions._get_or_create_schulportal_client(user_id)
@@ -2990,9 +3040,7 @@ async def _download_course_file(
                 user_id, task_generation
             )
         ):
-            unmark_pending(file_hash)
-            async with _course_file_interests_lock:
-                _course_file_interests.pop(file_hash, None)
+            await _reschedule_shared_course_file(file_hash, user_id)
             return
         if result.get("success"):
             save_file(

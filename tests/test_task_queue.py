@@ -112,3 +112,25 @@ def test_cancelled_task_generation_stays_invalid_after_relogin():
         )
 
     asyncio.run(scenario())
+
+
+def test_cancellation_epochs_retire_without_reviving_active_work():
+    async def scenario():
+        queue = TaskQueue()
+        task = Task(name='active-download', user_id='5201:student', func=lambda: None, priority=TaskPriority.LOW)
+        await queue.add_task(task)
+        queue._queue.get_nowait()
+        queue._queue.task_done()
+        queue._active_tasks[task.task_id] = task
+        old_generation = task.user_generation
+        await queue.cancel_user_tasks(task.user_id)
+        assert task.user_id in queue._cancelled_users
+        assert not await queue.is_user_generation_current(task.user_id, old_generation)
+        queue._active_tasks.pop(task.task_id)
+        queue._retire_user_generation(task.user_id)
+        assert not queue._cancelled_users and not queue._user_generations
+        replacement = Task(name='new-download', user_id=task.user_id, func=lambda: None, priority=TaskPriority.LOW)
+        await queue.add_task(replacement)
+        assert not await queue.is_user_generation_current(task.user_id, old_generation)
+        assert await queue.is_user_generation_current(task.user_id, replacement.user_generation)
+    asyncio.run(scenario())

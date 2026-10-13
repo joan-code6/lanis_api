@@ -22,6 +22,10 @@ class AccountDeletionCleanupError(RuntimeError):
     """Account rows were removed, but cached attachment cleanup is incomplete."""
 
 
+class AccountDeletionSessionChanged(RuntimeError):
+    """Recovery or login revoked the session that requested deletion."""
+
+
 _lifecycle_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
     weakref.WeakValueDictionary()
 )
@@ -97,12 +101,17 @@ async def build_account_export(user_id: str) -> dict:
 
 
 async def delete_account_data(
-    user_id: str, school_id: str | None = None, username: str | None = None
+    user_id: str, school_id: str | None = None, username: str | None = None,
+    *, expected_session_id: str | None = None,
 ) -> DeletionReport:
     """Delete LANIS-held account data while preserving data in Schulportal Hessen."""
     user_id = canonicalize_user_id(user_id)
     lock = await account_lifecycle_lock(user_id)
     async with lock:
+        if expected_session_id is not None:
+            session = await auth_db.get_refresh_token_by_session_id(expected_session_id)
+            if not session or canonicalize_user_id(session['user_id']) != user_id:
+                raise AccountDeletionSessionChanged('Deletion session was revoked')
         credential = await auth_db.get_refresh_token_by_user_id(user_id)
         if credential:
             school_id = credential["school_id"]
