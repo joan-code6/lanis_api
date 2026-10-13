@@ -60,6 +60,8 @@ async def _migrate_case_insensitive_logins(db: aiosqlite.Connection) -> int:
             continue
 
         winner = max(group_rows, key=_row_recency)
+        # Keep the earliest insertion order while retaining the newest profile.
+        first_id = min(int(row["id"]) for row in group_rows)
         first_seen = min(str(row["first_seen"] or "") for row in group_rows)
         last_updated = max(str(row["last_updated"] or "") for row in group_rows)
         update_count = sum(int(row["update_count"] or 0) for row in group_rows)
@@ -72,11 +74,12 @@ async def _migrate_case_insensitive_logins(db: aiosqlite.Connection) -> int:
         await db.execute(
             """
             UPDATE users
-            SET school_id = ?, login = ?, data_hash = ?, user_data = ?,
+            SET id = ?, school_id = ?, login = ?, data_hash = ?, user_data = ?,
                 first_seen = ?, last_updated = ?, update_count = ?
             WHERE id = ?
             """,
             (
+                first_id,
                 canonical_school_id,
                 canonical_login,
                 winner["data_hash"],
