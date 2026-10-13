@@ -1283,7 +1283,6 @@ async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
     """Return the active login session represented by an access-token JWT ID."""
     if not session_id:
         return None
-    await _revoke_expired_sessions()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
