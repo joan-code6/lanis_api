@@ -154,7 +154,8 @@ Authenticate a user and create a new session.
   "token": "abc123def456...",
   "school_id": "1234",
   "username": "john.doe",
-  "encryption_ready": true
+  "encryption_ready": true,
+  "is_first_school_user": false
 }
 ```
 
@@ -165,6 +166,7 @@ Authenticate a user and create a new session.
 | `school_id` | string | School ID of the logged-in user |
 | `username` | string | Username of the logged-in user |
 | `encryption_ready` | boolean | Indicates if encryption is ready for the session |
+| `is_first_school_user` | boolean | Whether this account is the earliest known LANIS user at its school; used for the school-specific onboarding notice. Defaults to false if metrics are unavailable. |
 
 **Status Codes:**
 - `200 OK` - Login successful

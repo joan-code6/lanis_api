@@ -591,6 +591,22 @@ class UserMetricsDB:
             await db.commit()
             return inserted
 
+    async def is_first_school_user(self, school_id: str, login: str) -> bool:
+        """Identify the school's earliest known account, including repeat logins."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT login FROM users WHERE school_id = ?
+                ORDER BY first_seen, id LIMIT 1
+                """,
+                (school_id,),
+            )
+            row = await cursor.fetchone()
+            return row is not None and normalize_username(row[0]) == login
+
     async def get_login_series(self, since: datetime) -> List[Dict[str, Any]]:
         """Return daily login totals and unique accounts for a time range."""
         await self.initialize()

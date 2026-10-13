@@ -267,3 +267,38 @@ def test_homepage_adoption_is_complete_above_five_thousand_users(tmp_path):
         )
 
     asyncio.run(scenario())
+
+
+def test_first_school_user_survives_relogin_and_additional_users(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        assert not await database.is_first_school_user("5201", "first")
+        await database.record_login("5201", "First")
+        await database.record_login("5201", "second")
+        await database.record_login("5202", "other")
+        await database.record_login("5201", "FIRST")
+        # Background profile updates must not change who was first.
+        await database.upsert_user("5201", "first", {"name": "First"})
+        assert await database.is_first_school_user("5201", "FIRST")
+        assert not await database.is_first_school_user("5201", "second")
+        assert await database.is_first_school_user("5202", "other")
+        assert not await database.is_first_school_user("5203", "first")
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_school_logins_identify_exactly_one_first_user(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        await asyncio.gather(*(
+            database.record_login("5201", login) for login in ("alice", "bob", "charlie")
+        ))
+        flags = await asyncio.gather(*(
+            database.is_first_school_user("5201", login) for login in ("alice", "bob", "charlie")
+        ))
+        assert sum(flags) == 1
+
+    asyncio.run(scenario())
