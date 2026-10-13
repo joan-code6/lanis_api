@@ -36,6 +36,10 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
 
     async def scenario():
         await auth_db.initialize()
+        refresh_token = await auth_db.store_refresh_token(
+            "user-a", "5201", "user", "password"
+        )
+        session = await auth_db.get_refresh_token(refresh_token)
 
         defaults = await auth_db.get_notification_preferences("user-a")
         assert defaults["enabled"] is False
@@ -60,7 +64,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
                 "endpoint": "https://push.example/subscription",
                 "keys": {"p256dh": "public-key", "auth": "auth-key"},
             },
-            "browser-a",
+            session["session_id"],
         )
         await auth_db.save_message_notification_state(
             "user-a",
@@ -102,8 +106,6 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
                 "show_preview": False,
             },
         )
-        await auth_db.store_refresh_token("user-a", "5201", "user", "password")
-
         assert await auth_db.get_notification_preferences("user-a") == {
             "user_id": "user-a",
             "enabled": True,

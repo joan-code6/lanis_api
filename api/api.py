@@ -2818,9 +2818,8 @@ async def meinunterricht_file(
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
-        payload = sessions.decode_access_token(x_session_token)
-        user_id = payload["sub"]
-        session_data = await sessions._get_or_create_schulportal_client(user_id)
+        auth = await local_auth_dependency(x_session_token)
+        session_data = await sessions._get_or_create_schulportal_client(auth.user_id)
         client = session_data.client
     except HTTPException:
         raise HTTPException(status_code=404, detail="File not found")
