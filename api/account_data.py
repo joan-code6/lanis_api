@@ -26,7 +26,90 @@ class AccountDeletionSessionChanged(RuntimeError):
     """Recovery or login revoked the session that requested deletion."""
 
 
-_lifecycle_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+class AccountLifecycleLock:
+    """Allow concurrent account work, but drain it before exclusive changes.
+
+    Login, recovery and deletion use the default exclusive context. Ordinary
+    requests and background jobs use shared contexts. Waiting exclusive work
+    blocks new shared entrants so deletion cannot starve behind page fan-out.
+    State changes are synchronous within the event loop, including release.
+    """
+
+    def __init__(self):
+        self._readers = 0
+        self._writer = False
+        self._waiting_writers = 0
+        self._changed = asyncio.Event()
+
+    def _wake(self):
+        previous = self._changed
+        self._changed = asyncio.Event()
+        previous.set()
+
+    async def acquire(self):
+        self._waiting_writers += 1
+        try:
+            while self._writer or self._readers:
+                await self._changed.wait()
+            self._writer = True
+            return True
+        finally:
+            self._waiting_writers -= 1
+            self._wake()
+
+    def release(self):
+        if not self._writer:
+            raise RuntimeError("Account lifecycle lock is not held")
+        self._writer = False
+        self._wake()
+
+    def locked(self):
+        return self._writer or bool(self._readers)
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *exc):
+        self.release()
+
+    def shared(self):
+        return _AccountOperation(self)
+
+
+class _AccountOperation:
+    """One shared lease; it also supports manual streaming-response release."""
+
+    def __init__(self, lifecycle):
+        self._lifecycle = lifecycle
+        self._held = False
+
+    async def acquire(self):
+        lifecycle = self._lifecycle
+        if self._held:
+            raise RuntimeError("Account operation is already held")
+        while lifecycle._writer or lifecycle._waiting_writers:
+            await lifecycle._changed.wait()
+        lifecycle._readers += 1
+        self._held = True
+        return True
+
+    def release(self):
+        if not self._held:
+            raise RuntimeError("Account operation is not held")
+        self._held = False
+        self._lifecycle._readers -= 1
+        self._lifecycle._wake()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *exc):
+        self.release()
+
+
+_lifecycle_locks: weakref.WeakValueDictionary[str, AccountLifecycleLock] = (
     weakref.WeakValueDictionary()
 )
 _lifecycle_guard = asyncio.Lock()
@@ -42,11 +125,11 @@ async def clear_account_deletion_marker(user_id: str) -> None:
     await auth_db.clear_account_deletion_marker(user_id)
 
 
-async def account_lifecycle_lock(user_id: str) -> asyncio.Lock:
-    """Return the per-account lock shared by requests and background writes."""
+async def account_lifecycle_lock(user_id: str) -> AccountLifecycleLock:
+    """Return the per-account gate for ordinary work and exclusive changes."""
     user_id = canonicalize_user_id(user_id)
     async with _lifecycle_guard:
-        return _lifecycle_locks.setdefault(user_id, asyncio.Lock())
+        return _lifecycle_locks.setdefault(user_id, AccountLifecycleLock())
 
 
 async def build_account_export(user_id: str) -> dict:

@@ -895,7 +895,7 @@ async def run_message_notification_cycle(
     async def check_with_limit(user: Dict[str, Any]) -> None:
         async with semaphore:
             try:
-                # Serialize polling with account deletion. The user list is a
+                # Keep polling inside the account deletion barrier. The user list is a
                 # snapshot, so re-check the persisted account after acquiring
                 # the lock before doing any fetch, write, or push delivery.
                 from .account_data import account_lifecycle_lock
@@ -905,7 +905,7 @@ async def run_message_notification_cycle(
                 if not user_id:
                     return
                 lock = await account_lifecycle_lock(user_id)
-                async with lock:
+                async with lock.shared():
                     if not await get_refresh_token_by_user_id(user_id):
                         return
                     if invalidate_cache is None and get_preferences is None:

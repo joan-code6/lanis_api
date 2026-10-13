@@ -2481,7 +2481,7 @@ async def purge_expired_account_deletion_markers() -> None:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 'DELETE FROM account_deletion_markers WHERE expires_at <= ?',
-                (datetime.utcnow(),),
+                (datetime.utcnow().isoformat(),),
             )
             await db.execute(
                 'DELETE FROM admin_sessions WHERE expires_at <= ?',

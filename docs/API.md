@@ -679,6 +679,15 @@ and is purged on lookup, login and periodic cleanup.
 
 Stale `/apps`, `/modules` and `/benutzer` caches are revalidated through tracked
 account tasks. Pending refresh tasks hold identifiers, not private clients;
-running upstream fetches hold the lifecycle lock so deletion waits for them.
+running upstream fetches hold a shared lifecycle lease so deletion waits for them.
 Completed refresh work is not retained. Revoked regular JWTs release the
 lifecycle lock before downstream request-body parsing.
+
+Ordinary authenticated requests, profile/message refresh tasks, attachment
+downloads, notifications and WhatsApp work can run concurrently for one account.
+Login, recovery and deletion take exclusive access and wait for active work to
+finish; a waiting exclusive operation blocks new shared entrants. Slow upstream
+or AI calls therefore do not serialize page requests, while deletion still
+waits for private upstream work before closing clients and removing data.
+Message refresh jobs also carry the original session ID instead of bound
+private clients, validate it when starting, and discard completed payloads.

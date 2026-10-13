@@ -137,7 +137,7 @@ def test_course_file_task_stops_before_starting_after_deletion(monkeypatch):
 
     async def scenario():
         async def get_lock(_user_id):
-            return asyncio.Lock()
+            return account_data.AccountLifecycleLock()
 
         async def deleted(_user_id):
             return True

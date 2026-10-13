@@ -1040,7 +1040,7 @@ async def fetch_and_store_user_data(
     school_id = normalize_school_id(school_id)
     username = normalize_username(username)
     lifecycle_lock = await account_lifecycle_lock(user_id)
-    async with lifecycle_lock:
+    async with lifecycle_lock.shared():
         try:
             if not await get_refresh_token_by_session_id(session_id):
                 return
@@ -1075,7 +1075,7 @@ async def notify_new_user_if_account_active(
 ) -> None:
     """Serialize the personal-data webhook side effect with account deletion."""
     lifecycle_lock = await account_lifecycle_lock(user_id)
-    async with lifecycle_lock:
+    async with lifecycle_lock.shared():
         if await get_refresh_token_by_session_id(session_id) is None:
             return
         await notify_new_user(school_id, username)
@@ -1121,7 +1121,7 @@ def _iter_open_file(file_handle):
 
 @app.middleware("http")
 async def serialize_account_requests(request: Request, call_next):
-    """Serialize authenticated requests with login and account deletion."""
+    """Keep concurrent authenticated work inside the account deletion barrier."""
     if (
         request.url.path == "/login"
         or request.url.path == "/account/deletion/recover"
@@ -1141,7 +1141,7 @@ async def serialize_account_requests(request: Request, call_next):
     except Exception:
         # Let the normal auth dependency return the appropriate error response.
         return await call_next(request)
-    lifecycle_lock = await account_lifecycle_lock(user_id)
+    lifecycle_lock = (await account_lifecycle_lock(user_id)).shared()
     await lifecycle_lock.acquire()
     try:
         stored = await get_refresh_token_by_session_id(payload.get('jti') or '')
@@ -1747,7 +1747,7 @@ async def _revalidate_account_endpoint(user_id: str, session_id: str, endpoint: 
     cannot retain a bound client or fetch data after deletion/re-login.
     """
     lock = await account_lifecycle_lock(user_id)
-    async with lock:
+    async with lock.shared():
         stored = await get_refresh_token_by_session_id(session_id)
         if not stored or canonicalize_user_id(stored['user_id']) != user_id:
             return
@@ -2623,24 +2623,32 @@ async def _invalidate_message_caches(user_id: str) -> None:
 async def _update_message_cache_task(
     user_id: str,
     endpoint: str,
-    fetch_func,
+    session_id: str,
     params: dict,
     cache_params: str,
     cache_version: int,
 ):
-    try:
-        fresh_data = await run_in_threadpool(fetch_func, **params)
-        cached_data = await sessions.get_cached(user_id, endpoint, cache_params)
-        if cached_data is not None and not _responses_equal(cached_data, fresh_data):
-            await sessions.set_cache_if_current_version(
-                user_id,
-                endpoint,
-                fresh_data,
-                cache_params,
-                cache_version,
-            )
-    except Exception as e:
-        logger.error(f"Error updating message cache for {endpoint}: {e}")
+    """Refresh messages inside the deletion barrier using the original session."""
+    lock = await account_lifecycle_lock(user_id)
+    async with lock.shared():
+        stored = await get_refresh_token_by_session_id(session_id)
+        if not stored or canonicalize_user_id(stored['user_id']) != user_id:
+            return
+        try:
+            session_data = await sessions._get_or_create_schulportal_client(user_id)
+            method = {
+                '/nachrichten/headers': 'nachrichten_get_headers',
+                '/nachrichten/search': 'nachrichten_search_recipients',
+                '/nachrichten/conversation': 'nachrichten_get_conversation',
+            }[endpoint]
+            fresh_data = await run_in_threadpool(getattr(session_data.client, method), **params)
+            cached_data = await sessions.get_cached(user_id, endpoint, cache_params)
+            if cached_data is not None and not _responses_equal(cached_data, fresh_data):
+                await sessions.set_cache_if_current_version(
+                    user_id, endpoint, fresh_data, cache_params, cache_version,
+                )
+        except Exception as e:
+            logger.error(f"Error updating message cache for {endpoint}: {e}")
 
 
 @app.get("/nachrichten/headers")
@@ -2656,11 +2664,12 @@ async def get_message_headers(
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
     task = Task(
         name=f"update_message_cache:{endpoint}",
+        retain_completed=False,
         func=_update_message_cache_task,
         args=(
             auth.user_id,
             endpoint,
-            auth.client.nachrichten_get_headers,
+            auth.session_id,
             params,
             cache_params,
             cache_version,
@@ -2876,11 +2885,12 @@ async def search_recipients(
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
     task = Task(
         name=f"update_message_cache:{endpoint}",
+        retain_completed=False,
         func=_update_message_cache_task,
         args=(
             auth.user_id,
             endpoint,
-            auth.client.nachrichten_search_recipients,
+            auth.session_id,
             fetch_params,
             cache_params,
             cache_version,
@@ -2912,11 +2922,12 @@ async def get_conversation(
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
     task = Task(
         name=f"update_message_cache:{endpoint}",
+        retain_completed=False,
         func=_update_message_cache_task,
         args=(
             auth.user_id,
             endpoint,
-            auth.client.nachrichten_get_conversation,
+            auth.session_id,
             params,
             cache_params,
             cache_version,
@@ -3078,7 +3089,7 @@ async def _download_course_file(
     from .account_data import account_deletion_is_recent, account_lifecycle_lock
 
     lifecycle_lock = await account_lifecycle_lock(user_id)
-    async with lifecycle_lock:
+    async with lifecycle_lock.shared():
         if (
             await account_deletion_is_recent(user_id)
             or (session_id is not None and not await get_refresh_token_by_session_id(session_id))
@@ -4993,7 +5004,7 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
         link = await get_whatsapp_link_for_sender(incoming.sender_id)
         if link:
             lifecycle_lock = await account_lifecycle_lock(link["user_id"])
-            async with lifecycle_lock:
+            async with lifecycle_lock.shared():
                 current_link = await get_whatsapp_link_for_sender(
                     incoming.sender_id
                 )
@@ -5052,7 +5063,7 @@ async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
         return
 
     lifecycle_lock = await account_lifecycle_lock(link["user_id"])
-    async with lifecycle_lock:
+    async with lifecycle_lock.shared():
         # The link may have been removed while this task waited for deletion.
         current_link = await get_whatsapp_link_for_sender(incoming.sender_id)
         if not current_link or any(
