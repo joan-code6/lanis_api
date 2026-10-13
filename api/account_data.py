@@ -119,6 +119,7 @@ async def delete_account_data(
 
         from .api import (
             clear_account_export_state,
+            clear_course_file_interests,
             clear_whatsapp_user_queue,
             semantic_engine,
             sessions,
@@ -126,6 +127,7 @@ async def delete_account_data(
             whatsapp_task_queue,
         )
 
+        await clear_course_file_interests(user_id)
         await task_queue.cancel_user_tasks(user_id)
         await whatsapp_task_queue.cancel_user_tasks(user_id)
         await clear_whatsapp_user_queue(user_id)

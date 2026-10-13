@@ -1215,6 +1215,7 @@ async def client_dependency(
         user_id=user_id,
         school_id=session_data.school_id,
         username=session_data.username,
+        session_id=identity.session_id,
     )
 
 
@@ -2949,12 +2950,12 @@ async def mark_read(
 # --- Mein Unterricht ---
 
 
-_course_file_interests: dict[str, dict[str, str]] = {}
+_course_file_interests: dict[str, dict[str, tuple[str, str]]] = {}
 _course_file_interests_lock = asyncio.Lock()
 
 
 async def _queue_course_file_download(
-    user_id: str, download_url: str, file_hash: str
+    user_id: str, download_url: str, file_hash: str, session_id: str
 ) -> None:
     async def download_for_task(
         task_user_id: str, task_download_url: str, task_file_hash: str
@@ -2964,6 +2965,7 @@ async def _queue_course_file_download(
             task_download_url,
             task_file_hash,
             task_generation=download_task.user_generation,
+            session_id=session_id,
         )
 
     download_task = Task(
@@ -2980,27 +2982,50 @@ async def _queue_course_file_download(
     await task_queue.add_task(download_task)
 
 
-async def _reschedule_shared_course_file(file_hash: str, cancelled_user_id: str) -> None:
-    """Use another interested account if the queued downloader is deleted."""
+async def clear_course_file_interests(user_id: str) -> None:
+    """Withdraw an account even when another user owns the shared downloader."""
     async with _course_file_interests_lock:
-        interested = _course_file_interests.get(file_hash, {})
-        interested.pop(cancelled_user_id, None)
-        replacement = next(iter(interested.items()), None)
-        if replacement is None:
-            _course_file_interests.pop(file_hash, None)
-            unmark_pending(file_hash)
-            return
-        replacement_user_id, replacement_url = replacement
-        mark_pending(file_hash)
-    try:
-        await _queue_course_file_download(
-            replacement_user_id, replacement_url, file_hash
-        )
-    except Exception:
+        for interested in _course_file_interests.values():
+            interested.pop(user_id, None)
+
+
+async def _reschedule_shared_course_file(file_hash: str, cancelled_user_id: str) -> None:
+    """Replace a downloader only with a still-valid, originally interested session."""
+    async with _course_file_interests_lock:
+        _course_file_interests.get(file_hash, {}).pop(cancelled_user_id, None)
+    while True:
         async with _course_file_interests_lock:
-            _course_file_interests.pop(file_hash, None)
-            unmark_pending(file_hash)
-        logger.exception("Could not reschedule shared course file %s", file_hash[:12])
+            interested = _course_file_interests.get(file_hash, {})
+            replacement = next(iter(interested.items()), None)
+            if replacement is None:
+                _course_file_interests.pop(file_hash, None)
+                unmark_pending(file_hash)
+                return
+            replacement_user_id, (replacement_url, session_id) = replacement
+        stored = await get_refresh_token_by_session_id(session_id)
+        if (
+            not stored
+            or canonicalize_user_id(stored['user_id']) != replacement_user_id
+            or not await has_cached_file_reference(replacement_user_id, file_hash)
+        ):
+            async with _course_file_interests_lock:
+                interested = _course_file_interests.get(file_hash, {})
+                if interested.get(replacement_user_id) == (replacement_url, session_id):
+                    interested.pop(replacement_user_id, None)
+            continue
+        try:
+            mark_pending(file_hash)
+            # The task also validates this exact session under its lifecycle lock
+            # before fetching and saving, covering deletion after the checks here.
+            await _queue_course_file_download(
+                replacement_user_id, replacement_url, file_hash, session_id
+            )
+        except Exception:
+            async with _course_file_interests_lock:
+                _course_file_interests.pop(file_hash, None)
+                unmark_pending(file_hash)
+            logger.exception('Could not reschedule shared course file %s', file_hash[:12])
+        return
 
 
 async def _download_course_file(
@@ -3009,6 +3034,7 @@ async def _download_course_file(
     file_hash: str,
     *,
     task_generation: int | None = None,
+    session_id: str | None = None,
 ) -> None:
     if is_file_cached(file_hash):
         unmark_pending(file_hash)
@@ -3022,6 +3048,7 @@ async def _download_course_file(
     async with lifecycle_lock:
         if (
             await account_deletion_is_recent(user_id)
+            or (session_id is not None and not await get_refresh_token_by_session_id(session_id))
             or not await task_queue.is_user_generation_current(
                 user_id, task_generation
             )
@@ -3036,6 +3063,7 @@ async def _download_course_file(
     async with lifecycle_lock:
         if (
             await account_deletion_is_recent(user_id)
+            or (session_id is not None and not await get_refresh_token_by_session_id(session_id))
             or not await task_queue.is_user_generation_current(
                 user_id, task_generation
             )
@@ -3192,6 +3220,10 @@ async def meinunterricht_course(
     if fetched_from_portal:
         result = await run_in_threadpool(auth.client.meinunterricht_get_course, course_id)
 
+    attachment_session_id = auth.session_id
+    if not attachment_session_id:
+        persisted = await get_refresh_token_by_user_id(auth.user_id)
+        attachment_session_id = (persisted or {}).get('session_id', '')
     if result.get("success") and "entries" in result:
         for entry in result["entries"]:
             for file_info in entry.get("files", []):
@@ -3215,7 +3247,7 @@ async def meinunterricht_course(
                     async with _course_file_interests_lock:
                         _course_file_interests.setdefault(file_hash, {})[
                             auth.user_id
-                        ] = original_url
+                        ] = (original_url, attachment_session_id)
 
                 if (
                     original_url
@@ -3226,7 +3258,7 @@ async def meinunterricht_course(
                     mark_pending(file_hash)
                     try:
                         await _queue_course_file_download(
-                            auth.user_id, original_url, file_hash
+                            auth.user_id, original_url, file_hash, attachment_session_id
                         )
                     except Exception:
                         unmark_pending(file_hash)
