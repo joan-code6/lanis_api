@@ -1778,7 +1778,11 @@ async def save_push_subscription(
                 """
                 INSERT INTO push_subscriptions
                     (endpoint, user_id, session_id, p256dh, auth, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                SELECT ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                WHERE EXISTS (
+                    SELECT 1 FROM refresh_tokens
+                    WHERE user_id = ? AND session_id = ? AND expires_at > ?
+                )
                 ON CONFLICT(endpoint) DO UPDATE SET
                     user_id = excluded.user_id,
                     session_id = excluded.session_id,
@@ -1792,6 +1796,9 @@ async def save_push_subscription(
                     session_id,
                     keys["p256dh"],
                     keys["auth"],
+                    user_id,
+                    session_id,
+                    datetime.utcnow(),
                 ),
             )
             await db.commit()

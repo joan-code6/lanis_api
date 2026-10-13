@@ -3094,9 +3094,8 @@ async def app_launch(
         raise HTTPException(status_code=401, detail="X-Session-Token header or token query parameter required")
 
     try:
-        payload = sessions.decode_access_token(session_token)
-        user_id = payload["sub"]
-        session_data = await sessions._get_or_create_schulportal_client(user_id)
+        auth = await local_auth_dependency(session_token)
+        session_data = await sessions._get_or_create_schulportal_client(auth.user_id)
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
