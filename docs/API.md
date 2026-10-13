@@ -691,3 +691,10 @@ or AI calls therefore do not serialize page requests, while deletion still
 waits for private upstream work before closing clients and removing data.
 Message refresh jobs also carry the original session ID instead of bound
 private clients, validate it when starting, and discard completed payloads.
+
+Authenticated admin handlers also hold shared actor lifecycle access. They
+revalidate the persisted admin session after entering; deletion waits for
+already-running handlers, and handlers waiting behind deletion reject the
+revoked session. User-detail routes acquire actor and target access in a stable
+order, and nested audit helpers reuse those leases. Admin login keeps its
+exclusive lifecycle context.

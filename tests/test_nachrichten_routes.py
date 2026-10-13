@@ -76,7 +76,7 @@ def test_recipient_search_refresh_uses_client_query_parameter(monkeypatch) -> No
             "results": [],
         }
     )
-    auth = SimpleNamespace(user_id="user", client=client)
+    auth = SimpleNamespace(user_id="user", client=client, session_id="original-session")
 
     result = asyncio.run(search_recipients("Bennet", auth))
 

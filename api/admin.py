@@ -8,7 +8,8 @@ admin secret in configuration or returned by normal user-list endpoints.
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 import json
 import logging
 import os
@@ -17,8 +18,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from schulportal_hessen.base import SchulportalHessenAPI
@@ -46,7 +48,59 @@ from .school_locations import get_school_directory as _get_school_directory
 from .uptime import get_uptime_status, run_uptime_check
 
 logger = logging.getLogger("admin")
-router = APIRouter(prefix="/admin", tags=["admin"])
+_held_admin_leases: ContextVar[frozenset[str]] = ContextVar(
+    "held_admin_leases", default=frozenset(),
+)
+
+
+@asynccontextmanager
+async def _admin_account_access(*user_ids: str):
+    """Take shared leases once, in stable order, for the actor and viewed user."""
+    from .account_data import account_lifecycle_lock
+
+    held = _held_admin_leases.get()
+    requested = {canonicalize_user_id(user_id) for user_id in user_ids}
+    async with AsyncExitStack() as stack:
+        for user_id in sorted(requested - held):
+            lifecycle = await account_lifecycle_lock(user_id)
+            await stack.enter_async_context(lifecycle.shared())
+        token = _held_admin_leases.set(held | requested)
+        try:
+            yield
+        finally:
+            _held_admin_leases.reset(token)
+
+
+class AdminLifecycleRoute(APIRoute):
+    """Drain authenticated admin handlers before deleting their actor account."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def protected(request: Request):
+            # Login owns exclusive lifecycle access and has no existing JWT.
+            if self.path == "/admin/auth/login":
+                return await handler(request)
+            token = request.headers.get("X-Admin-Token")
+            if not token:
+                return await handler(request)  # Normal dependency reports missing auth.
+            principal = await admin_dependency(token)
+            lock_ids = {principal.user_id}
+            # Acquire actor and viewed account together to avoid a nested lease
+            # deadlock if both accounts have a deletion waiting for readers.
+            target = request.path_params.get("user_id")
+            if target:
+                school, separator, username = target.partition(":")
+                if separator and school and username:
+                    lock_ids.add(make_user_id(school, username))
+            async with _admin_account_access(*lock_ids):
+                await admin_dependency(token)  # Recheck persisted jti after waiting.
+                return await handler(request)
+
+        return protected
+
+
+router = APIRouter(prefix="/admin", tags=["admin"], route_class=AdminLifecycleRoute)
 
 ADMIN_TOKEN_EXPIRE_MINUTES = 30
 ACTIVE_STATE_DAYS = 7
@@ -238,7 +292,7 @@ async def _record_admin_action(
     locks_held: bool = False,
 ) -> None:
     try:
-        from .account_data import account_deletion_is_recent, account_lifecycle_lock
+        from .account_data import account_deletion_is_recent
 
         if locks_held:
             if not await account_deletion_is_recent(actor_user_id):
@@ -246,8 +300,7 @@ async def _record_admin_action(
                     actor_user_id, action, target_user_id
                 )
             return
-        lifecycle_lock = await account_lifecycle_lock(actor_user_id)
-        async with lifecycle_lock:
+        async with _admin_account_access(actor_user_id):
             if await account_deletion_is_recent(actor_user_id):
                 return
             await user_metrics_db.record_admin_action(
@@ -452,13 +505,7 @@ async def admin_user_detail(
     if not separator or not school_id or not username:
         raise HTTPException(status_code=404, detail="User not found")
     storage_user_id = make_user_id(school_id, username)
-    from .account_data import account_lifecycle_lock
-
-    lock_ids = sorted({storage_user_id, canonicalize_user_id(principal.user_id)})
-    async with AsyncExitStack() as stack:
-        for lock_user_id in lock_ids:
-            lifecycle_lock = await account_lifecycle_lock(lock_user_id)
-            await stack.enter_async_context(lifecycle_lock)
+    async with _admin_account_access(storage_user_id, principal.user_id):
         row = await _metric_row(school_id, username)
         if row is None:
             raise HTTPException(status_code=404, detail="User not found")
