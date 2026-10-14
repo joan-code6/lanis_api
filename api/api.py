@@ -245,6 +245,7 @@ class LoginResponse(BaseModel):
     school_id: str
     username: str
     encryption_ready: bool
+    is_first_school_user: bool = False
     expires_in: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60
 
 
@@ -1254,6 +1255,7 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
     )
 
     # 5. Record successful logins independently of profile collection.
+    is_first_school_user = False
     try:
         is_new_user = await user_metrics_db.record_login(school_id, username)
         if is_new_user:
@@ -1268,6 +1270,13 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
             )
     except Exception:
         logger.warning("Could not record login metric", exc_info=True)
+
+    try:
+        is_first_school_user = await user_metrics_db.is_first_school_user(
+            school_id, username
+        )
+    except Exception:
+        logger.warning("Could not identify first school user", exc_info=True)
 
     # 6. Queue background metrics fetch
     user_data_task = Task(
@@ -1285,6 +1294,7 @@ async def login_endpoint(payload: LoginRequest) -> LoginResponse:
         school_id=school_id,
         username=username,
         encryption_ready=encryption_ready,
+        is_first_school_user=is_first_school_user,
     )
 
 

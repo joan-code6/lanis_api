@@ -60,6 +60,8 @@ async def _migrate_case_insensitive_logins(db: aiosqlite.Connection) -> int:
             continue
 
         winner = max(group_rows, key=_row_recency)
+        # Keep the earliest insertion order while retaining the newest profile.
+        first_id = min(int(row["id"]) for row in group_rows)
         first_seen = min(str(row["first_seen"] or "") for row in group_rows)
         last_updated = max(str(row["last_updated"] or "") for row in group_rows)
         update_count = sum(int(row["update_count"] or 0) for row in group_rows)
@@ -72,11 +74,12 @@ async def _migrate_case_insensitive_logins(db: aiosqlite.Connection) -> int:
         await db.execute(
             """
             UPDATE users
-            SET school_id = ?, login = ?, data_hash = ?, user_data = ?,
+            SET id = ?, school_id = ?, login = ?, data_hash = ?, user_data = ?,
                 first_seen = ?, last_updated = ?, update_count = ?
             WHERE id = ?
             """,
             (
+                first_id,
                 canonical_school_id,
                 canonical_login,
                 winner["data_hash"],
@@ -590,6 +593,24 @@ class UserMetricsDB:
             )
             await db.commit()
             return inserted
+
+    async def is_first_school_user(self, school_id: str, login: str) -> bool:
+        """Identify the school's earliest known account, including repeat logins."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        # SQLite serializes inserts; AUTOINCREMENT IDs follow that order even
+        # when a waiting login captured an earlier first_seen timestamp.
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT login FROM users WHERE school_id = ?
+                ORDER BY id LIMIT 1
+                """,
+                (school_id,),
+            )
+            row = await cursor.fetchone()
+            return row is not None and normalize_username(row[0]) == login
 
     async def get_login_series(self, since: datetime) -> List[Dict[str, Any]]:
         """Return daily login totals and unique accounts for a time range."""
