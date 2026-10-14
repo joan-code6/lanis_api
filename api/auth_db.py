@@ -115,6 +115,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     "sidebar": {
         "order": DEFAULT_SIDEBAR_ORDER,
         "hidden_items": [],
+        "show_feedback_button": True,
     },
     "dashboard": {
         "pinned_modules": [],
@@ -482,6 +483,7 @@ async def initialize() -> None:
             CREATE TABLE IF NOT EXISTS push_subscriptions (
                 endpoint TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 p256dh TEXT NOT NULL,
                 auth TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -489,11 +491,48 @@ async def initialize() -> None:
             )
             """
         )
+        async with db.execute("PRAGMA table_info(push_subscriptions)") as cursor:
+            push_subscription_columns = {row[1] for row in await cursor.fetchall()}
+        if "session_id" not in push_subscription_columns:
+            await db.execute(
+                "ALTER TABLE push_subscriptions ADD COLUMN session_id TEXT"
+            )
+        # Existing endpoints cannot be attributed safely when an account has
+        # more than one login. Browsers with notifications enabled will
+        # register again under their current session.
+        await db.execute(
+            "DELETE FROM push_subscriptions "
+            "WHERE session_id IS NULL OR session_id = ''"
+        )
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS push_subscriptions_session_id_insert
+            BEFORE INSERT ON push_subscriptions
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'push subscription session_id is required');
+            END
+            """
+        )
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS push_subscriptions_session_id_update
+            BEFORE UPDATE OF session_id ON push_subscriptions
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'push subscription session_id is required');
+            END
+            """
+        )
         await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id
             ON push_subscriptions(user_id)
             """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_session_id "
+            "ON push_subscriptions(session_id)"
         )
         await db.execute(
             """
@@ -1159,6 +1198,9 @@ async def store_refresh_token(
     session_id = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
 
+    # Keep refresh-token and push-subscription cleanup coordinated so an
+    # expired browser cannot retain a notification endpoint after a new login.
+    await _revoke_expired_sessions()
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -1190,12 +1232,22 @@ async def _revoke_expired_sessions() -> None:
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT DISTINCT user_id FROM refresh_tokens WHERE expires_at <= ?",
+                "SELECT user_id, session_id FROM refresh_tokens WHERE expires_at <= ?",
                 (now,),
             ) as cursor:
-                user_ids = [row[0] for row in await cursor.fetchall()]
+                expired_rows = await cursor.fetchall()
+            user_ids = list({row[0] for row in expired_rows})
             if not user_ids:
                 return
+
+            session_ids = [row[1] for row in expired_rows if row[1]]
+            if session_ids:
+                session_placeholders = ", ".join("?" for _ in session_ids)
+                await db.execute(
+                    f"DELETE FROM push_subscriptions "
+                    f"WHERE session_id IN ({session_placeholders})",
+                    session_ids,
+                )
 
             placeholders = ", ".join("?" for _ in user_ids)
             async with db.execute(
@@ -1315,6 +1367,50 @@ async def delete_refresh_token(token: str) -> None:
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM refresh_tokens WHERE token = ?", (token,))
+            await db.commit()
+
+
+async def delete_refresh_token_by_session_id(session_id: str) -> None:
+    """Revoke one browser session and unlink WhatsApp after the final session."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT user_id FROM refresh_tokens WHERE session_id = ?",
+                (session_id,),
+            ) as cursor:
+                session = await cursor.fetchone()
+            await db.execute(
+                "DELETE FROM push_subscriptions WHERE session_id = ?", (session_id,)
+            )
+            await db.execute(
+                "DELETE FROM refresh_tokens WHERE session_id = ?", (session_id,)
+            )
+            if session is not None:
+                user_id = _canonical_user_id(session["user_id"])
+                async with db.execute(
+                    "SELECT 1 FROM refresh_tokens "
+                    "WHERE user_id = ? AND expires_at > ? LIMIT 1",
+                    (user_id, datetime.utcnow()),
+                ) as cursor:
+                    has_active_session = await cursor.fetchone()
+                if has_active_session is None:
+                    await db.execute(
+                        "DELETE FROM whatsapp_links WHERE user_id = ?", (user_id,)
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_ai_conversations WHERE user_id = ?",
+                        (user_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_pending_actions WHERE user_id = ?",
+                        (user_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_pairing_codes WHERE user_id = ?",
+                        (user_id,),
+                    )
             await db.commit()
 
 
@@ -1652,31 +1748,17 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                 "DELETE FROM account_deletion_markers WHERE expires_at <= ?",
                 (datetime.utcnow().isoformat(),),
             )
-            await db.commit()
             counts["file_cache_files"] = 0
             if orphaned_file_hashes:
                 from .file_cache import stage_files_for_deletion
 
-                # Keep reference writes blocked only for the quick atomic rename.
-                # Slow unlink retries happen below after releasing the auth DB lock.
-                await db.execute("BEGIN IMMEDIATE")
-                try:
-                    still_orphaned = []
-                    for file_hash in orphaned_file_hashes:
-                        async with db.execute(
-                            "SELECT 1 FROM cached_file_references WHERE file_hash = ? LIMIT 1",
-                            (file_hash,),
-                        ) as cursor:
-                            if await cursor.fetchone() is None:
-                                still_orphaned.append(file_hash)
-                    staged_file_paths = await asyncio.to_thread(
-                        stage_files_for_deletion, still_orphaned
-                    )
-                    counts["file_cache_files"] = len(staged_file_paths)
-                    await db.commit()
-                except Exception:
-                    await db.rollback()
-                    raise
+                # Stage while the deletion transaction still owns reference writes.
+                # A rename failure rolls back account/session removal, allowing retry.
+                staged_file_paths = await asyncio.to_thread(
+                    stage_files_for_deletion, orphaned_file_hashes
+                )
+                counts["file_cache_files"] = len(staged_file_paths)
+            await db.commit()
     if staged_file_paths:
         from .file_cache import (
             delete_staged_files,
@@ -2137,7 +2219,11 @@ async def get_enabled_notification_users() -> List[Dict[str, Any]]:
     ]
 
 
-async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> None:
+async def save_push_subscription(
+    user_id: str,
+    subscription: Dict[str, Any],
+    session_id: str,
+) -> None:
     """Associate a browser push subscription with a user."""
     user_id = _canonical_user_id(user_id)
     keys = subscription.get("keys") or {}
@@ -2146,10 +2232,15 @@ async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> 
             await db.execute(
                 """
                 INSERT INTO push_subscriptions
-                    (endpoint, user_id, p256dh, auth, created_at, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    (endpoint, user_id, session_id, p256dh, auth, created_at, updated_at)
+                SELECT ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                WHERE EXISTS (
+                    SELECT 1 FROM refresh_tokens
+                    WHERE user_id = ? AND session_id = ? AND expires_at > ?
+                )
                 ON CONFLICT(endpoint) DO UPDATE SET
                     user_id = excluded.user_id,
+                    session_id = excluded.session_id,
                     p256dh = excluded.p256dh,
                     auth = excluded.auth,
                     updated_at = CURRENT_TIMESTAMP
@@ -2157,8 +2248,12 @@ async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> 
                 (
                     subscription["endpoint"],
                     user_id,
+                    session_id,
                     keys["p256dh"],
                     keys["auth"],
+                    user_id,
+                    session_id,
+                    datetime.utcnow(),
                 ),
             )
             await db.commit()

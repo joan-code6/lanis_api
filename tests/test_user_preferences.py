@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from api import api as api_module
 from api import auth_db
 from api.api import (
+    AppearancePreferencesRequest,
     DashboardPreferencesRequest,
     HomeworkPreferencesRequest,
     SidebarPreferencesRequest,
@@ -17,6 +18,11 @@ from api.api import (
     get_account_preferences,
     update_account_preferences,
 )
+
+
+@pytest.mark.parametrize("theme_color", ["coral", "blush", "moss"])
+def test_appearance_preferences_accept_new_themes(theme_color: str) -> None:
+    assert AppearancePreferencesRequest(theme_color=theme_color).theme_color == theme_color
 
 
 def test_dashboard_preferences_limit_module_lists() -> None:
@@ -42,7 +48,11 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "theme_mode": "system",
         "theme_color": "cyan",
     }
-    assert defaults["sidebar"] == {"order": auth_db.DEFAULT_SIDEBAR_ORDER, "hidden_items": []}
+    assert defaults["sidebar"] == {
+        "order": auth_db.DEFAULT_SIDEBAR_ORDER,
+        "hidden_items": [],
+        "show_feedback_button": True,
+    }
     assert defaults["dashboard"]["pinned_modules"] == []
     assert defaults["dashboard"]["hidden_modules"] == []
     assert defaults["dashboard"]["notifications_enabled"] is True

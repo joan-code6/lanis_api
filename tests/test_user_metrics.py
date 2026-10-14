@@ -47,6 +47,15 @@ def test_existing_case_variant_metrics_rows_are_merged(tmp_path):
                     ),
                     (
                         "5201",
+                        "second-user",
+                        "second-hash",
+                        '{"name": "second"}',
+                        "2026-08-13T11:30:00",
+                        "2026-08-13T11:30:00",
+                        1,
+                    ),
+                    (
+                        "5201",
                         "bennet.wegener",
                         "new-hash",
                         '{"name": "new"}',
@@ -61,7 +70,7 @@ def test_existing_case_variant_metrics_rows_are_merged(tmp_path):
         database = UserMetricsDB(database_path)
         await database.initialize()
 
-        assert await database.get_user_count() == 1
+        assert await database.get_user_count() == 2
         record = await database.get_user("5201", "BENNET.WEGENER")
         assert record is not None
         assert record.login == "bennet.wegener"
@@ -69,6 +78,17 @@ def test_existing_case_variant_metrics_rows_are_merged(tmp_path):
         assert record.first_seen.isoformat() == "2026-08-13T11:00:00"
         assert record.last_updated.isoformat() == "2026-08-13T12:00:00"
         assert record.update_count == 3
+        assert record.id == 1
+        assert await database.is_first_school_user("5201", "BENNET.WEGENER")
+        assert not await database.is_first_school_user("5201", "second-user")
+
+        # Restarting and inserting another account must preserve the winner.
+        restarted = UserMetricsDB(database_path)
+        await restarted.record_login("5201", "third-user")
+        third = await restarted.get_user("5201", "third-user")
+        assert third.id > 3
+        assert await restarted.is_first_school_user("5201", "bennet.wegener")
+        assert not await restarted.is_first_school_user("5201", "third-user")
 
     asyncio.run(scenario())
 
@@ -306,5 +326,62 @@ def test_homepage_adoption_is_complete_above_five_thousand_users(tmp_path):
             2,
             ["large-school"],
         )
+
+    asyncio.run(scenario())
+
+
+def test_first_school_user_survives_relogin_and_additional_users(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        assert not await database.is_first_school_user("5201", "first")
+        await database.record_login("5201", "First")
+        await database.record_login("5201", "second")
+        await database.record_login("5202", "other")
+        await database.record_login("5201", "FIRST")
+        # Background profile updates must not change who was first.
+        await database.upsert_user("5201", "first", {"name": "First"})
+        assert await database.is_first_school_user("5201", "FIRST")
+        assert not await database.is_first_school_user("5201", "second")
+        assert await database.is_first_school_user("5202", "other")
+        assert not await database.is_first_school_user("5203", "first")
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_school_logins_identify_exactly_one_first_user(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        async def login_and_check(login):
+            await database.record_login("5201", login)
+            return await database.is_first_school_user("5201", login)
+
+        flags = await asyncio.gather(*(
+            login_and_check(login) for login in ("alice", "bob", "charlie")
+        ))
+        assert sum(flags) == 1
+
+    asyncio.run(scenario())
+
+
+def test_earlier_captured_timestamp_cannot_replace_committed_first_user(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from importlib import import_module
+    metrics_module = import_module("api.metrics.user_metrics_db")
+
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        # A waiting login can capture its timestamp before the login that commits first.
+        timestamps = iter([datetime(2026, 1, 1, 12, 1), datetime(2026, 1, 1, 12, 0)])
+        monkeypatch.setattr(metrics_module, "datetime", SimpleNamespace(utcnow=lambda: next(timestamps)))
+        await database.record_login("5201", "committed-first")
+        assert await database.is_first_school_user("5201", "committed-first")
+        await database.record_login("5201", "captured-earlier")
+        assert not await database.is_first_school_user("5201", "captured-earlier")
+        assert await database.is_first_school_user("5201", "committed-first")
 
     asyncio.run(scenario())

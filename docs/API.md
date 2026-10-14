@@ -703,3 +703,8 @@ Account export and deletion read refresh-session metadata without decrypting the
 stored Schulportal password. Rotating the encryption key or corrupting a stored
 ciphertext therefore does not prevent a user from exporting LANIS-held data or
 deleting the account.
+
+Account export and deletion include submitted feedback from `feedback.db`.
+Deletion also clears the deleted administrator's identity from completion
+actions on other users' reports. Admin credential reveal and step-up routes
+are removed; user detail exposes only credential availability and timestamps.

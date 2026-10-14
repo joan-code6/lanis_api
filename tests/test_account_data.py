@@ -326,3 +326,70 @@ def test_deletion_waits_for_tracked_revalidation_and_purges_queued_clients(tmp_p
             if deletion is not None and not deletion.done(): await deletion
             await queue.stop(wait=False)
     asyncio.run(scenario())
+
+
+def test_staging_failure_preserves_session_and_file_references(tmp_path, monkeypatch):
+    from api import file_cache
+    import pytest
+
+    async def scenario():
+        monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+        monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
+        monkeypatch.setattr(file_cache, "FILE_CACHE_DIR", tmp_path / "files")
+        await auth_db.initialize()
+        token = await auth_db.store_refresh_token("5201:student", "5201", "student", "unused")
+        file_hash = "c" * 64
+        file_cache.save_file(file_hash, b"private", "text/plain", "private.txt")
+        await auth_db.add_cached_file_reference("5201:student", file_hash)
+        original_replace = file_cache.os.replace
+        calls = 0
+
+        def fail_second_rename(source, target):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("temporary staging failure")
+            return original_replace(source, target)
+
+        monkeypatch.setattr(file_cache.os, "replace", fail_second_rename)
+        with pytest.raises(OSError):
+            await auth_db.delete_user_data("5201:student")
+        assert await auth_db.get_refresh_token(token)
+        assert await auth_db.has_cached_file_reference("5201:student", file_hash)
+        assert file_cache.get_content_path(file_hash).read_bytes() == b"private"
+        monkeypatch.setattr(file_cache.os, "replace", original_replace)
+        await auth_db.delete_user_data("5201:student")
+        assert await auth_db.get_refresh_token(token) is None
+        assert not file_cache.is_file_cached(file_hash)
+
+    asyncio.run(scenario())
+
+
+def test_account_rights_include_new_feedback_store(tmp_path, monkeypatch):
+    from api import feedback_db
+    import aiosqlite
+
+    async def scenario():
+        monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+        monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
+        monkeypatch.setattr(feedback_db, "DB_PATH", tmp_path / "feedback.db")
+        metrics = UserMetricsDB(tmp_path / "metrics.db")
+        await metrics.initialize()
+        monkeypatch.setattr(account_data, "user_metrics_db", metrics)
+        await auth_db.initialize()
+        await auth_db.store_refresh_token("5201:student", "5201", "student", "unused")
+        await feedback_db.create_feedback(category="bug", title="Private report", details="Private details", page="/profile", submitter_user_id="5201:student")
+        other = await feedback_db.create_feedback(category="bug", title="Other report", details="Other details", page=None, submitter_user_id="5201:other")
+        async with aiosqlite.connect(str(feedback_db.DB_PATH)) as db:
+            await db.execute("UPDATE feedback_reports SET done_by = ? WHERE id = ?", ("5201:student", other["id"]))
+            await db.commit()
+        export = await account_data.build_account_export("5201:student")
+        assert [row["title"] for row in export["feedback"]] == ["Private report"]
+        assert "done_by" not in export["feedback"][0]
+        await account_data.delete_account_data("5201:student")
+        assert await feedback_db.get_account_data("5201:student") == []
+        async with aiosqlite.connect(str(feedback_db.DB_PATH)) as db:
+            async with db.execute("SELECT done_by FROM feedback_reports WHERE id = ?", (other["id"],)) as cursor:
+                assert await cursor.fetchone() == (None,)
+
+    asyncio.run(scenario())

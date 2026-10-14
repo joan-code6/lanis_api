@@ -31,7 +31,7 @@ from urllib.parse import quote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import requests as http_requests
-from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -55,14 +55,17 @@ from .identity import (
     normalize_school_id,
     normalize_username,
 )
-from .discord import notify_new_user
+from .discord import notify_feedback, notify_new_user
+from . import feedback_db
+from .feedback_db import FeedbackRateLimitError
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
-from .uptime import run_uptime_scheduler
+from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler
 from .public_status import get_public_status
 from .documentation import router as documentation_router
 from .homepage import router as homepage_router
-from .admin import AdminPrincipal, admin_dependency, router as admin_router
+from .school_pages import router as school_pages_router
+from .admin import AdminLifecycleRoute, AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
     DEFAULT_SIDEBAR_ORDER,
     allow_whatsapp_message,
@@ -77,8 +80,8 @@ from .auth_db import (
     fence_interrupted_deletion,
     delete_refresh_token,
     delete_user_tokens,
+    delete_refresh_token_by_session_id,
     delete_push_subscription,
-    delete_user_push_subscriptions,
     get_notification_preferences,
     save_notification_preferences,
     get_user_preferences,
@@ -291,6 +294,7 @@ class LoginResponse(BaseModel):
     school_id: str
     username: str
     encryption_ready: bool
+    is_first_school_user: bool = False
     expires_in: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60
 
 
@@ -385,7 +389,7 @@ class WahlenSubmissionRequest(BaseModel):
 class AppearancePreferencesRequest(BaseModel):
     theme_mode: Optional[Literal["system", "light", "dark", "oled"]] = None
     theme_color: Optional[
-        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan"]
+        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan", "coral", "blush", "moss"]
     ] = None
 
 
@@ -446,6 +450,7 @@ SidebarItemId = Literal[
 class SidebarPreferencesRequest(BaseModel):
     order: Optional[List[str]] = None
     hidden_items: Optional[List[SidebarItemId]] = None
+    show_feedback_button: Optional[bool] = None
 
     @field_validator("order")
     def validate_order(cls, value):
@@ -462,6 +467,13 @@ class SidebarPreferencesRequest(BaseModel):
         if value is not None and len(value) > len(SidebarItemId.__args__):
             raise ValueError("Too many hidden sidebar items")
         return value
+
+
+class FeedbackSubmissionRequest(BaseModel):
+    category: Literal["feature", "bug", "general"]
+    title: str = Field(..., min_length=1, max_length=120)
+    details: str = Field(..., min_length=1, max_length=5000)
+    page: Optional[str] = Field(None, max_length=300)
 
 
 class TimetablePreferencesRequest(BaseModel):
@@ -592,12 +604,10 @@ class AuthManager:
     # -- JWT helpers -------------------------------------------------
 
     def create_access_token(
-        self,
-        user_id: str,
-        school_id: str,
-        username: str,
-        session_id: str,
+        self, user_id: str, school_id: str, username: str, session_id: str
     ) -> str:
+        if not session_id:
+            raise ValueError("session_id is required for access tokens")
         user_id = canonicalize_user_id(user_id)
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         payload = {
@@ -606,6 +616,7 @@ class AuthManager:
             "username": username,
             "iat": datetime.utcnow(),
             "exp": expire,
+            "jti": session_id,
         }
         if not session_id:
             raise ValueError("session_id is required for access tokens")
@@ -1354,6 +1365,7 @@ app.add_middleware(
 app.include_router(documentation_router)
 app.include_router(admin_router)
 app.include_router(homepage_router)
+app.include_router(school_pages_router)
 
 
 @app.on_event("startup")
@@ -1365,6 +1377,7 @@ async def _startup() -> None:
     await purge_expired_whatsapp_ai_history()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
+    await feedback_db.initialize()
     await task_queue.start()
     await whatsapp_task_queue.start()
     _dsb_scheduler_task = await run_dsb_scheduler()
@@ -1392,6 +1405,8 @@ async def _cleanup_sessions() -> None:
         _message_notification_task.cancel()
     if _uptime_scheduler_task:
         _uptime_scheduler_task.cancel()
+        await asyncio.gather(_uptime_scheduler_task, return_exceptions=True)
+    await drain_uptime_notification_tasks()
     if _whatsapp_history_cleanup_task:
         _whatsapp_history_cleanup_task.cancel()
     if _file_cache_cleanup_task:
@@ -1426,7 +1441,10 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/metrics/stats", deprecated=True)
+legacy_admin_router = APIRouter(route_class=AdminLifecycleRoute)
+
+
+@legacy_admin_router.get("/metrics/stats", deprecated=True)
 async def get_metrics_stats(
     _: AdminPrincipal = Depends(admin_dependency),
 ) -> Dict[str, Any]:
@@ -1441,6 +1459,8 @@ async def get_metrics_stats(
         "whatsapp_queue": _whatsapp_queue_stats(),
     }
 
+
+app.include_router(legacy_admin_router)
 
 # --- Auth Endpoints ---
 
@@ -1497,6 +1517,7 @@ async def _login_account(
     )
 
     # 5. Record successful logins independently of profile collection.
+    is_first_school_user = False
     try:
         is_new_user = await user_metrics_db.record_login(school_id, username)
         if is_new_user:
@@ -1518,6 +1539,13 @@ async def _login_account(
     except Exception:
         logger.warning("Could not record login metric", exc_info=True)
 
+    try:
+        is_first_school_user = await user_metrics_db.is_first_school_user(
+            school_id, username
+        )
+    except Exception:
+        logger.warning("Could not identify first school user", exc_info=True)
+
     # 6. Queue background metrics fetch
     user_data_task = Task(
         name=f"fetch_user_data:{username}@{school_id}",
@@ -1535,6 +1563,7 @@ async def _login_account(
         school_id=school_id,
         username=username,
         encryption_ready=encryption_ready,
+        is_first_school_user=is_first_school_user,
     )
 
 
@@ -1571,10 +1600,7 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
 async def logout_endpoint(
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, str]:
-    await delete_user_tokens(auth.user_id)
-    await delete_user_push_subscriptions(auth.user_id)
-    await delete_whatsapp_link(auth.user_id)
-    await sessions.drop_schulportal_session(auth.user_id)
+    await delete_refresh_token_by_session_id(auth.session_id)
     return {"status": "logged_out"}
 
 
@@ -2261,6 +2287,38 @@ async def get_account_preferences(
     }
 
 
+@app.post("/feedback")
+async def submit_feedback(
+    payload: FeedbackSubmissionRequest,
+    background_tasks: BackgroundTasks,
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Dict[str, object]:
+    title = payload.title.strip()
+    details = payload.details.strip()
+    if not title or not details:
+        raise HTTPException(status_code=422, detail="Titel und Beschreibung sind erforderlich.")
+    page = payload.page.strip() if payload.page else None
+    if page and not page.startswith("/"):
+        page = None
+    if page:
+        page = page.split("?", 1)[0].split("#", 1)[0][:300]
+    try:
+        report = await feedback_db.create_feedback(
+            category=payload.category,
+            title=title,
+            details=details,
+            page=page,
+            submitter_user_id=auth.user_id,
+        )
+    except FeedbackRateLimitError as error:
+        raise HTTPException(
+            status_code=429,
+            detail="Du hast in kurzer Zeit zu oft Feedback gesendet. Bitte versuche es später erneut.",
+        ) from error
+    background_tasks.add_task(notify_feedback, report)
+    return {"success": True, "id": report["id"]}
+
+
 @app.patch("/settings/preferences")
 async def update_account_preferences(
     payload: UserPreferencesRequest,
@@ -2580,7 +2638,7 @@ async def register_notification_subscription(
             status_code=422,
             detail="Push subscription keys are invalid",
         )
-    await save_push_subscription(auth.user_id, subscription)
+    await save_push_subscription(auth.user_id, subscription, auth.session_id)
     return {"success": True}
 
 

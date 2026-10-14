@@ -15,7 +15,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -32,7 +32,7 @@ from .auth_db import (
     get_custom_lessons,
     get_notification_preferences,
     get_push_subscriptions,
-    get_refresh_token_by_user_id,
+    get_refresh_metadata_by_user_id,
     get_user_preferences,
 )
 from .identity import (
@@ -41,11 +41,12 @@ from .identity import (
     normalize_school_id,
     normalize_username,
 )
+from . import feedback_db
 from .metrics import user_metrics_db
 from .school_locations import city_coordinates as _city_coordinates
 from .school_locations import geocode_school as _geocode_school
 from .school_locations import get_school_directory as _get_school_directory
-from .uptime import get_uptime_status, run_uptime_check
+from .uptime import get_uptime_status, run_uptime_check, wake_uptime_scheduler
 
 logger = logging.getLogger("admin")
 _held_admin_leases: ContextVar[frozenset[str]] = ContextVar(
@@ -93,7 +94,13 @@ class AdminLifecycleRoute(APIRoute):
                 school, separator, username = target.partition(":")
                 if separator and school and username:
                     lock_ids.add(make_user_id(school, username))
-            async with _admin_account_access(*lock_ids):
+            from .account_data import admin_bulk_read_gate
+
+            async with AsyncExitStack() as stack:
+                # Enter the bulk gate before actor access, matching deletion's order.
+                if self.path in {"/admin/users", "/admin/schools/{school_id:path}", "/admin/feedback", "/admin/feedback/{report_id}"}:
+                    await stack.enter_async_context(admin_bulk_read_gate)
+                await stack.enter_async_context(_admin_account_access(*lock_ids))
                 await admin_dependency(token)  # Recheck persisted jti after waiting.
                 return await handler(request)
 
@@ -147,6 +154,10 @@ class AdminUsersResponse(BaseModel):
     limit: int
     offset: int
     users: list[AdminUserSummary]
+
+
+class FeedbackStatusRequest(BaseModel):
+    status: Literal["open", "done"]
 
 
 @dataclass(frozen=True)
@@ -373,7 +384,9 @@ async def admin_uptime_check(
     principal: AdminPrincipal = Depends(admin_dependency),
 ) -> dict[str, Any]:
     """Run an immediate authenticated Schulportal synthetic check."""
-    await run_uptime_check()
+    check = await run_uptime_check()
+    if check.get("status") in {"down", "degraded"}:
+        wake_uptime_scheduler()
     await _record_admin_action(principal.user_id, "uptime_check")
     return await get_uptime_status()
 
@@ -513,7 +526,7 @@ async def admin_user_detail(
         await _record_admin_action(
             principal.user_id, "user_view", storage_user_id, locks_held=True
         )
-        credentials = await get_refresh_token_by_user_id(storage_user_id)
+        credentials = await get_refresh_metadata_by_user_id(storage_user_id)
         preferences, _ = await get_user_preferences(storage_user_id)
         return {
             "success": True,
@@ -677,6 +690,48 @@ async def admin_audit(
         "limit": limit,
         "offset": offset,
     }
+
+
+@router.get("/feedback")
+async def admin_feedback(
+    status: Literal["open", "done", "all"] = Query("open"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    _: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    reports, total = await feedback_db.list_feedback(
+        status=None if status == "all" else status,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "success": True,
+        "reports": reports,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.patch("/feedback/{report_id}")
+async def update_admin_feedback(
+    report_id: int,
+    payload: FeedbackStatusRequest,
+    principal: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    report = await feedback_db.update_feedback_status(
+        report_id,
+        payload.status,
+        principal.user_id,
+    )
+    if report is None:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    await _record_admin_action(
+        principal.user_id,
+        f"feedback_{payload.status}",
+        str(report_id),
+    )
+    return {"success": True, "report": report}
 
 
 @router.get("/metrics/overview")

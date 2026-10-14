@@ -54,15 +54,16 @@ def test_existing_case_variant_auth_rows_are_rekeyed(tmp_path, monkeypatch):
                 ("5201:Bennet.wegener", "2026-08-25", "1", "Mathematik"),
             )
             await db.execute(
-                """
-                INSERT INTO push_subscriptions
-                    (endpoint, user_id, p256dh, auth)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    "https://push.example/subscription",
-                    "5201:Bennet.wegener",
-                    "public-key",
+                    """
+                    INSERT INTO push_subscriptions
+                        (endpoint, user_id, session_id, p256dh, auth)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "https://push.example/subscription",
+                        "5201:Bennet.wegener",
+                        "browser-a",
+                        "public-key",
                     "auth-key",
                 ),
             )

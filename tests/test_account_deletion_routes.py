@@ -111,3 +111,46 @@ def test_revoked_jwt_does_not_hold_account_lock_during_downstream_body_wait(tmp_
             body_ready.set()
             await work
     asyncio.run(scenario())
+
+
+def test_admin_reads_drain_before_deletion_and_metrics_rechecks_revocation(tmp_path, monkeypatch):
+    from api import admin
+
+    async def scenario():
+        monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+        monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+        monkeypatch.setattr(account_data, 'admin_bulk_read_gate', account_data.AccountLifecycleLock())
+        await auth_db.initialize()
+        monkeypatch.setenv('LANIS_ADMIN_ACCOUNTS', '5201:admin')
+        monkeypatch.setenv('LANIS_ADMIN_JWT_SECRET', 'x' * 64)
+        session_id = await auth_db.create_admin_session('5201:admin', datetime.utcnow() + timedelta(minutes=30))
+        token = admin._issue_token(admin.AdminPrincipal('5201:admin', '5201', 'admin', session_id))
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        async def rows(**kwargs):
+            entered.set()
+            await finish.wait()
+            return []
+
+        monkeypatch.setattr(admin, '_metric_rows', rows)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api_module.app), base_url='http://test') as client:
+            request = asyncio.create_task(client.get('/admin/users', headers={'X-Admin-Token': token}))
+            await asyncio.wait_for(entered.wait(), 2)
+            gate = account_data.admin_bulk_read_gate.shared()
+            deletion = asyncio.create_task(gate.acquire())
+            await asyncio.sleep(0)
+            assert not deletion.done()
+            finish.set()
+            assert (await asyncio.wait_for(request, 2)).status_code == 200
+            await asyncio.wait_for(deletion, 2)
+            gate.release()
+
+            # The legacy metrics route must reject a token revoked while it waits.
+            actor = await account_data.account_lifecycle_lock('5201:admin')
+            async with actor:
+                metrics_request = asyncio.create_task(client.get('/metrics/stats', headers={'X-Admin-Token': token}))
+                await asyncio.sleep(0.05)
+                await auth_db.delete_user_data('5201:admin')
+            assert (await asyncio.wait_for(metrics_request, 2)).status_code == 401
+
+    asyncio.run(scenario())

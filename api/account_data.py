@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict
 
-from . import auth_db
+from . import auth_db, feedback_db
 from .metrics import user_metrics_db
 from .identity import canonicalize_user_id
 
@@ -114,6 +114,9 @@ _lifecycle_locks: weakref.WeakValueDictionary[str, AccountLifecycleLock] = (
 )
 _lifecycle_guard = asyncio.Lock()
 
+# Bulk admin reads take exclusive access; deletions share access with each other.
+admin_bulk_read_gate = AccountLifecycleLock()
+
 
 async def account_deletion_is_recent(user_id: str) -> bool:
     """Identify deletions during the remaining lifetime of admin JWTs."""
@@ -160,6 +163,7 @@ async def build_account_export(user_id: str) -> dict:
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "account": credential,
         "profile": profile,
+        "feedback": await feedback_db.get_account_data(user_id),
         "preferences": persisted["preferences"],
         "notification_preferences": persisted["notification_preferences"],
         "custom_lessons": persisted["custom_lessons"],
@@ -190,7 +194,7 @@ async def delete_account_data(
     """Delete LANIS-held account data while preserving data in Schulportal Hessen."""
     user_id = canonicalize_user_id(user_id)
     lock = await account_lifecycle_lock(user_id)
-    async with lock:
+    async with admin_bulk_read_gate.shared(), lock:
         if expected_session_id is not None:
             session = await auth_db.get_refresh_token_by_session_id(expected_session_id)
             if not session or canonicalize_user_id(session['user_id']) != user_id:
@@ -220,6 +224,7 @@ async def delete_account_data(
         # Delete the metrics store first. If the second database fails, a retry
         # can safely repeat the idempotent metrics deletion while the auth row
         # still exists to authenticate the retry.
+        feedback_counts = await feedback_db.delete_user_data(user_id)
         metrics_counts = {"users": 0, "activity_events": 0}
         if school_id and username:
             metrics_counts = await user_metrics_db.delete_user_data(
@@ -234,6 +239,7 @@ async def delete_account_data(
         return DeletionReport(
             success=True,
             deleted={
+                **{f"feedback_{key}": value for key, value in feedback_counts.items()},
                 **{f"runtime_{key}": value for key, value in runtime_counts.items()},
                 **{f"auth_{key}": value for key, value in auth_counts.items()},
                 **{f"metrics_{key}": value for key, value in metrics_counts.items()},
