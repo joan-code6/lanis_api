@@ -19,6 +19,12 @@ def test_login_returns_school_onboarding_flag(monkeypatch, first_user):
     )
     monkeypatch.setattr(api_module.sessions, "create_access_token", lambda **_: "access")
     monkeypatch.setattr(api_module, "store_refresh_token", AsyncMock(return_value="refresh"))
+    monkeypatch.setattr(
+        api_module, "get_refresh_token", AsyncMock(return_value={"session_id": "test-session"}),
+    )
+    from api import account_data
+    monkeypatch.setattr(account_data, "clear_account_deletion_marker", AsyncMock())
+    monkeypatch.setattr(api_module.task_queue, "allow_user_tasks", AsyncMock())
     monkeypatch.setattr(api_module.task_queue, "add_task", AsyncMock())
     monkeypatch.setattr(api_module.user_metrics_db, "record_login", AsyncMock(return_value=True))
     lookup = AsyncMock(return_value=first_user)

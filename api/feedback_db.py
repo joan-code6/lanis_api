@@ -139,3 +139,33 @@ async def update_feedback_status(
         ) as cursor:
             row = await cursor.fetchone()
     return _row_to_dict(row)
+
+
+async def get_account_data(user_id: str) -> list[dict[str, Any]]:
+    """Export submitted reports without exposing other administrators' identities."""
+    if not DB_PATH.exists():
+        return []
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, category, title, details, page, created_at, status, done_at "
+            "FROM feedback_reports WHERE submitter_user_id = ? ORDER BY id",
+            (user_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def delete_user_data(user_id: str) -> dict[str, int]:
+    """Remove submitted content and anonymize actions on other users' reports."""
+    if not DB_PATH.exists():
+        return {"reports": 0, "actions_anonymized": 0}
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        deleted = await db.execute(
+            "DELETE FROM feedback_reports WHERE submitter_user_id = ?", (user_id,),
+        )
+        anonymized = await db.execute(
+            "UPDATE feedback_reports SET done_by = NULL WHERE done_by = ?", (user_id,),
+        )
+        await db.commit()
+        return {"reports": max(deleted.rowcount, 0), "actions_anonymized": max(anonymized.rowcount, 0)}
