@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import requests
 from fastapi import Response
 
@@ -71,6 +72,7 @@ def test_client_requires_login_and_uses_authenticated_page() -> None:
     assert videokonferenz_get_rooms(SimpleNamespace(logged_in=False))["error_kind"] == "authentication"
 
     class Response:
+        status_code = 200
         text = FIXTURE.read_text(encoding="utf-8")
         url = "https://start.schulportal.hessen.de/videokonferenz.php"
 
@@ -78,6 +80,7 @@ def test_client_requires_login_and_uses_authenticated_page() -> None:
             return None
 
     class StatusResponse:
+        status_code = 200
         text = '["mathe-10a"]'
 
         def raise_for_status(self) -> None:
@@ -106,17 +109,18 @@ def test_client_requires_login_and_uses_authenticated_page() -> None:
     assert client.session.calls == [
         (
             "https://start.schulportal.hessen.de/videokonferenz.php",
-            {"timeout": (10, 30)},
+            {"timeout": (10, 30), "allow_redirects": False},
         ),
         (
             "https://start.schulportal.hessen.de/videokonferenz.php",
-            {"params": {"a": "sus_start", "b": "update"}, "timeout": (10, 30)},
+            {"params": {"a": "sus_start", "b": "update"}, "timeout": (10, 30), "allow_redirects": False},
         ),
     ]
 
 
 def test_failed_live_status_never_exposes_placeholder_join_links() -> None:
     class Response:
+        status_code = 200
         text = FIXTURE.read_text(encoding="utf-8")
         url = "https://start.schulportal.hessen.de/videokonferenz.php"
 
@@ -142,6 +146,7 @@ def test_failed_live_status_never_exposes_placeholder_join_links() -> None:
     assert result["open_count"] == 0
     assert {room["status"] for room in result["rooms"]} == {"unknown"}
     assert all(room["can_join"] is False for room in result["rooms"])
+    assert all(room["join_url"] is None for room in result["rooms"])
 
 
 def test_route_never_caches_user_bound_join_urls(monkeypatch) -> None:
@@ -221,3 +226,110 @@ def test_module_registry_marks_videokonferenz_usable(monkeypatch) -> None:
 
     assert modules[0]["usable"] is True
     assert modules[0]["usage"] == ["videokonferenz_get_rooms"]
+
+
+class VideoResponse:
+    def __init__(self, text, status=200):
+        self.text = text
+        self.status_code = status
+        self.url = "https://start.schulportal.hessen.de/videokonferenz.php"
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError("upstream failure", response=self)
+
+
+class VideoSession:
+    def __init__(self, overview=None, status=None):
+        self.overview = overview or VideoResponse(FIXTURE.read_text())
+        self.status = status or VideoResponse('["mathe-10a"]')
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        response = self.status if kwargs.get("params") else self.overview
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def video_client(session):
+    return SimpleNamespace(logged_in=True, BASE_START_URL="https://start.schulportal.hessen.de", session=session)
+
+
+@pytest.mark.parametrize("payload", ['{}', 'null', 'true', '[true]', '[{}]', '[null]', 'not JSON'])
+def test_malformed_live_status_is_unknown_and_removes_join_urls(payload):
+    session = VideoSession(status=VideoResponse(payload))
+    result = videokonferenz_get_rooms(video_client(session))
+    assert result["success"] is True
+    assert result["status_live"] is False
+    assert result["open_count"] == 0
+    assert all(room["status"] == "unknown" and not room["can_join"] and room["join_url"] is None for room in result["rooms"])
+
+
+@pytest.mark.parametrize("which", ["overview", "status"])
+@pytest.mark.parametrize("status", [302, 401, 403])
+def test_expired_sessions_are_authentication_failures_without_following_redirects(which, status):
+    session = VideoSession()
+    setattr(session, which, VideoResponse('Login required', status))
+    result = videokonferenz_get_rooms(video_client(session))
+    assert result["success"] is False
+    assert result["error_kind"] == "authentication"
+    assert all(kwargs["allow_redirects"] is False for _, kwargs in session.calls)
+    assert len(session.calls) == (1 if which == "overview" else 2)
+
+
+@pytest.mark.parametrize("error", [requests.Timeout("timeout"), requests.ConnectionError("offline")])
+def test_overview_transport_failure_is_recoverable_upstream_error(error):
+    result = videokonferenz_get_rooms(video_client(VideoSession(overview=error)))
+    assert result["success"] is False
+    assert result["error_kind"] == "upstream"
+
+
+@pytest.mark.parametrize("payload", ['[]', '["mathe-10a"]'])
+def test_live_status_is_authoritative_even_when_page_buttons_disagree(payload):
+    result = videokonferenz_get_rooms(video_client(VideoSession(status=VideoResponse(payload))))
+    assert result["status_live"] is True
+    assert result["open_count"] == (0 if payload == '[]' else 1)
+    assert result["rooms"][0]["can_join"] == (payload != '[]')
+    assert result["rooms"][1]["can_join"] is False
+
+
+@pytest.mark.parametrize("url", [
+    'https://user:secret@example.invalid/join', 'https://[broken/join',
+    'https://example.invalid:99999/join', 'https://example.invalid:bad/join',
+    'javascript:alert(1)', 'data:text/html,test', 'http://example.invalid/join', '   ',
+])
+def test_invalid_or_credential_bearing_room_links_cannot_be_joined(url):
+    html = f'<table><thead><tr><th>Lerngruppe</th><th>Aktion</th></tr></thead><tbody><tr><td>Testkurs</td><td><a class="btn btn-success" href="{url}">Raum betreten</a></td></tr></tbody></table>'
+    result = parse_videokonferenz_overview(html)
+    assert result["rooms"][0]["join_url"] is None
+    assert result["rooms"][0]["can_join"] is False
+
+
+@pytest.mark.parametrize("kind, expected_evictions", [("authentication", 1), ("upstream", 0)])
+def test_route_evicts_only_expired_clients_and_always_disables_caching(monkeypatch, kind, expected_evictions):
+    client = SimpleNamespace(videokonferenz_get_rooms=lambda: {"success": False, "error_kind": kind})
+    auth = SimpleNamespace(client=client, user_id="test:account")
+    evicted = []
+    async def invalidate(*args):
+        evicted.append(args)
+    monkeypatch.setattr(api_module.sessions, "invalidate_schulportal_client", invalidate)
+    response = Response()
+    result = asyncio.run(api_module.get_videokonferenz(response=response, auth=auth))
+    assert result["success"] is False
+    assert len(evicted) == expected_evictions
+    if evicted:
+        assert evicted[0] == (auth.user_id, client)
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_live_recipient_structure_keeps_polling_ids_and_ignores_hidden_placeholder_state():
+    result = parse_videokonferenz_overview((FIXTURE.parent / "videokonferenz_recipient.html").read_text())
+    assert result["available"] is True
+    assert result["count"] == 2
+    assert [room["id"] for room in result["rooms"]] == ["101", "102"]
+    assert [room["status"] for room in result["rooms"]] == ["waiting", "waiting"]
+    assert result["rooms"][0]["teachers"] == ["BEI", "MUS"]
+    assert result["rooms"][0]["links"] == [{"label": "Material", "url": "https://school.example/material"}]
+    assert result["updated_label"] == "15:30 Uhr"

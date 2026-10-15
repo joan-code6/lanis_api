@@ -30,11 +30,19 @@ def _text(node: Any) -> str:
 
 
 def _safe_url(value: str, source_url: str) -> str | None:
+    value = value.strip()
     if not value or value.startswith(("#", "javascript:", "data:")):
         return None
-    absolute = urljoin(source_url, value)
-    parsed = urlsplit(absolute)
-    if parsed.scheme != "https" or not parsed.netloc:
+    try:
+        absolute = urljoin(source_url, value)
+        parsed = urlsplit(absolute)
+        _ = parsed.port  # Validate malformed or out-of-range ports too.
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https" or not parsed.hostname
+        or parsed.username is not None or parsed.password is not None
+    ):
         return None
     return absolute
 
@@ -265,7 +273,10 @@ def videokonferenz_get_rooms(self: Any) -> dict[str, Any]:
         response = self.session.get(
             f"{self.BASE_START_URL}/videokonferenz.php",
             timeout=(10, 30),
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            return {"success": False, "error": "Schulportal session redirected", "error_kind": "authentication"}
         response.raise_for_status()
         result = parse_videokonferenz_overview(
             response.text,
@@ -280,10 +291,16 @@ def videokonferenz_get_rooms(self: Any) -> dict[str, Any]:
                 f"{self.BASE_START_URL}/videokonferenz.php",
                 params={"a": "sus_start", "b": "update"},
                 timeout=(10, 30),
+                allow_redirects=False,
             )
+            if 300 <= status_response.status_code < 400 or status_response.status_code in {401, 403}:
+                return {"success": False, "error": "Schulportal session expired", "error_kind": "authentication"}
             status_response.raise_for_status()
             payload = json.loads(status_response.text)
-            if not isinstance(payload, list):
+            if not isinstance(payload, list) or any(
+                isinstance(value, bool) or not isinstance(value, (str, int))
+                for value in payload
+            ):
                 raise TypeError("Unexpected video-room status response")
             open_room_ids = {str(value) for value in payload}
             for room in result["rooms"]:
@@ -302,10 +319,15 @@ def videokonferenz_get_rooms(self: Any) -> dict[str, Any]:
                 room["status"] = "unknown"
                 room["status_label"] = "Aktueller Status nicht verfügbar"
                 room["can_join"] = False
+                room["join_url"] = None
             result["open_count"] = 0
             result["status_live"] = False
         return result
     except requests.RequestException as exc:
-        return {"success": False, "error": f"Failed to fetch video rooms: {exc}", "error_kind": "upstream"}
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        return {
+            "success": False, "error": f"Failed to fetch video rooms: {exc}",
+            "error_kind": "authentication" if status_code in {401, 403} else "upstream",
+        }
     except Exception as exc:  # noqa: BLE001 - normalize unexpected parser failures
         return {"success": False, "error": f"Failed to parse video rooms: {exc}", "error_kind": "parsing"}

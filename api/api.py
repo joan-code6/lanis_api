@@ -1865,7 +1865,10 @@ async def get_videokonferenz(
     # ``refresh`` remains accepted so clients can share a refresh-shaped API
     # with other modules, but this endpoint intentionally always contacts SPH.
     response.headers["Cache-Control"] = "private, no-store"
-    return await run_in_threadpool(auth.client.videokonferenz_get_rooms)
+    result = await run_in_threadpool(auth.client.videokonferenz_get_rooms)
+    if not result.get("success") and result.get("error_kind") == "authentication":
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+    return result
 
 
 # --- Wahlen / Oberstufenwahl ---
