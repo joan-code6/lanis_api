@@ -13,6 +13,7 @@ from schulportal_hessen.applets.dateiverteilung.api import (
     _absolute_portal_url,
     _looks_like_login,
     dateiverteilung_download_file,
+    dateiverteilung_get_overview,
     parse_dateiverteilung_html,
 )
 
@@ -59,6 +60,12 @@ def test_parser_groups_files_and_preserves_provenance():
         "//evil.example/dateiverteilung.php?a=download&f=1",
         "/dateispeicher.php?a=download&f=1",
         "/dateiverteilung.php?a=admin&f=1",
+        "/dateiverteilung.php?a=download&a=admin&f=1",
+        "/dateiverteilung.php?action=download&action=admin&f=1",
+        "/dateiverteilung.php?a=download&action=admin&f=1",
+        "/dateiverteilung.php?a=download&a[]=admin&f=1",
+        "/dateiverteilung.php?a=download&action[]=admin&f=1",
+        "/dateiverteilung.php?a=download&%20a=admin&f=1",
         "/dateiverteilung.php?a=download&f=1#fragment",
     ],
 )
@@ -208,3 +215,40 @@ def test_overview_cache_is_scoped_to_authenticated_user(monkeypatch):
 
     assert result["distributions"][0]["id"] == "only-user-a"
     assert fake_sessions.lookups == [("school:user-a", "/dateiverteilung")]
+
+
+@pytest.mark.parametrize("action", ["a", "action"])
+def test_download_url_accepts_single_download_action(action):
+    url = f"/dateiverteilung.php?{action}=download&v=73&f=brief.pdf"
+    assert _absolute_portal_url(BASE_URL, url) == BASE_URL + url
+
+
+@pytest.mark.parametrize("location", ["http://127.0.0.1/private", "https://evil.example/"])
+def test_overview_rejects_redirects_without_following(location):
+    session = FakeSession()
+    session.response.status_code = 302
+    session.response.headers = {"Location": location}
+    client = SimpleNamespace(logged_in=True, BASE_START_URL=BASE_URL, session=session)
+
+    result = dateiverteilung_get_overview(client)
+
+    assert result["success"] is False
+    assert result["error_kind"] == "authentication"
+    assert len(session.calls) == 1
+    assert session.calls[0][1]["allow_redirects"] is False
+    assert session.response.closed is True
+
+
+def test_module_registry_marks_dateiverteilung_usable(monkeypatch):
+    client = api_module.SchulportalHessenAPI()
+    client.logged_in = True
+    monkeypatch.setattr(client, "_resolve_direct_url", lambda url: url)
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: SimpleNamespace(headers={}, close=lambda: None))
+
+    modules = client.get_available_modules({
+        "success": True,
+        "data": {"entrys": [{"Name": "Dateiverteilung", "link": "dateiverteilung.php"}]},
+    })
+
+    assert modules[0]["usable"] is True
+    assert modules[0]["usage"] == ["dateiverteilung_get_overview", "dateiverteilung_download_file"]

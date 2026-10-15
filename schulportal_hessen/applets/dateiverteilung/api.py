@@ -38,8 +38,12 @@ def _absolute_portal_url(base_url: str, value: str) -> str:
     ):
         return ""
     query = parse_qs(parsed.query, keep_blank_values=True)
-    action = str((query.get("a") or query.get("action") or [""])[0]).lower()
-    if action not in _DOWNLOAD_ACTIONS:
+    # PHP resolves repeated/array parameters differently from parse_qs. Do not
+    # forward ambiguous action aliases or keys that PHP would normalize.
+    if any(re.search(r"[\[\].\s\x00]", key) for key in query):
+        return ""
+    actions = [query[key] for key in ("a", "action") if key in query]
+    if len(actions) != 1 or len(actions[0]) != 1 or actions[0][0] not in _DOWNLOAD_ACTIONS:
         return ""
     return candidate
 
@@ -217,8 +221,17 @@ def dateiverteilung_get_overview(self) -> dict[str, Any]:
         }
     try:
         response = self.session.get(
-            f"{self.BASE_START_URL}/dateiverteilung.php", timeout=(10, 30)
+            f"{self.BASE_START_URL}/dateiverteilung.php",
+            timeout=(10, 30),
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            _close_response(response)
+            return {
+                "success": False,
+                "error": "Unexpected redirect while fetching Dateiverteilung",
+                "error_kind": "authentication",
+            }
         response.raise_for_status()
         if _looks_like_login(response):
             return {

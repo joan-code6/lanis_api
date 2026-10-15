@@ -289,6 +289,10 @@ class SchulportalHessenAPI:
                 "dateispeicher_search_files",
                 "dateispeicher_download_file",
             ],
+            "dateiverteilung.php": [
+                "dateiverteilung_get_overview",
+                "dateiverteilung_download_file",
+            ],
             "lerngruppen.php": ["lerngruppen_get_overview"],
             "benutzerverwaltung.php": ["benutzer_get_data"],
             "oberstufenwahl.php": [

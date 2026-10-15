@@ -172,6 +172,13 @@ def _merge_nested_preferences(
 
 def _normalize_user_preferences(preferences: Dict[str, Any]) -> Dict[str, Any]:
     """Enforce invariants for persisted preference groups."""
+    sidebar = preferences.get("sidebar")
+    if isinstance(sidebar, dict) and isinstance(sidebar.get("order"), list):
+        # Saved orders predate newly supported modules. Preserve customization
+        # and dividers while appending missing defaults; hidden_items is separate.
+        order = list(dict.fromkeys(sidebar["order"]))
+        order.extend(item for item in DEFAULT_SIDEBAR_ORDER if item not in order)
+        sidebar["order"] = order
     dashboard = preferences.get("dashboard")
     if isinstance(dashboard, dict):
         hidden_modules = dashboard.get("hidden_modules", [])
