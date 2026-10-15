@@ -397,6 +397,8 @@ class DashboardPreferencesRequest(BaseModel):
     pinned_modules: Optional[List[str]] = None
     hidden_modules: Optional[List[str]] = None
     view_mode: Optional[Literal["grid", "list"]] = None
+    show_search: Optional[bool] = None
+    show_subtitle: Optional[bool] = None
     notifications_enabled: Optional[bool] = None
     notification_messages_enabled: Optional[bool] = None
     notification_native_enabled: Optional[bool] = None

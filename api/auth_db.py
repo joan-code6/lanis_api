@@ -121,6 +121,8 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
         "pinned_modules": [],
         "hidden_modules": [],
         "view_mode": "grid",
+        "show_search": True,
+        "show_subtitle": True,
         "notifications_enabled": True,
         "notification_messages_enabled": True,
         "notification_native_enabled": True,
