@@ -36,6 +36,10 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
 
     async def scenario():
         await auth_db.initialize()
+        refresh_token = await auth_db.store_refresh_token(
+            "user-a", "5201", "user", "password"
+        )
+        session = await auth_db.get_refresh_token(refresh_token)
 
         defaults = await auth_db.get_notification_preferences("user-a")
         assert defaults["enabled"] is False
@@ -60,6 +64,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
                 "endpoint": "https://push.example/subscription",
                 "keys": {"p256dh": "public-key", "auth": "auth-key"},
             },
+            session["session_id"],
         )
         await auth_db.save_message_notification_state(
             "user-a",
@@ -101,8 +106,6 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
                 "show_preview": False,
             },
         )
-        await auth_db.store_refresh_token("user-a", "5201", "user", "password")
-
         assert await auth_db.get_notification_preferences("user-a") == {
             "user_id": "user-a",
             "enabled": True,
@@ -1035,12 +1038,18 @@ def test_notification_cycle_isolates_a_single_user_failure(monkeypatch):
     async def get_users():
         return users
 
+    async def get_session(user_id):
+        return {"user_id": user_id}
+
     async def check_user(user, _get_client):
         if user["user_id"] == "bad":
             raise ValueError("corrupt notification state")
         checked.append(user["user_id"])
 
     monkeypatch.setattr(notifications, "get_enabled_notification_users", get_users)
+    monkeypatch.setattr(
+        "api.auth_db.get_refresh_token_by_user_id", get_session
+    )
     monkeypatch.setattr(notifications, "check_user_messages", check_user)
 
     asyncio.run(notifications.run_message_notification_cycle(lambda _user_id: None))

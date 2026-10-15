@@ -82,6 +82,7 @@ class SnapshotStore:
         self.user_versions = {}
         self.path_versions = {}
         self.total_bytes = 0
+        self._generation = 0
 
     def _remove(self, key):
         entry = self.entries.pop(key)
@@ -103,16 +104,32 @@ class SnapshotStore:
 
     def version(self, user_id, path):
         version_path = self._version_path(path)
+        if user_id not in self.user_versions:
+            self._generation += 1
+            self.user_versions[user_id] = self._generation
         return (
-            self.user_versions.setdefault(user_id, 0),
+            self.user_versions[user_id],
             self.path_versions.setdefault((user_id, version_path), 0),
         )
 
     def invalidate(self, user_id):
-        self.user_versions[user_id] = self.user_versions.get(user_id, 0) + 1
+        # Keep every user generation in the same monotonically increasing
+        # sequence. Deletion removes the per-user key, so its next allocation
+        # must never reuse the just-invalidated value.
+        self._generation += 1
+        self.user_versions[user_id] = self._generation
         for key in list(self.entries):
             if key[0] == user_id:
                 self._remove(key)
+
+    def delete_user_data(self, user_id):
+        """Remove user-owned snapshots and version keys without reopening races."""
+        count = sum(1 for key in self.entries if key[0] == user_id)
+        self.invalidate(user_id)
+        self.user_versions.pop(user_id, None)
+        for key in [key for key in self.path_versions if key[0] == user_id]:
+            self.path_versions.pop(key, None)
+        return count
 
     def invalidate_endpoint(self, user_id, endpoint):
         """Remove snapshots derived from an invalidated live-cache endpoint."""
@@ -177,6 +194,27 @@ class SnapshotStore:
             "snapshot_count": len(timestamps),
             "retention_seconds": RETENTION_SECONDS,
         }
+
+    def export_user_data(self, user_id):
+        """Return JSON-safe private outage snapshots for account export."""
+        self.purge()
+        result = []
+        for key, entry in self.entries.items():
+            if key[0] != user_id:
+                continue
+            try:
+                body = json.loads(entry.body)
+            except (TypeError, ValueError):
+                continue
+            result.append(
+                {
+                    "endpoint": key[1],
+                    "params": list(key[2]),
+                    "fetched_at": utc_timestamp(entry.fetched_at),
+                    "data": body,
+                }
+            )
+        return result
 
 
 snapshots = SnapshotStore()
