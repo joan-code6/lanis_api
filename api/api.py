@@ -2580,7 +2580,12 @@ async def download_dateiverteilung_file(
     return StreamingResponse(
         content=stream,
         media_type=result.get("content_type") or "application/octet-stream",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}"},
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+        background=BackgroundTask(result["close"]) if callable(result.get("close")) else None,
     )
 
 
