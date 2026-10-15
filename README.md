@@ -83,6 +83,9 @@ LANIS_UPTIME_TIMEOUT_SECONDS=15
 LANIS_UPTIME_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
 # Optional new-user notifications. Falls back to the uptime webhook above.
 LANIS_NEW_USER_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
+# Feedback notifications prefer this dedicated webhook, then fall back to the
+# new-user webhook or uptime webhook if those are configured.
+LANIS_FEEDBACK_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/replace-me
 ```
 
 Keep that value unchanged across deployments; changing it invalidates issued
@@ -95,19 +98,37 @@ configuration file. The observability API is under `/admin/*`; the legacy
 `/metrics/stats` endpoint is retained only as a protected, deprecated alias.
 
 The backend also runs an authenticated Schulportal synthetic check every five
-minutes by default. It logs in with the monitor account, loads the available
+minutes by default. Failed probes are retried once immediately; a transient
+failure followed by a successful retry is stored as a healthy observation, not
+as an incident. If a confirmed incident is active, the successful retry is
+stored as the recovery observation.
+While an incident remains active, checks run every 15 seconds. The monitor logs in with the monitor account, loads the available
 modules, and opens each module entry without exposing credentials. Configure
 the account with `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME`, and
 `LANIS_UPTIME_PASSWORD`; existing local deployments may use the corresponding
-`LANIS_API_*` variables as a fallback. Results are retained for 90 days in the
-metrics database, with a daily 90-day overview available to the private admin
-portal at `GET /admin/uptime`. Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
+`LANIS_API_*` variables as a fallback. Results are retained for the 90-day
+reporting window plus twice the longest stored sample interval, with at least
+two extra days for legacy rows and the maximum configured cadence.
+A daily 90-day overview is available to the private admin
+portal at `GET /admin/uptime`; its selectable windows include 24 hours, 7, 30,
+and 90 days with median and p95 latency. Incidents are grouped until a successful
+check confirms recovery, and the public status page keeps a safe incident history.
+Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
 receive one alert when the service becomes unavailable and one recovery message
 when it becomes operational again; repeated checks during the same incident are
-suppressed. The new-user webhook receives one message after a first successful
+suppressed, and each transition links to the status page. Delivery outcomes are
+retained in the admin view. The new-user webhook receives one message after a first successful
 login; it can be separate from the uptime webhook with
 `LANIS_NEW_USER_DISCORD_WEBHOOK_URL`. An immediate check can be triggered with
 `POST /admin/uptime/check`.
+
+Signed-in users can submit feature ideas, bug reports, and general feedback at
+`POST /feedback`. Reports are stored in the separate `data/feedback.db` SQLite
+database and can be reviewed or marked done in the admin portal at
+`GET /admin/feedback` and `PATCH /admin/feedback/{report_id}`. Configure
+`LANIS_FEEDBACK_DISCORD_WEBHOOK_URL` to post new submissions to a dedicated
+Discord channel. If it is unset, the new-user webhook (or uptime webhook) is
+used when configured. Discord delivery failures do not discard saved reports.
 
 ```bash
 uvicorn api.api:app

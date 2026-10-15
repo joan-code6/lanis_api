@@ -1070,8 +1070,16 @@ def test_confirmation_attempts_are_rate_limited(monkeypatch) -> None:
     async def confirm(*args):
         confirmed.append(args)
 
+    async def no_link(_sender_id):
+        return None
+
+    async def clear_rate_limit(_sender_id):
+        return None
+
     monkeypatch.setattr(api_module, "reserve_whatsapp_message", reserve)
     monkeypatch.setattr(api_module, "allow_whatsapp_message", rate_limit)
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", no_link)
+    monkeypatch.setattr(api_module, "clear_whatsapp_rate_limit", clear_rate_limit)
     monkeypatch.setattr(api_module, "_confirm_whatsapp_action", confirm)
     monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
 
@@ -1125,3 +1133,69 @@ def test_substitutions_are_scoped_to_the_profile_class() -> None:
 
     assert "Mathe: Entfall" in summary
     assert "Deutsch" not in summary
+
+
+def test_deletion_cancels_popped_whatsapp_message_before_unlinked_rate_limit(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+        monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+        await auth_db.initialize()
+        sender = '49123456789'
+        sender_key = hashlib.sha256(sender.encode()).hexdigest()
+        incoming = IncomingWhatsAppMessage('popped-delete-race', sender, 'Heute')
+        sender_queue = api_module._WhatsAppSenderQueue(deque([incoming]))
+        monkeypatch.setattr(api_module, '_whatsapp_sender_queues', {sender_key: sender_queue})
+        monkeypatch.setattr(api_module, '_whatsapp_pending_messages', 1)
+        lookup_started = asyncio.Event()
+        resume_lookup = asyncio.Event()
+        deleted = False
+
+        async def lookup(_sender):
+            if api_module._active_whatsapp_sender_queue.get() is sender_queue:
+                lookup_started.set()
+                await resume_lookup.wait()
+            return None if deleted else {'user_id': '5201:student'}
+
+        class Client:
+            def __init__(self, _config):
+                pass
+            async def send_text(self, *args, **kwargs):
+                raise AssertionError('Cancelled account work must not reply as an unlinked sender')
+
+        monkeypatch.setattr(api_module, 'get_whatsapp_link_for_sender', lookup)
+        monkeypatch.setattr(api_module, 'WhatsAppCloudClient', Client)
+        worker = asyncio.create_task(api_module._process_whatsapp_sender_turn(sender_key))
+        await asyncio.wait_for(lookup_started.wait(), timeout=2)
+        assert not sender_queue.messages and sender_queue.active_message is incoming
+        await api_module.clear_whatsapp_user_queue('5201:student')
+        assert sender_queue.cancelled
+        deleted = True
+        resume_lookup.set()
+        await asyncio.wait_for(worker, timeout=2)
+        with sqlite3.connect(auth_db.DB_PATH) as db:
+            assert db.execute('SELECT COUNT(*) FROM whatsapp_rate_limits').fetchone()[0] == 0
+        assert sender_queue.active_message is None
+        assert api_module._whatsapp_pending_messages == 0
+
+    asyncio.run(scenario())
+
+
+def test_active_whatsapp_cancellation_undoes_rate_limit_write_during_await(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+        monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+        await auth_db.initialize()
+        sender_queue = api_module._WhatsAppSenderQueue()
+        async def allow_then_cancel(sender):
+            allowed = await auth_db.allow_whatsapp_message(sender)
+            sender_queue.cancelled = True
+            return allowed
+        monkeypatch.setattr(api_module, 'allow_whatsapp_message', allow_then_cancel)
+        context_token = api_module._active_whatsapp_sender_queue.set(sender_queue)
+        try:
+            assert not await api_module._allow_active_whatsapp_message('49123456789')
+        finally:
+            api_module._active_whatsapp_sender_queue.reset(context_token)
+        with sqlite3.connect(auth_db.DB_PATH) as db:
+            assert db.execute('SELECT COUNT(*) FROM whatsapp_rate_limits').fetchone()[0] == 0
+    asyncio.run(scenario())
