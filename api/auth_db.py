@@ -98,6 +98,7 @@ DEFAULT_SIDEBAR_ORDER = [
     "messages",
     "videokonferenz",
     "dateispeicher",
+    "dateiverteilung",
     "vertretungsplan",
     "dsb",
     "courses",

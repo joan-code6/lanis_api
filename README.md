@@ -40,6 +40,8 @@ The portal modules are referred to as applets because SPH is built on top of Moo
 - `lerngruppen` — study groups
 - `oberstufenwahl` — student-facing elections and course choices
 - `videokonferenz` — current student video rooms and safe join links
+- `dateispeicher` — school file storage and downloads
+- `dateiverteilung` — targeted notices, personal files, and authenticated downloads
 - `school_list` — school names and IDs for login and school selection
 
 
