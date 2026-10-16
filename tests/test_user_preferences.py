@@ -55,6 +55,8 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
     }
     assert defaults["dashboard"]["pinned_modules"] == []
     assert defaults["dashboard"]["hidden_modules"] == []
+    assert defaults["dashboard"]["show_search"] is True
+    assert defaults["dashboard"]["show_subtitle"] is True
     assert defaults["dashboard"]["notifications_enabled"] is True
     assert defaults["dashboard"]["notification_show_read"] is False
     assert defaults["dashboard"]["notification_limit"] == 20
@@ -79,6 +81,8 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "pinned_modules": ["Nachrichten"],
         "hidden_modules": [],
         "view_mode": "grid",
+        "show_search": True,
+        "show_subtitle": True,
         "notifications_enabled": True,
         "notification_messages_enabled": True,
         "notification_native_enabled": True,
@@ -90,6 +94,33 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
     loaded, stored = asyncio.run(auth_db.get_user_preferences("5201:STUDENT"))
     assert stored is True
     assert loaded == saved
+
+
+@pytest.mark.parametrize("show_search,show_subtitle", [(False, True), (True, False), (False, False)])
+def test_dashboard_visibility_persists_through_preferences_route(
+    tmp_path, monkeypatch, show_search, show_subtitle
+) -> None:
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    monkeypatch.setattr(api_module, "save_user_preferences", auth_db.save_user_preferences)
+    asyncio.run(auth_db.initialize())
+    auth = SimpleNamespace(user_id="5201:student")
+
+    asyncio.run(update_account_preferences(
+        UserPreferencesRequest(dashboard={
+            "show_search": show_search,
+            "show_subtitle": show_subtitle,
+        }),
+        auth,
+    ))
+    asyncio.run(update_account_preferences(
+        UserPreferencesRequest(dashboard={"view_mode": "list"}), auth,
+    ))
+
+    loaded, stored = asyncio.run(auth_db.get_user_preferences(auth.user_id))
+    assert stored is True
+    assert loaded["dashboard"]["show_search"] is show_search
+    assert loaded["dashboard"]["show_subtitle"] is show_subtitle
+    assert loaded["dashboard"]["view_mode"] == "list"
 
 
 def test_user_preferences_ignore_malformed_stored_json(tmp_path, monkeypatch) -> None:
@@ -287,11 +318,12 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     defaults, _ = asyncio.run(auth_db.get_user_preferences(session.user_id))
     assert defaults["timetable"] == {
         "view_mode": "rolling", "layout_mode": "cards",
-        "show_homework": True, "show_exams": True,
+        "show_homework": True, "show_exams": True, "show_substitutions": True,
         "class_colors": {},
     }
 
     for patch in (
+        {"show_substitutions": False},
         {"show_homework": False},
         {"show_exams": False},
         {"view_mode": "week"},
@@ -304,7 +336,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     assert stored is True
     assert loaded["timetable"] == {
         "view_mode": "week", "layout_mode": "compact",
-        "show_homework": False, "show_exams": False,
+        "show_homework": False, "show_exams": False, "show_substitutions": False,
         "class_colors": {"course:math-1": "#2563eb"},
     }
 
@@ -313,7 +345,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     ))
     assert result["preferences"]["timetable"] == {
         "view_mode": "week", "layout_mode": "compact",
-        "show_homework": False, "show_exams": True,
+        "show_homework": False, "show_exams": True, "show_substitutions": False,
         "class_colors": {"course:math-1": "#2563eb"},
     }
 
