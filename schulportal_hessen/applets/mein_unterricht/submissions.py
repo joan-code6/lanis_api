@@ -255,7 +255,7 @@ def parse_submission_detail(
     for name in ("b", "e", "id"):
         field = form.select_one(f"input[name='{name}']") if form else None
         form_values[name] = (
-            field.get("value", "")
+            field.get("value", reference_query.get(name, [""])[0])
             if field is not None
             else reference_query.get(name, [""])[0]
         )

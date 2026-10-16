@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from starlette.routing import Match
 
 from api import api as api_module
@@ -91,3 +92,57 @@ def test_submission_delete_invalidates_submission_caches(monkeypatch) -> None:
         ("student", "/meinunterricht/course"),
         ("student", "/meinunterricht/course/*"),
     ]
+
+
+@pytest.mark.parametrize("kind", ["list", "detail", "course"])
+def test_submission_mutation_rejects_inflight_cache_writes(monkeypatch, kind) -> None:
+    async def scenario():
+        manager = api_module.AuthManager()
+        monkeypatch.setattr(api_module, "sessions", manager)
+        started, release = asyncio.Event(), asyncio.Event()
+        stale = {"success": True, "entries": [], "uploaded_count": 0}
+        fresh = {"success": True, "uploaded_count": 1}
+
+        def read(*_args):
+            return stale
+
+        async def run(func, *args):
+            if func is read:
+                started.set()
+                await release.wait()
+            return func(*args)
+
+        monkeypatch.setattr(api_module, "run_in_threadpool", run)
+        auth = SimpleNamespace(
+            user_id="submission-cache-race", session_id="session-id",
+            client=SimpleNamespace(
+                meinunterricht_get_submissions=read,
+                meinunterricht_get_submission=read,
+                meinunterricht_get_course=read,
+                meinunterricht_delete_uploaded_file=lambda *args: {"success": True},
+            ),
+        )
+        if kind == "list":
+            endpoint, params = "/meinunterricht/submissions", ""
+            request = api_module.meinunterricht_submissions(auth)
+        elif kind == "detail":
+            endpoint = "/meinunterricht/submissions/detail"
+            params = api_module._make_param_key({"detail_ref": "opaque-ref"})
+            request = api_module.meinunterricht_submission("opaque-ref", auth)
+        else:
+            endpoint = "/meinunterricht/course"
+            params = api_module._make_param_key({"course_id": "42"})
+            request = api_module.meinunterricht_course("42", auth)
+        pending = asyncio.create_task(request)
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            await api_module.meinunterricht_submission_delete_file(
+                "42", "7", "9", "123", "password", auth
+            )
+            await manager.set_cache(auth.user_id, endpoint, fresh, params)
+        finally:
+            release.set()
+            await pending
+        assert await manager.get_cached(auth.user_id, endpoint, params) == fresh
+
+    asyncio.run(scenario())

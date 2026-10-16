@@ -1,7 +1,12 @@
 import io
+from types import SimpleNamespace
+
+import pytest
 
 from schulportal_hessen.applets.mein_unterricht.submissions import (
+    _decode_ref,
     _encode_ref,
+    meinunterricht_download_submission_file,
     meinunterricht_get_submission,
     meinunterricht_get_submissions,
     meinunterricht_upload_files,
@@ -139,6 +144,8 @@ def test_submission_detail_parser_handles_closed_page_without_upload_form() -> N
     assert detail["upload_id"] == "9"
     assert detail["status"] == "closed"
     assert detail["can_upload"] is False
+    assert detail["start"] is None
+    assert detail["deadline"] == "Freitag, 5.9.26 23:59"
 
 
 def test_upload_status_parser_keeps_per_file_messages() -> None:
@@ -210,3 +217,57 @@ def test_submission_methods_use_refs_and_multipart_fields() -> None:
     assert client.session.posts[0][1]["data"] == {"a": "sus_abgabe", "b": "42", "e": "7", "id": "9"}
     assert client.session.posts[0][1]["files"][0][0] == "file1"
     assert client.session.posts[0][1]["files"][0][1][1].read() == b"pdf"
+
+
+@pytest.mark.parametrize("missing", ["b", "e", "id"])
+def test_form_field_without_value_uses_source_identifier(missing) -> None:
+    identifiers = {"b": "42", "e": "7", "id": "9"}
+    html = DETAIL_HTML.replace(
+        f'name="{missing}" value="{identifiers[missing]}"', f'name="{missing}"'
+    )
+    detail = parse_submission_detail(
+        html, BASE_URL, "detail-ref",
+        source_url="meinunterricht.php?a=sus_abgabe&b=42&e=7&id=9",
+    )
+    assert (detail["course_id"], detail["entry_id"], detail["upload_id"]) == ("42", "7", "9")
+    assert detail["can_upload"] is True
+
+
+@pytest.mark.parametrize("reference", ["a", "%%%%", "", "_w", "a" * 4097])
+def test_invalid_file_references_return_bad_request_without_downloading(reference) -> None:
+    def unexpected_download(_url):
+        pytest.fail("Invalid references must not issue upstream requests")
+
+    client = SimpleNamespace(
+        logged_in=True, BASE_START_URL=BASE_URL,
+        meinunterricht_download_file=unexpected_download,
+    )
+    result = meinunterricht_download_submission_file(client, reference)
+    assert result["success"] is False
+    assert result["status_code"] == 400
+
+
+def test_references_round_trip_unicode_and_query_values() -> None:
+    relative = "dateiverteilung.php?a=download&f=123&name=Prüfung.pdf"
+    assert _decode_ref(_encode_ref(relative, BASE_URL), BASE_URL) == f"{BASE_URL}/{relative}"
+
+
+def test_closed_submission_preserves_deadline_and_hides_deletion() -> None:
+    import re
+
+    html = re.sub(r"<form>.*?</form>", "", DETAIL_HTML)
+    detail = parse_submission_detail(html, BASE_URL, "detail-ref")
+    assert detail["start"] == "Montag, 1.9.26 8:00"
+    assert detail["deadline"] == "Freitag, 5.9.26 23:59"
+    assert len(detail["own_files"]) == 1
+    assert detail["can_delete"] is False
+
+
+def test_unlabeled_public_file_does_not_count_as_own_upload() -> None:
+    detail = parse_submission_detail(
+        DETAIL_HTML.replace('<span class="label label-info">Frau Beispiel</span>', ''),
+        BASE_URL, "detail-ref",
+    )
+    assert detail["uploaded_count"] == 1
+    assert detail["public_files"][0]["index"] == "456"
+    assert detail["public_files"][0]["person"] is None
