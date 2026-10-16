@@ -318,11 +318,12 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     defaults, _ = asyncio.run(auth_db.get_user_preferences(session.user_id))
     assert defaults["timetable"] == {
         "view_mode": "rolling", "layout_mode": "cards",
-        "show_homework": True, "show_exams": True,
+        "show_homework": True, "show_exams": True, "show_substitutions": True,
         "class_colors": {},
     }
 
     for patch in (
+        {"show_substitutions": False},
         {"show_homework": False},
         {"show_exams": False},
         {"view_mode": "week"},
@@ -335,7 +336,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     assert stored is True
     assert loaded["timetable"] == {
         "view_mode": "week", "layout_mode": "compact",
-        "show_homework": False, "show_exams": False,
+        "show_homework": False, "show_exams": False, "show_substitutions": False,
         "class_colors": {"course:math-1": "#2563eb"},
     }
 
@@ -344,7 +345,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     ))
     assert result["preferences"]["timetable"] == {
         "view_mode": "week", "layout_mode": "compact",
-        "show_homework": False, "show_exams": True,
+        "show_homework": False, "show_exams": True, "show_substitutions": False,
         "class_colors": {"course:math-1": "#2563eb"},
     }
 
