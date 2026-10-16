@@ -46,6 +46,7 @@ from schulportal_hessen.base import SchulportalHessenAPI
 
 from .queue import task_queue, Task, TaskPriority
 from .queue.task_queue import TaskQueue
+from .android_push import android_push_configured, android_subscription
 from .identity import (
     canonicalize_user_id,
     make_user_id,
@@ -1145,6 +1146,7 @@ app.add_middleware(
         "http://localhost:4173",
         "http://localhost:5173",
         "https://lanis.arg-server.de",
+        "https://localhost",  # Packaged Capacitor app origin
         *(
             [os.getenv("LANIS_ADMIN_ORIGIN").rstrip("/")]
             if os.getenv("LANIS_ADMIN_ORIGIN")
@@ -2249,6 +2251,50 @@ async def get_vertretungsplan_notification_options(
 ) -> Dict[str, object]:
     """Return the signed-in user's class and classes visible in the current plan."""
     return await _load_vertretungsplan_options(auth)
+
+
+@app.get("/notifications/android/config")
+async def get_android_notification_config(
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    return {"success": True, "configured": android_push_configured()}
+
+
+class AndroidPushRequest(BaseModel):
+    binding: str = Field(..., min_length=36, max_length=36)
+    token: str = Field(..., min_length=20, max_length=4096)
+    previous_token: Optional[str] = Field(None, min_length=20, max_length=4096)
+
+
+@app.post("/notifications/android")
+async def register_android_push(
+    payload: AndroidPushRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not android_push_configured():
+        raise HTTPException(status_code=503, detail="Android push is not configured on this server")
+    try:
+        subscription = android_subscription(payload.token, payload.binding)
+        previous = android_subscription(payload.previous_token) if payload.previous_token else None
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    await save_push_subscription(auth.user_id, subscription)
+    if previous and previous["endpoint"] != subscription["endpoint"]:
+        await delete_push_subscription(auth.user_id, previous["endpoint"])
+    return {"success": True}
+
+
+@app.delete("/notifications/android")
+async def unregister_android_push(
+    payload: AndroidPushRequest,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    try:
+        subscription = android_subscription(payload.token, payload.binding)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    await delete_push_subscription(auth.user_id, subscription["endpoint"])
+    return {"success": True}
 
 
 @app.post("/notifications/subscription")
