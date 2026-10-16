@@ -74,11 +74,17 @@ class Task:
     created_at: datetime = field(default_factory=datetime.utcnow, compare=True)
     task_id: str = field(default_factory=lambda: uuid4().hex, compare=False)
     name: str = field(default="unnamed_task", compare=False)
+    user_id: Optional[str] = field(default=None, compare=False)
     func: Callable[..., Coroutine[Any, Any, Any]] = field(default=None, compare=False)
     args: tuple = field(default_factory=tuple, compare=False)
     kwargs: Dict[str, Any] = field(default_factory=dict, compare=False)
     max_retries: int = field(default=3, compare=False)
     retry_delay: float = field(default=1.0, compare=False)
+    on_cancel: Optional[Callable[[], Coroutine[Any, Any, Any]]] = field(
+        default=None, compare=False
+    )
+    user_generation: Optional[int] = field(default=None, compare=False)
+    retain_completed: bool = field(default=True, compare=False)
     
     # Runtime state
     status: str = field(default=TaskStatus.PENDING, compare=False)
@@ -118,6 +124,9 @@ class TaskQueue:
         self._running = False
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._cancelled_users: set[str] = set()
+        self._user_generations: Dict[str, int] = {}
+        self._generation_counter = 0
     
     async def start(self) -> None:
         """Start the task queue workers."""
@@ -179,9 +188,99 @@ class TaskQueue:
             raise asyncio.QueueFull(f"Task queue full (max: {self.max_queue_size})")
         
         task.status = TaskStatus.PENDING
+        if task.user_id:
+            if task.user_id not in self._user_generations:
+                self._generation_counter += 1
+                self._user_generations[task.user_id] = self._generation_counter
+            generation = self._user_generations[task.user_id]
+            task.user_generation = generation - int(
+                task.user_id in self._cancelled_users
+            )
         await self._queue.put(task)
         logger.debug(f"Task added: {task.name} (id={task.task_id}, priority={task.priority})")
         return task.task_id
+
+    async def cancel_user_tasks(self, user_id: str) -> None:
+        """Remove queued and retained work for a user and run cancellation hooks."""
+        cancelled: List[Task] = []
+        async with self._lock:
+            self._cancelled_users.add(user_id)
+            self._generation_counter += 1
+            self._user_generations[user_id] = self._generation_counter
+            pending: List[Task] = []
+            while True:
+                try:
+                    task = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                self._queue.task_done()
+                if task.user_id == user_id:
+                    cancelled.append(task)
+                else:
+                    pending.append(task)
+            for task in pending:
+                self._queue.put_nowait(task)
+
+            for task_id, task in list(self._completed_tasks.items()):
+                if task.user_id == user_id:
+                    self._completed_tasks.pop(task_id, None)
+                    self._scrub_task(task)
+
+        for task in cancelled:
+            if task.on_cancel is not None:
+                try:
+                    await task.on_cancel()
+                except Exception:
+                    logger.exception("Cancellation cleanup failed for %s", task.name)
+            self._scrub_task(task)
+
+        async with self._lock:
+            self._retire_user_generation(user_id)
+
+    @staticmethod
+    def _scrub_task(task: Task) -> None:
+        """Erase account payloads even if an idle worker still references the task."""
+        task.func = None
+        task.args = ()
+        task.kwargs.clear()
+        task.user_id = None
+        task.name = 'cancelled'
+        task.user_generation = None
+        task.result = None
+        task.error = None
+        task.on_cancel = None
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = datetime.utcnow()
+
+    def _retire_user_generation(self, user_id: str) -> None:
+        """Drop identifying cancellation state once all affected work is gone.
+
+        Epochs come from one monotonic counter, so removing an idle user's map
+        entry cannot make a stale task current after that account logs in again.
+        """
+        if any(task.user_id == user_id for task in self._active_tasks.values()):
+            return
+        if any(task.user_id == user_id for task in self._queue._queue):
+            return
+        self._cancelled_users.discard(user_id)
+        self._user_generations.pop(user_id, None)
+
+    async def allow_user_tasks(self, user_id: str) -> None:
+        """Re-enable user-scoped work after a fresh login."""
+        async with self._lock:
+            self._cancelled_users.discard(user_id)
+
+    async def is_user_generation_current(
+        self, user_id: str, generation: Optional[int]
+    ) -> bool:
+        """Check whether work still belongs to the user's current login epoch."""
+        if generation is None:
+            return True
+        async with self._lock:
+            return (
+                user_id not in self._cancelled_users
+                and generation == self._user_generations.get(user_id, 0)
+            )
     
     async def _worker(self, worker_id: int) -> None:
         """Worker coroutine that processes tasks from the queue."""
@@ -193,6 +292,24 @@ class TaskQueue:
                 try:
                     task = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
+                    continue
+
+                if task.user_id and (
+                    task.user_id in self._cancelled_users
+                    or task.user_generation
+                    != self._user_generations.get(task.user_id, 0)
+                ):
+                    if task.on_cancel is not None:
+                        try:
+                            await task.on_cancel()
+                        except Exception:
+                            logger.exception("Cancellation cleanup failed for %s", task.name)
+                    owner = task.user_id
+                    self._scrub_task(task)
+                    async with self._lock:
+                        self._retire_user_generation(owner)
+                    del owner
+                    self._queue.task_done()
                     continue
                 
                 await self._execute_task(task, worker_id)
@@ -241,8 +358,18 @@ class TaskQueue:
         
         async with self._lock:
             self._active_tasks.pop(task.task_id, None)
-            if self.retain_completed_tasks:
+            task_is_current = not task.user_id or (
+                task.user_id not in self._cancelled_users
+                and task.user_generation
+                == self._user_generations.get(task.user_id, 0)
+            )
+            owner = task.user_id
+            if self.retain_completed_tasks and task.retain_completed and task_is_current:
                 self._completed_tasks[task.task_id] = task
+            else:
+                self._scrub_task(task)
+            if owner:
+                self._retire_user_generation(owner)
     
     def get_task_status(self, task_id: str) -> Optional[Task]:
         """Get the status of a task by ID."""

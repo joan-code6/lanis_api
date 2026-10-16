@@ -8,14 +8,21 @@ from pydantic import ValidationError
 from api import api as api_module
 from api import auth_db
 from api.api import (
+    AppearancePreferencesRequest,
     DashboardPreferencesRequest,
     HomeworkPreferencesRequest,
     SidebarPreferencesRequest,
+    TimetablePreferencesRequest,
     UserPreferencesRequest,
     VertretungsplanPreferencesRequest,
     get_account_preferences,
     update_account_preferences,
 )
+
+
+@pytest.mark.parametrize("theme_color", ["coral", "blush", "moss"])
+def test_appearance_preferences_accept_new_themes(theme_color: str) -> None:
+    assert AppearancePreferencesRequest(theme_color=theme_color).theme_color == theme_color
 
 
 def test_dashboard_preferences_limit_module_lists() -> None:
@@ -41,9 +48,16 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "theme_mode": "system",
         "theme_color": "cyan",
     }
-    assert defaults["sidebar"] == {"order": auth_db.DEFAULT_SIDEBAR_ORDER, "hidden_items": []}
+    assert defaults["sidebar"] == {
+        "order": auth_db.DEFAULT_SIDEBAR_ORDER,
+        "hidden_items": [],
+        "show_feedback_button": True,
+    }
     assert defaults["dashboard"]["pinned_modules"] == []
     assert defaults["dashboard"]["hidden_modules"] == []
+    assert defaults["dashboard"]["notifications_enabled"] is True
+    assert defaults["dashboard"]["notification_show_read"] is False
+    assert defaults["dashboard"]["notification_limit"] == 20
     assert defaults["homework"] == {"completed_display": "green"}
     assert defaults["vertretungsplan"] == {"class_override": ""}
     assert defaults["onboarding"]["status"] == "not_started"
@@ -65,6 +79,12 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
         "pinned_modules": ["Nachrichten"],
         "hidden_modules": [],
         "view_mode": "grid",
+        "notifications_enabled": True,
+        "notification_messages_enabled": True,
+        "notification_native_enabled": True,
+        "notification_dsb_enabled": True,
+        "notification_show_read": False,
+        "notification_limit": 20,
     }
 
     loaded, stored = asyncio.run(auth_db.get_user_preferences("5201:STUDENT"))
@@ -268,6 +288,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     assert defaults["timetable"] == {
         "view_mode": "rolling", "layout_mode": "cards",
         "show_homework": True, "show_exams": True,
+        "class_colors": {},
     }
 
     for patch in (
@@ -275,6 +296,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
         {"show_exams": False},
         {"view_mode": "week"},
         {"layout_mode": "compact"},
+        {"class_colors": {"course:math-1": "#2563EB"}},
     ):
         asyncio.run(update_account_preferences(UserPreferencesRequest(timetable=patch), session))
 
@@ -283,6 +305,7 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     assert loaded["timetable"] == {
         "view_mode": "week", "layout_mode": "compact",
         "show_homework": False, "show_exams": False,
+        "class_colors": {"course:math-1": "#2563eb"},
     }
 
     result = asyncio.run(update_account_preferences(
@@ -291,4 +314,31 @@ def test_timetable_visibility_preferences_persist_independently(tmp_path, monkey
     assert result["preferences"]["timetable"] == {
         "view_mode": "week", "layout_mode": "compact",
         "show_homework": False, "show_exams": True,
+        "class_colors": {"course:math-1": "#2563eb"},
     }
+
+    replaced = asyncio.run(update_account_preferences(
+        UserPreferencesRequest(timetable={"class_colors": {"course:physics-1": "#abcdef"}}), session,
+    ))
+    assert replaced["preferences"]["timetable"]["class_colors"] == {"course:physics-1": "#abcdef"}
+
+    cleared = asyncio.run(update_account_preferences(
+        UserPreferencesRequest(timetable={"class_colors": {}}), session,
+    ))
+    assert cleared["preferences"]["timetable"]["class_colors"] == {}
+
+
+def test_timetable_class_colors_validate_keys_values_and_limit() -> None:
+    accepted = TimetablePreferencesRequest(
+        class_colors={"course:math-1": "#AABBCC"},
+    )
+    assert accepted.class_colors == {"course:math-1": "#aabbcc"}
+
+    for invalid in ({"": "#aabbcc"}, {"course:math-1": "blue"}):
+        with pytest.raises(ValidationError):
+            TimetablePreferencesRequest(class_colors=invalid)
+
+    with pytest.raises(ValidationError):
+        TimetablePreferencesRequest(
+            class_colors={f"course:{index}": "#aabbcc" for index in range(101)},
+        )

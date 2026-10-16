@@ -11,15 +11,17 @@ Features:
 - Provides async methods for all database operations
 """
 
-import aiosqlite
-import json
 import hashlib
+import json
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import aiosqlite
 
 from ..identity import normalize_school_id, normalize_username
 
@@ -58,6 +60,8 @@ async def _migrate_case_insensitive_logins(db: aiosqlite.Connection) -> int:
             continue
 
         winner = max(group_rows, key=_row_recency)
+        # Keep the earliest insertion order while retaining the newest profile.
+        first_id = min(int(row["id"]) for row in group_rows)
         first_seen = min(str(row["first_seen"] or "") for row in group_rows)
         last_updated = max(str(row["last_updated"] or "") for row in group_rows)
         update_count = sum(int(row["update_count"] or 0) for row in group_rows)
@@ -70,11 +74,12 @@ async def _migrate_case_insensitive_logins(db: aiosqlite.Connection) -> int:
         await db.execute(
             """
             UPDATE users
-            SET school_id = ?, login = ?, data_hash = ?, user_data = ?,
+            SET id = ?, school_id = ?, login = ?, data_hash = ?, user_data = ?,
                 first_seen = ?, last_updated = ?, update_count = ?
             WHERE id = ?
             """,
             (
+                first_id,
                 canonical_school_id,
                 canonical_login,
                 winner["data_hash"],
@@ -127,6 +132,7 @@ class UserMetricsDB:
     def __init__(self, db_path: Optional[Path] = None) -> None:
         self.db_path = db_path or DEFAULT_DB_PATH
         self._initialized = False
+        self._last_uptime_retention_cleanup = 0.0
     
     async def initialize(self) -> None:
         """Initialize the database and create tables if they don't exist."""
@@ -219,6 +225,7 @@ class UserMetricsDB:
                 CREATE TABLE IF NOT EXISTS uptime_checks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     checked_at TIMESTAMP NOT NULL,
+                    sample_interval_seconds INTEGER,
                     url TEXT NOT NULL,
                     status TEXT NOT NULL,
                     is_available INTEGER NOT NULL,
@@ -234,6 +241,10 @@ class UserMetricsDB:
             if "features_json" not in uptime_columns:
                 await db.execute(
                     "ALTER TABLE uptime_checks ADD COLUMN features_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "sample_interval_seconds" not in uptime_columns:
+                await db.execute(
+                    "ALTER TABLE uptime_checks ADD COLUMN sample_interval_seconds INTEGER"
                 )
             await db.execute(
                 """
@@ -254,6 +265,17 @@ class UserMetricsDB:
                 """
                 INSERT OR IGNORE INTO uptime_alert_state (id, is_issue, updated_at)
                 VALUES (1, NULL, NULL)
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS uptime_alert_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TIMESTAMP NOT NULL,
+                    transition TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    error_code TEXT
+                )
                 """
             )
             
@@ -373,6 +395,100 @@ class UserMetricsDB:
                 total_active_seconds=row["total_active_seconds"] or 0,
                 session_count=row["session_count"] or 0,
             )
+
+    async def get_account_data(
+        self, school_id: str, login: str, user_id: str
+    ) -> Dict[str, Any]:
+        """Return the profile and activity data held for one account."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM users WHERE school_id = ? AND login = ?",
+                (school_id, login),
+            ) as cursor:
+                user_row = await cursor.fetchone()
+            async with db.execute(
+                """
+                SELECT event_type,
+                       CASE WHEN event_type = 'admin_action' THEN ''
+                            ELSE school_id END AS school_id,
+                       CASE WHEN event_type = 'admin_action' THEN ''
+                            ELSE login END AS login,
+                       occurred_at, duration_seconds,
+                       CASE WHEN event_type = 'admin_action' THEN NULL
+                            ELSE actor_user_id END AS actor_user_id,
+                       CASE WHEN event_type = 'admin_action'
+                                  AND target_user_id <> ? THEN NULL
+                            ELSE target_user_id END AS target_user_id,
+                       action
+                FROM activity_events
+                WHERE (school_id = ? AND login = ?)
+                   OR actor_user_id = ? OR target_user_id = ?
+                ORDER BY occurred_at ASC
+                """,
+                (user_id, school_id, login, user_id, user_id),
+            ) as cursor:
+                events = [dict(row) for row in await cursor.fetchall()]
+
+        if user_row is None:
+            return {
+                "profile": {},
+                "activity": {
+                    "login_count": 0,
+                    "session_count": 0,
+                    "total_active_seconds": 0,
+                    "events": events,
+                },
+            }
+        return {
+            "profile": json.loads(user_row["user_data"]),
+            "activity": {
+                "login_count": user_row["login_count"] or 0,
+                "session_count": user_row["session_count"] or 0,
+                "total_active_seconds": user_row["total_active_seconds"] or 0,
+                "events": events,
+            },
+        }
+
+    async def delete_user_data(
+        self, school_id: str, login: str, user_id: str
+    ) -> Dict[str, int]:
+        """Delete the profile and all activity rows identifying one account."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "DELETE FROM users WHERE school_id = ? AND login = ?",
+                (school_id, login),
+            )
+            user_rows = max(cursor.rowcount, 0)
+            await db.execute(
+                """
+                UPDATE activity_events
+                SET actor_user_id = NULL, school_id = '', login = ''
+                WHERE event_type = 'admin_action' AND actor_user_id = ?
+                """,
+                (user_id,),
+            )
+            cursor = await db.execute(
+                """
+                DELETE FROM activity_events
+                WHERE (
+                    event_type <> 'admin_action'
+                    AND school_id = ? AND login = ?
+                )
+                   OR target_user_id = ?
+                """,
+                (school_id, login, user_id),
+            )
+            event_rows = max(cursor.rowcount, 0)
+            await db.commit()
+        return {"users": user_rows, "activity_events": event_rows}
     
     async def get_all_users(self, limit: int = 100, offset: int = 0) -> List[UserRecord]:
         """Get all user records with pagination."""
@@ -572,6 +688,24 @@ class UserMetricsDB:
             await db.commit()
             return inserted
 
+    async def is_first_school_user(self, school_id: str, login: str) -> bool:
+        """Identify the school's earliest known account, including repeat logins."""
+        school_id = normalize_school_id(school_id)
+        login = normalize_username(login)
+        await self.initialize()
+        # SQLite serializes inserts; AUTOINCREMENT IDs follow that order even
+        # when a waiting login captured an earlier first_seen timestamp.
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT login FROM users WHERE school_id = ?
+                ORDER BY id LIMIT 1
+                """,
+                (school_id,),
+            )
+            row = await cursor.fetchone()
+            return row is not None and normalize_username(row[0]) == login
+
     async def get_login_series(self, since: datetime) -> List[Dict[str, Any]]:
         """Return daily login totals and unique accounts for a time range."""
         await self.initialize()
@@ -590,20 +724,228 @@ class UserMetricsDB:
             )
             return [dict(row) for row in await cursor.fetchall()]
 
+    async def get_growth_series(self, since: datetime) -> List[Dict[str, Any]]:
+        """Return daily new-user and active-account growth aggregates."""
+        await self.initialize()
+        since_value = since.isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async def rows(query: str) -> list[dict[str, Any]]:
+                cursor = await db.execute(query, (since_value,))
+                return [dict(row) for row in await cursor.fetchall()]
+
+            new_users = await rows(
+                """
+                SELECT substr(first_seen, 1, 10) AS day, COUNT(*) AS new_users
+                FROM users
+                WHERE first_seen >= ?
+                GROUP BY day
+                """
+            )
+            active = await rows(
+                """
+                SELECT substr(occurred_at, 1, 10) AS day,
+                       COUNT(DISTINCT school_id || ':' || login) AS active_users,
+                       COUNT(DISTINCT school_id) AS active_schools
+                FROM activity_events
+                WHERE event_type IN ('login', 'activity', 'module_open')
+                  AND occurred_at >= ?
+                GROUP BY day
+                """
+            )
+            logins = await rows(
+                """
+                SELECT substr(occurred_at, 1, 10) AS day, COUNT(*) AS logins
+                FROM activity_events
+                WHERE event_type = 'login' AND occurred_at >= ?
+                GROUP BY day
+                """
+            )
+            by_day: dict[str, dict[str, Any]] = {}
+            for row in new_users:
+                by_day.setdefault(row["day"], {}).update(new_users=int(row["new_users"]))
+            for row in active:
+                by_day.setdefault(row["day"], {}).update(
+                    active_users=int(row["active_users"]),
+                    active_schools=int(row["active_schools"]),
+                )
+            for row in logins:
+                by_day.setdefault(row["day"], {}).update(logins=int(row["logins"]))
+            return [
+                {
+                    "day": day,
+                    "new_users": int(values.get("new_users", 0)),
+                    "active_users": int(values.get("active_users", 0)),
+                    "active_schools": int(values.get("active_schools", 0)),
+                    "logins": int(values.get("logins", 0)),
+                }
+                for day, values in sorted(by_day.items())
+            ]
+
+    async def get_usage_heatmap(self, since: datetime) -> List[Dict[str, Any]]:
+        """Return account activity grouped by weekday and UTC hour."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT CAST(strftime('%w', occurred_at) AS INTEGER) AS sqlite_weekday,
+                       CAST(strftime('%H', occurred_at) AS INTEGER) AS hour,
+                       COUNT(*) AS events,
+                       COUNT(DISTINCT school_id || ':' || login) AS unique_users
+                FROM activity_events
+                WHERE event_type IN ('login', 'activity', 'module_open')
+                  AND occurred_at >= ?
+                GROUP BY sqlite_weekday, hour
+                """,
+                (since.isoformat(),),
+            )
+            values = {
+                ((int(row["sqlite_weekday"]) + 6) % 7, int(row["hour"])): {
+                    "events": int(row["events"]),
+                    "unique_users": int(row["unique_users"]),
+                }
+                for row in await cursor.fetchall()
+            }
+            return [
+                {
+                    "weekday": weekday,
+                    "hour": hour,
+                    **values.get((weekday, hour), {"events": 0, "unique_users": 0}),
+                }
+                for weekday in range(7)
+                for hour in range(24)
+            ]
+
+    async def get_module_usage(self, since: datetime) -> List[Dict[str, Any]]:
+        """Return module launches recorded by the app launch endpoint."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT COALESCE(action, 'Unbekannt') AS module,
+                       COUNT(*) AS launches,
+                       COUNT(DISTINCT school_id || ':' || login) AS unique_users
+                FROM activity_events
+                WHERE event_type = 'module_open' AND occurred_at >= ?
+                GROUP BY module
+                ORDER BY launches DESC, module COLLATE NOCASE
+                LIMIT 100
+                """,
+                (since.isoformat(),),
+            )
+            return [
+                {
+                    "module": row["module"],
+                    "launches": int(row["launches"]),
+                    "unique_users": int(row["unique_users"]),
+                }
+                for row in await cursor.fetchall()
+            ]
+
+    async def get_retention_cohorts(
+        self, since: datetime, now: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Return weekly cohorts with exact-day return rates."""
+        await self.initialize()
+        now = now or datetime.utcnow()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT school_id, login, first_seen
+                FROM users
+                WHERE first_seen >= ? AND first_seen <= ?
+                """,
+                (since.isoformat(), now.isoformat()),
+            )
+            users = [dict(row) for row in await cursor.fetchall()]
+            if not users:
+                return []
+            event_cursor = await db.execute(
+                """
+                SELECT DISTINCT school_id, login, substr(occurred_at, 1, 10) AS occurred_day
+                FROM activity_events
+                WHERE event_type IN ('login', 'activity', 'module_open')
+                  AND occurred_at >= ? AND occurred_at <= ?
+                """,
+                (since.isoformat(), now.isoformat()),
+            )
+            activity: dict[tuple[str, str], set[str]] = defaultdict(set)
+            for row in await event_cursor.fetchall():
+                activity[(row["school_id"], row["login"])].add(
+                    str(row["occurred_day"])
+                )
+
+            cohorts: dict[str, dict[str, Any]] = {}
+            mature_users: dict[str, dict[int, int]] = defaultdict(
+                lambda: {1: 0, 7: 0, 30: 0}
+            )
+            for user in users:
+                first_seen = _parse_optional_datetime(user["first_seen"])
+                if first_seen is None:
+                    continue
+                cohort_day = first_seen.date()
+                cohort_day = cohort_day.fromordinal(
+                    cohort_day.toordinal() - cohort_day.weekday()
+                )
+                cohort = cohorts.setdefault(
+                    cohort_day.isoformat(),
+                    {
+                        "cohort": cohort_day.isoformat(),
+                        "new_users": 0,
+                        "retained_1d": 0,
+                        "retained_7d": 0,
+                        "retained_30d": 0,
+                    },
+                )
+                cohort["new_users"] += 1
+                active_days = activity.get((user["school_id"], user["login"]), set())
+                for threshold in (1, 7, 30):
+                    target_day = first_seen.date() + timedelta(days=threshold)
+                    # Retention is measured by calendar day, so wait until the
+                    # complete target day has elapsed before adding this user
+                    # to the denominator.
+                    if now.date() > target_day:
+                        mature_users[cohort_day.isoformat()][threshold] += 1
+                        if target_day.isoformat() in active_days:
+                            cohort[f"retained_{threshold}d"] += 1
+
+            result = []
+            for cohort in sorted(cohorts.values(), key=lambda item: item["cohort"]):
+                for threshold in (1, 7, 30):
+                    count = cohort.pop(f"retained_{threshold}d")
+                    denominator = mature_users[cohort["cohort"]][threshold]
+                    cohort[f"retention_{threshold}d"] = (
+                        round(count / denominator * 100, 1)
+                        if denominator
+                        else None
+                    )
+                result.append(cohort)
+            return result
+
     async def record_uptime_check(self, check: Dict[str, Any]) -> None:
         """Persist one authenticated Schulportal synthetic check."""
         await self.initialize()
         checked_at = str(check.get("checked_at") or datetime.utcnow().isoformat())
+        now_monotonic = time.monotonic()
+        cleanup_retention = (
+            now_monotonic - self._last_uptime_retention_cleanup >= 86400
+        )
+        if cleanup_retention:
+            self._last_uptime_retention_cleanup = now_monotonic
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT INTO uptime_checks (
-                    checked_at, url, status, is_available, status_code,
+                    checked_at, sample_interval_seconds, url, status, is_available, status_code,
                     latency_ms, error, features_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     checked_at,
+                    check.get("sample_interval_seconds"),
                     str(check.get("url") or ""),
                     str(check.get("status") or "down"),
                     1 if check.get("is_available") else 0,
@@ -613,14 +955,22 @@ class UserMetricsDB:
                     json.dumps(check.get("features") or [], ensure_ascii=False),
                 ),
             )
-            # At the default five-minute interval this keeps the local store
-            # bounded without removing the recent history shown in the admin UI.
-            await db.execute(
-                """
-                DELETE FROM uptime_checks
-                WHERE julianday(checked_at) < julianday('now', '-90 day')
-                """
-            )
+            if cleanup_retention:
+                cursor = await db.execute(
+                    "SELECT MAX(sample_interval_seconds) FROM uptime_checks"
+                )
+                (max_sample_interval,) = await cursor.fetchone()
+                retention_cadence = max(86400, int(max_sample_interval or 0))
+                retention_cutoff = datetime.utcnow() - timedelta(
+                    days=90, seconds=2 * retention_cadence
+                )
+                # Keep the report horizon plus two maximum sample intervals.
+                # Comparing the stored ISO timestamps directly lets SQLite use
+                # the checked_at index instead of converting every table row.
+                await db.execute(
+                    "DELETE FROM uptime_checks WHERE checked_at < ?",
+                    (retention_cutoff.isoformat(),),
+                )
             await db.commit()
 
     async def get_uptime_checks(
@@ -635,24 +985,96 @@ class UserMetricsDB:
             if since is None:
                 cursor = await db.execute(
                     """
-                    SELECT checked_at, url, status, is_available, status_code,
+                    SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                            latency_ms, error, features_json
                     FROM uptime_checks
-                    ORDER BY checked_at DESC LIMIT ?
+                    ORDER BY checked_at DESC, id DESC LIMIT ?
                     """,
                     (limit,),
                 )
             else:
                 cursor = await db.execute(
                     """
-                    SELECT checked_at, url, status, is_available, status_code,
+                    SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                            latency_ms, error, features_json
                     FROM uptime_checks
                     WHERE checked_at >= ?
-                    ORDER BY checked_at DESC LIMIT ?
+                    ORDER BY checked_at DESC, id DESC LIMIT ?
                     """,
                     (since.isoformat(), limit),
                 )
+            checks = []
+            for row in await cursor.fetchall():
+                check = dict(row)
+                check["is_available"] = bool(check["is_available"])
+                try:
+                    features = json.loads(check.pop("features_json") or "[]")
+                except (TypeError, ValueError):
+                    features = []
+                check["features"] = features if isinstance(features, list) else []
+                checks.append(check)
+            return checks
+
+    async def get_previous_uptime_check(self, before: datetime) -> Optional[Dict[str, Any]]:
+        """Return the latest stored check strictly before a reporting boundary."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
+                       latency_ms, error, features_json
+                FROM uptime_checks
+                WHERE checked_at < ?
+                ORDER BY checked_at DESC, id DESC LIMIT 1
+                """,
+                (before.isoformat(),),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            check = dict(row)
+            check["is_available"] = bool(check["is_available"])
+            try:
+                features = json.loads(check.pop("features_json") or "[]")
+            except (TypeError, ValueError):
+                features = []
+            check["features"] = features if isinstance(features, list) else []
+            return check
+
+    async def get_uptime_incident_prefix(self, before: datetime) -> List[Dict[str, Any]]:
+        """Return the retained observation chain for an incident crossing ``before``."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, checked_at FROM uptime_checks
+                WHERE status = 'up' AND checked_at < ?
+                ORDER BY checked_at DESC, id DESC LIMIT 1
+                """,
+                (before.isoformat(),),
+            )
+            last_up = await cursor.fetchone()
+            if last_up is not None:
+                where = "(checked_at > ? OR (checked_at = ? AND id >= ?)) AND checked_at < ?"
+                parameters = (
+                    last_up["checked_at"], last_up["checked_at"], last_up["id"],
+                    before.isoformat(),
+                )
+            else:
+                where = "julianday(checked_at) >= julianday(?) - (2.0 * MAX(86400, COALESCE((SELECT MAX(sample_interval_seconds) FROM uptime_checks), 0)) / 86400.0) AND checked_at < ?"
+                parameters = (before.isoformat(), before.isoformat())
+            cursor = await db.execute(
+                f"""
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
+                       latency_ms, error, features_json
+                FROM uptime_checks
+                WHERE {where}
+                ORDER BY checked_at DESC, id DESC
+                """,
+                parameters,
+            )
             checks = []
             for row in await cursor.fetchall():
                 check = dict(row)
@@ -675,11 +1097,11 @@ class UserMetricsDB:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
-                SELECT checked_at, url, status, is_available, status_code,
+                SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
                        latency_ms, error, features_json
                 FROM uptime_checks
                 WHERE status != 'up'
-                ORDER BY checked_at DESC LIMIT ?
+                ORDER BY checked_at DESC, id DESC LIMIT ?
                 """,
                 (limit,),
             )
@@ -754,15 +1176,20 @@ class UserMetricsDB:
 
     async def get_uptime_alert_state(self) -> Optional[bool]:
         """Return the last delivered alert state, or ``None`` before first use."""
+        state, _ = await self.get_uptime_alert_state_details()
+        return state
+
+    async def get_uptime_alert_state_details(self) -> tuple[Optional[bool], Optional[str]]:
+        """Return the delivered state and its last transition/reset timestamp."""
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT is_issue FROM uptime_alert_state WHERE id = 1"
+                "SELECT is_issue, updated_at FROM uptime_alert_state WHERE id = 1"
             )
             row = await cursor.fetchone()
-            if row is None or row[0] is None:
-                return None
-            return bool(row[0])
+            if row is None:
+                return None, None
+            return (bool(row[0]) if row[0] is not None else None), row[1]
 
     async def set_uptime_alert_state(self, is_issue: bool) -> None:
         """Persist the last uptime alert state after a webhook is delivered."""
@@ -779,6 +1206,36 @@ class UserMetricsDB:
                 (1 if is_issue else 0, datetime.utcnow().isoformat()),
             )
             await db.commit()
+
+    async def touch_uptime_alert_state(self) -> None:
+        """Reset pending retries after an observation confirms the delivered state."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE uptime_alert_state SET updated_at = ? WHERE id = 1",
+                (datetime.utcnow().isoformat(),),
+            )
+            await db.commit()
+
+    async def record_uptime_alert_delivery(self, transition: str, outcome: str, error_code: str | None = None) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO uptime_alert_deliveries (created_at, transition, outcome, error_code) VALUES (?, ?, ?, ?)",
+                (datetime.utcnow().isoformat(), transition, outcome, error_code),
+            )
+            await db.execute("DELETE FROM uptime_alert_deliveries WHERE id NOT IN (SELECT id FROM uptime_alert_deliveries ORDER BY id DESC LIMIT 100)")
+            await db.commit()
+
+    async def get_uptime_alert_deliveries(self, limit: int = 20) -> List[Dict[str, Any]]:
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT created_at, transition, outcome, error_code FROM uptime_alert_deliveries ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
 
     async def record_admin_action(
         self, actor_user_id: str, action: str, target_user_id: str = ""
@@ -807,21 +1264,112 @@ class UserMetricsDB:
             )
             await db.commit()
 
-    async def get_admin_audit(self, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_admin_audit(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        action: Optional[str] = None,
+        query: Optional[str] = None,
+        actor: Optional[str] = None,
+        target: Optional[str] = None,
+        since: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
         """Return recent privileged-operation audit records."""
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            clauses = ["event_type = 'admin_action'"]
+            parameters: list[Any] = []
+            if action:
+                clauses.append("action = ?")
+                parameters.append(action)
+            if query:
+                clauses.append(
+                    "(actor_user_id LIKE ? OR target_user_id LIKE ? OR action LIKE ?)"
+                )
+                query_value = f"%{query}%"
+                parameters.extend((query_value, query_value, query_value))
+            if actor:
+                clauses.append("actor_user_id LIKE ?")
+                parameters.append(f"%{actor}%")
+            if target:
+                clauses.append("target_user_id LIKE ?")
+                parameters.append(f"%{target}%")
+            if since:
+                clauses.append("occurred_at >= ?")
+                parameters.append(since.isoformat())
+            parameters.extend((limit, offset))
             cursor = await db.execute(
-                """
-                SELECT occurred_at, actor_user_id, target_user_id, action
+                f"""
+                SELECT id, occurred_at, actor_user_id, target_user_id, action
                 FROM activity_events
-                WHERE event_type = 'admin_action'
-                ORDER BY occurred_at DESC LIMIT ?
+                WHERE {' AND '.join(clauses)}
+                ORDER BY occurred_at DESC, id DESC LIMIT ? OFFSET ?
                 """,
-                (limit,),
+                parameters,
             )
             return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_admin_audit_count(
+        self,
+        action: Optional[str] = None,
+        query: Optional[str] = None,
+        actor: Optional[str] = None,
+        target: Optional[str] = None,
+        since: Optional[datetime] = None,
+    ) -> int:
+        """Return the number of audit records matching the supplied filters."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            clauses = ["event_type = 'admin_action'"]
+            parameters: list[Any] = []
+            if action:
+                clauses.append("action = ?")
+                parameters.append(action)
+            if query:
+                clauses.append(
+                    "(actor_user_id LIKE ? OR target_user_id LIKE ? OR action LIKE ?)"
+                )
+                query_value = f"%{query}%"
+                parameters.extend((query_value, query_value, query_value))
+            if actor:
+                clauses.append("actor_user_id LIKE ?")
+                parameters.append(f"%{actor}%")
+            if target:
+                clauses.append("target_user_id LIKE ?")
+                parameters.append(f"%{target}%")
+            if since:
+                clauses.append("occurred_at >= ?")
+                parameters.append(since.isoformat())
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM activity_events WHERE {' AND '.join(clauses)}",
+                parameters,
+            )
+            row = await cursor.fetchone()
+            return int(row[0] or 0)
+
+    async def record_module_open(
+        self, school_id: str, login: str, module_name: str
+    ) -> None:
+        """Record an authenticated launch of a Schulportal module."""
+        await self.initialize()
+        now = datetime.utcnow().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO activity_events (
+                    event_type, school_id, login, occurred_at, action
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    "module_open",
+                    normalize_school_id(school_id),
+                    normalize_username(login),
+                    now,
+                    module_name[:160],
+                ),
+            )
+            await db.commit()
 
     async def record_activity(self, school_id: str, login: str) -> None:
         """Update an activity heartbeat, counting only bounded active intervals."""

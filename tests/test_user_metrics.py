@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 
 import aiosqlite
 
@@ -46,6 +47,15 @@ def test_existing_case_variant_metrics_rows_are_merged(tmp_path):
                     ),
                     (
                         "5201",
+                        "second-user",
+                        "second-hash",
+                        '{"name": "second"}',
+                        "2026-08-13T11:30:00",
+                        "2026-08-13T11:30:00",
+                        1,
+                    ),
+                    (
+                        "5201",
                         "bennet.wegener",
                         "new-hash",
                         '{"name": "new"}',
@@ -60,7 +70,7 @@ def test_existing_case_variant_metrics_rows_are_merged(tmp_path):
         database = UserMetricsDB(database_path)
         await database.initialize()
 
-        assert await database.get_user_count() == 1
+        assert await database.get_user_count() == 2
         record = await database.get_user("5201", "BENNET.WEGENER")
         assert record is not None
         assert record.login == "bennet.wegener"
@@ -68,6 +78,17 @@ def test_existing_case_variant_metrics_rows_are_merged(tmp_path):
         assert record.first_seen.isoformat() == "2026-08-13T11:00:00"
         assert record.last_updated.isoformat() == "2026-08-13T12:00:00"
         assert record.update_count == 3
+        assert record.id == 1
+        assert await database.is_first_school_user("5201", "BENNET.WEGENER")
+        assert not await database.is_first_school_user("5201", "second-user")
+
+        # Restarting and inserting another account must preserve the winner.
+        restarted = UserMetricsDB(database_path)
+        await restarted.record_login("5201", "third-user")
+        third = await restarted.get_user("5201", "third-user")
+        assert third.id > 3
+        assert await restarted.is_first_school_user("5201", "bennet.wegener")
+        assert not await restarted.is_first_school_user("5201", "third-user")
 
     asyncio.run(scenario())
 
@@ -106,6 +127,167 @@ def test_activity_heartbeats_and_admin_audit_are_persisted(tmp_path):
         audit = await database.get_admin_audit()
         assert audit[0]["action"] == "credential_reveal"
         assert audit[0]["target_user_id"] == "5201:student"
+        assert len(await database.get_admin_audit(query="student")) == 1
+        assert await database.get_admin_audit_count(query="student") == 1
+
+    asyncio.run(scenario())
+
+
+def test_deleting_admin_anonymizes_retained_cross_account_audit(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.record_admin_action(
+            "5201:admin", "credential_reveal", "5201:student"
+        )
+
+        await database.delete_user_data("5201", "admin", "5201:admin")
+
+        async with aiosqlite.connect(database.db_path) as db:
+            async with db.execute(
+                "SELECT school_id, login, actor_user_id, target_user_id "
+                "FROM activity_events WHERE event_type = 'admin_action'"
+            ) as cursor:
+                event = await cursor.fetchone()
+        assert event == ("", "", None, "5201:student")
+
+    asyncio.run(scenario())
+
+
+def test_account_export_redacts_other_admin_identities(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.record_admin_action(
+            "5201:admin", "school_view", "5201:student"
+        )
+        exported = await database.get_account_data(
+            "5201", "student", "5201:student"
+        )
+        event = exported["activity"]["events"][0]
+        assert event["event_type"] == "admin_action"
+        assert event["actor_user_id"] is None
+        assert event["school_id"] == ""
+        assert event["login"] == ""
+        assert event["target_user_id"] == "5201:student"
+
+    asyncio.run(scenario())
+
+
+def test_analytics_aggregates_activity_and_module_launches(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.record_login("5201", "student")
+        await database.record_module_open("5201", "student", "Kalender")
+        since = datetime.utcnow() - timedelta(days=1)
+
+        growth = await database.get_growth_series(since)
+        assert growth[-1]["new_users"] == 1
+        assert growth[-1]["active_users"] == 1
+        assert growth[-1]["logins"] == 1
+
+        heatmap = await database.get_usage_heatmap(since)
+        assert len(heatmap) == 7 * 24
+        assert sum(cell["events"] for cell in heatmap) == 2
+
+        assert await database.get_module_usage(since) == [
+            {"module": "Kalender", "launches": 1, "unique_users": 1}
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_retention_uses_only_mature_users_in_each_cohort(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        async with aiosqlite.connect(database.db_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO users
+                    (school_id, login, data_hash, user_data, first_seen, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "5201",
+                        "early",
+                        "hash",
+                        "{}",
+                        "2026-09-14T12:00:00",
+                        "2026-09-14T12:00:00",
+                    ),
+                    (
+                        "5201",
+                        "late",
+                        "hash",
+                        "{}",
+                        "2026-09-20T08:00:00",
+                        "2026-09-20T08:00:00",
+                    ),
+                ],
+            )
+            await db.execute(
+                """
+                INSERT INTO activity_events (event_type, school_id, login, occurred_at)
+                VALUES ('login', '5201', 'early', '2026-09-15T09:00:00')
+                """
+            )
+            await db.commit()
+
+        cohorts = await database.get_retention_cohorts(
+            datetime.fromisoformat("2026-09-01T00:00:00"),
+            now=datetime.fromisoformat("2026-09-20T12:00:00"),
+        )
+        assert cohorts == [
+            {
+                "cohort": "2026-09-14",
+                "new_users": 2,
+                "retention_1d": 100.0,
+                "retention_7d": None,
+                "retention_30d": None,
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_retention_maturity_uses_elapsed_time(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        async with aiosqlite.connect(database.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO users
+                    (school_id, login, data_hash, user_data, first_seen, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "5201",
+                    "student",
+                    "hash",
+                    "{}",
+                    "2026-09-19T12:00:00",
+                    "2026-09-19T12:00:00",
+                ),
+            )
+            await db.execute(
+                """
+                INSERT INTO activity_events (event_type, school_id, login, occurred_at)
+                VALUES ('login', '5201', 'student', '2026-09-20T00:00:00')
+                """
+            )
+            await db.commit()
+
+        cohorts = await database.get_retention_cohorts(
+            datetime.fromisoformat("2026-09-01T00:00:00"),
+            now=datetime.fromisoformat("2026-09-20T23:59:00"),
+        )
+        assert cohorts[0]["retention_1d"] is None
 
     asyncio.run(scenario())
 
@@ -144,5 +326,62 @@ def test_homepage_adoption_is_complete_above_five_thousand_users(tmp_path):
             2,
             ["large-school"],
         )
+
+    asyncio.run(scenario())
+
+
+def test_first_school_user_survives_relogin_and_additional_users(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        assert not await database.is_first_school_user("5201", "first")
+        await database.record_login("5201", "First")
+        await database.record_login("5201", "second")
+        await database.record_login("5202", "other")
+        await database.record_login("5201", "FIRST")
+        # Background profile updates must not change who was first.
+        await database.upsert_user("5201", "first", {"name": "First"})
+        assert await database.is_first_school_user("5201", "FIRST")
+        assert not await database.is_first_school_user("5201", "second")
+        assert await database.is_first_school_user("5202", "other")
+        assert not await database.is_first_school_user("5203", "first")
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_school_logins_identify_exactly_one_first_user(tmp_path):
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        async def login_and_check(login):
+            await database.record_login("5201", login)
+            return await database.is_first_school_user("5201", login)
+
+        flags = await asyncio.gather(*(
+            login_and_check(login) for login in ("alice", "bob", "charlie")
+        ))
+        assert sum(flags) == 1
+
+    asyncio.run(scenario())
+
+
+def test_earlier_captured_timestamp_cannot_replace_committed_first_user(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from importlib import import_module
+    metrics_module = import_module("api.metrics.user_metrics_db")
+
+    database = UserMetricsDB(tmp_path / "metrics.db")
+
+    async def scenario():
+        await database.initialize()
+        # A waiting login can capture its timestamp before the login that commits first.
+        timestamps = iter([datetime(2026, 1, 1, 12, 1), datetime(2026, 1, 1, 12, 0)])
+        monkeypatch.setattr(metrics_module, "datetime", SimpleNamespace(utcnow=lambda: next(timestamps)))
+        await database.record_login("5201", "committed-first")
+        assert await database.is_first_school_user("5201", "committed-first")
+        await database.record_login("5201", "captured-earlier")
+        assert not await database.is_first_school_user("5201", "captured-earlier")
+        assert await database.is_first_school_user("5201", "committed-first")
 
     asyncio.run(scenario())
