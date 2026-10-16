@@ -3488,12 +3488,14 @@ async def meinunterricht_weekly(
 @app.get("/meinunterricht/submissions")
 async def meinunterricht_submissions(
     auth: AuthSession = Depends(client_dependency),
+    refresh: bool = False,
 ) -> Dict[str, object]:
-    cached = await sessions.get_cached(auth.user_id, "/meinunterricht/submissions")
-    if cached is not None:
-        return cached
-
     endpoint = "/meinunterricht/submissions"
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, endpoint)
+        if cached is not None:
+            return cached
+
     cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     result = await run_in_threadpool(auth.client.meinunterricht_get_submissions)
     if result.get("success"):
@@ -3538,12 +3540,14 @@ async def meinunterricht_submission_file(
 async def meinunterricht_submission(
     detail_ref: str,
     auth: AuthSession = Depends(client_dependency),
+    refresh: bool = False,
 ) -> Dict[str, object]:
     endpoint = "/meinunterricht/submissions/detail"
     params = _make_param_key({"detail_ref": detail_ref})
-    cached = await sessions.get_cached(auth.user_id, endpoint, params)
-    if cached is not None:
-        return cached
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, endpoint, params)
+        if cached is not None:
+            return cached
 
     cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     detail = await run_in_threadpool(

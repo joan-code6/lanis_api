@@ -146,3 +146,35 @@ def test_submission_mutation_rejects_inflight_cache_writes(monkeypatch, kind) ->
         assert await manager.get_cached(auth.user_id, endpoint, params) == fresh
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["list", "detail"])
+def test_explicit_refresh_bypasses_cached_submissions(monkeypatch, kind) -> None:
+    async def scenario():
+        manager = api_module.AuthManager()
+        monkeypatch.setattr(api_module, "sessions", manager)
+        auth = SimpleNamespace(
+            user_id="refresh-student",
+            client=SimpleNamespace(
+                meinunterricht_get_submissions=lambda: {"success": True, "submissions": ["fresh"]},
+                meinunterricht_get_submission=lambda ref: {"success": True, "title": "Fresh"},
+            ),
+        )
+        if kind == "list":
+            endpoint, params = "/meinunterricht/submissions", ""
+            async def get(refresh=False):
+                return await api_module.meinunterricht_submissions(auth, refresh=refresh)
+            expected = {"success": True, "submissions": ["fresh"]}
+        else:
+            endpoint = "/meinunterricht/submissions/detail"
+            params = api_module._make_param_key({"detail_ref": "opaque-ref"})
+            async def get(refresh=False):
+                return await api_module.meinunterricht_submission("opaque-ref", auth, refresh=refresh)
+            expected = {"success": True, "submission": {"title": "Fresh"}}
+        stale = {"success": True, "cached": True}
+        await manager.set_cache(auth.user_id, endpoint, stale, params)
+        assert await get() == stale
+        assert await get(refresh=True) == expected
+        assert await get() == expected
+
+    asyncio.run(scenario())

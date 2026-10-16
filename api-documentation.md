@@ -929,7 +929,8 @@ Retrieve a weekly view of course entries.
 
 #### GET `/meinunterricht/submissions`
 
-Retrieve all student upload assignments.
+Retrieve all student upload assignments. Set the optional query parameter
+`refresh=true` to bypass the live cache and fetch current portal data.
 
 **Headers:**
 - `X-Session-Token: {token}` (required)
@@ -965,6 +966,8 @@ Retrieve all student upload assignments.
 
 Retrieve the requirements, current files, and upload state for one submission.
 The `detail_ref` is the opaque reference returned by the list endpoint.
+Set `refresh=true` to bypass the live detail cache. Both read endpoints retain
+the last successful snapshot for a confirmed upstream outage.
 
 #### POST `/meinunterricht/submissions/upload`
 
