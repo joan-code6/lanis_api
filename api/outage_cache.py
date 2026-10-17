@@ -123,6 +123,11 @@ class SnapshotStore:
             self.path_versions.setdefault((user_id, version_path), 0),
         )
 
+    def advance_path_version(self, user_id, path):
+        """Reject older writes while retaining the last successful outage snapshot."""
+        key = (user_id, self._version_path(path))
+        self.path_versions[key] = self.path_versions.get(key, 0) + 1
+
     def invalidate(self, user_id):
         # Keep every user generation in the same monotonically increasing
         # sequence. Deletion removes the per-user key, so its next allocation
@@ -267,6 +272,15 @@ class OutageCacheRoute(APIRoute):
                     )
                 ),
             )
+            if (
+                self.path in {
+                    "/meinunterricht/submissions",
+                    "/meinunterricht/submissions/{detail_ref}",
+                }
+                and request.query_params.get("refresh", "").lower()
+                in {"true", "1", "on", "yes"}
+            ):
+                snapshots.advance_path_version(identity.user_id, request.url.path)
             version = snapshots.version(identity.user_id, request.url.path)
             current = TransportObservation()
             current.cache_path = self.path

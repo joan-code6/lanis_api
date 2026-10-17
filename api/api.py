@@ -946,11 +946,13 @@ class AuthManager:
                 params=params,
             )
 
-    async def get_cache_version(self, user_id: str, endpoint: str) -> int:
-        """Return the current version for an endpoint's cache entries."""
+    async def get_cache_version(
+        self, user_id: str, endpoint: str, *, advance: bool = False
+    ) -> int:
+        """Capture a cache generation, advancing it when a fresh read supersedes older reads."""
         async with self._lock:
             key = (user_id, endpoint)
-            if key not in self._cache_versions:
+            if advance or key not in self._cache_versions:
                 self._cache_generation += 1
                 self._cache_versions[key] = self._cache_generation
             return self._cache_versions[key]
@@ -3496,7 +3498,9 @@ async def meinunterricht_submissions(
         if cached is not None:
             return cached
 
-    cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
+    cache_version = await sessions.get_cache_version(
+        auth.user_id, endpoint, advance=refresh
+    )
     result = await run_in_threadpool(auth.client.meinunterricht_get_submissions)
     if result.get("success"):
         await sessions.set_cache_if_current_version(
@@ -3549,7 +3553,9 @@ async def meinunterricht_submission(
         if cached is not None:
             return cached
 
-    cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
+    cache_version = await sessions.get_cache_version(
+        auth.user_id, endpoint, advance=refresh
+    )
     detail = await run_in_threadpool(
         auth.client.meinunterricht_get_submission, detail_ref
     )

@@ -178,3 +178,88 @@ def test_explicit_refresh_bypasses_cached_submissions(monkeypatch, kind) -> None
         assert await get() == expected
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["list", "detail"])
+@pytest.mark.parametrize("older_refresh", [False, True])
+def test_refresh_supersedes_inflight_live_cache_and_outage_snapshot(
+    monkeypatch, kind, older_refresh
+) -> None:
+    import json
+
+    import httpx
+
+    from api import outage_cache
+    from schulportal_hessen.tools.transport import observation
+
+    async def scenario():
+        manager = api_module.AuthManager()
+        store = outage_cache.SnapshotStore()
+        monkeypatch.setattr(api_module, "sessions", manager)
+        monkeypatch.setattr(api_module, "snapshots", store)
+        monkeypatch.setattr(outage_cache, "snapshots", store)
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+        unavailable = False
+        user_id = "refresh-race-student"
+        auth = SimpleNamespace(user_id=user_id, client=SimpleNamespace(
+            meinunterricht_get_submissions=lambda: None,
+            meinunterricht_get_submission=lambda ref: None,
+        ))
+
+        async def authenticate(_token):
+            return auth
+
+        async def run(_func, *_args):
+            nonlocal calls
+            calls += 1
+            if unavailable:
+                observation.get().unavailable = True
+                return {"success": False, "error": "Upstream unavailable"}
+            value = "fresh"
+            if calls == 1:
+                started.set()
+                await release.wait()
+                value = "old"
+            return {"success": True, "title": value}
+
+        monkeypatch.setattr(api_module, "local_auth_dependency", authenticate)
+        monkeypatch.setattr(api_module, "run_in_threadpool", run)
+        path = "/meinunterricht/submissions"
+        endpoint, params = path, ""
+        if kind == "detail":
+            path += "/opaque-ref"
+            endpoint += "/detail"
+            params = api_module._make_param_key({"detail_ref": "opaque-ref"})
+        app.dependency_overrides[api_module.client_dependency] = lambda: auth
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test",
+                headers={"X-Session-Token": "test-token"},
+            ) as client:
+                pending = asyncio.create_task(client.get(
+                    path, params={"refresh": str(older_refresh).lower()}
+                ))
+                try:
+                    await asyncio.wait_for(started.wait(), 1)
+                    refreshed = await client.get(path, params={"refresh": "true"})
+                finally:
+                    release.set()
+                    await pending
+                assert refreshed.status_code == 200
+                expected = refreshed.json()
+                payload = expected["submission"] if kind == "detail" else expected
+                assert payload["title"] == "fresh"
+                assert await manager.get_cached(user_id, endpoint, params) == expected
+                key = (user_id, path, ())
+                snapshot = store.get(key, store.version(user_id, path))
+                assert json.loads(snapshot.body) == expected
+                # A failed refresh still has the last successful outage fallback.
+                unavailable = True
+                fallback = await client.get(path, params={"refresh": "true"})
+                assert fallback.json() == expected
+                assert fallback.headers["X-LANIS-Cache"] == "stale"
+        finally:
+            app.dependency_overrides.pop(api_module.client_dependency, None)
+
+    asyncio.run(scenario())
