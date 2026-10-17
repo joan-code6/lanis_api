@@ -151,10 +151,9 @@ def _parse_table(table: Any, source_url: str) -> list[dict[str, Any]]:
         action_target = ""
         if action_node:
             action_target = str(
-                action_node.get("href")
-                or action_node.get("data-href")
-                or action_node.get("data-url")
-                or ""
+                (action_node.get("href")
+                 or action_node.get("data-href")
+                 or action_node.get("data-url")) if action_node else ""
             )
         join_url = _safe_url(action_target, source_url)
         action_text = _text(action_node) or _text(action_cell)
@@ -185,16 +184,15 @@ def _parse_cards(soup: BeautifulSoup, source_url: str) -> list[dict[str, Any]]:
         name_node = card.select_one(".caption, .room-name, .panel-title, h2, h3, h4")
         name = _text(name_node)
         action_node = card.select_one(
-            "a[href].btn, a[href][role='button'], [data-href], [data-url]"
+            "a[href].btn, a[href][role='button'], [data-href], [data-url], button"
         )
-        if not name or not action_node:
+        if not name:
             continue
         join_url = _safe_url(
             str(
-                action_node.get("href")
-                or action_node.get("data-href")
-                or action_node.get("data-url")
-                or ""
+                (action_node.get("href")
+                 or action_node.get("data-href")
+                 or action_node.get("data-url")) if action_node else ""
             ),
             source_url,
         )
@@ -305,8 +303,15 @@ def videokonferenz_get_rooms(self: Any) -> dict[str, Any]:
             open_room_ids = {str(value) for value in payload}
             for room in result["rooms"]:
                 is_open = str(room["id"]) in open_room_ids
-                room["status"] = "open" if is_open else "waiting"
-                room["status_label"] = "Raum betreten" if is_open else "Raum nicht offen"
+                if is_open:
+                    room["status"] = "open"
+                    room["status_label"] = "Raum betreten"
+                elif room["status"] != "closed" and room.get("join_url"):
+                    room["status"] = "waiting"
+                    room["status_label"] = "Raum nicht offen"
+                else:
+                    room["status"] = "closed"
+                    room["status_label"] = "Raum geschlossen"
                 room["can_join"] = bool(is_open and room.get("join_url"))
             result["open_count"] = sum(
                 room["status"] == "open" for room in result["rooms"]

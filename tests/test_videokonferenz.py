@@ -106,6 +106,8 @@ def test_client_requires_login_and_uses_authenticated_page() -> None:
     assert result["success"] is True
     assert result["status_live"] is True
     assert result["open_count"] == 1
+    assert [room["status"] for room in result["rooms"]] == ["open", "waiting", "closed"]
+    assert result["rooms"][2]["can_join"] is False
     assert client.session.calls == [
         (
             "https://start.schulportal.hessen.de/videokonferenz.php",
@@ -333,3 +335,23 @@ def test_live_recipient_structure_keeps_polling_ids_and_ignores_hidden_placehold
     assert result["rooms"][0]["teachers"] == ["BEI", "MUS"]
     assert result["rooms"][0]["links"] == [{"label": "Material", "url": "https://school.example/material"}]
     assert result["updated_label"] == "15:30 Uhr"
+
+
+def test_closed_cards_remain_visible_and_live_status_is_checked():
+    html = ('<div class="conference-room" data-room-id="closed-1"><h2>Room one</h2></div>'
+            '<div class="conference-room" data-room-id="closed-2"><h2>Room two</h2>'
+            '<button disabled>Raum geschlossen</button></div>')
+    parsed = parse_videokonferenz_overview(html)
+    assert parsed["count"] == 2
+    assert all(room["status"] == "closed" and not room["can_join"] for room in parsed["rooms"])
+    calls = []
+    def get(url, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status_code=200, text='[]' if kwargs.get("params") else html,
+                               url=url, raise_for_status=lambda: None)
+    result = videokonferenz_get_rooms(SimpleNamespace(logged_in=True,
+        BASE_START_URL="https://start.schulportal.hessen.de", session=SimpleNamespace(get=get)))
+    assert len(calls) == 2
+    assert result["status_live"] is True
+    assert result["count"] == 2
+    assert all(room["status"] == "closed" and not room["can_join"] for room in result["rooms"])
