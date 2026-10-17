@@ -271,3 +271,25 @@ def test_unlabeled_public_file_does_not_count_as_own_upload() -> None:
     assert detail["uploaded_count"] == 1
     assert detail["public_files"][0]["index"] == "456"
     assert detail["public_files"][0]["person"] is None
+
+
+def test_plain_upload_success_reports_each_file(monkeypatch) -> None:
+    client = _Client()
+    monkeypatch.setattr(client.session, "post", lambda *args, **kwargs: _Response("1"))
+    result = meinunterricht_upload_files(
+        client, "42", "7", "9", [{"filename": "Prüfung.pdf", "content": b"pdf"}]
+    )
+    assert result["success"] is True
+    assert result["all_succeeded"] is True
+    assert result["files"] == [{"name": "Prüfung.pdf", "status": "erfolgreich", "message": None}]
+
+
+def test_six_files_are_rejected_before_contacting_portal(monkeypatch) -> None:
+    client = _Client()
+    def unexpected_post(*args, **kwargs):
+        pytest.fail("Unsupported file count must be rejected before uploading")
+    monkeypatch.setattr(client.session, "post", unexpected_post)
+    result = meinunterricht_upload_files(
+        client, "42", "7", "9", [{"filename": f"{i}.pdf", "content": b"pdf"} for i in range(6)]
+    )
+    assert result["success"] is False

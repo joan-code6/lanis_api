@@ -263,3 +263,45 @@ def test_refresh_supersedes_inflight_live_cache_and_outage_snapshot(
             app.dependency_overrides.pop(api_module.client_dependency, None)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", [400, 401, 404, 502, None])
+def test_submission_download_keeps_failure_status_and_evicts_expired_session(monkeypatch, status):
+    from fastapi import HTTPException
+
+    evicted = []
+    async def invalidate(user_id, client):
+        evicted.append((user_id, client))
+    monkeypatch.setattr(sessions, "invalidate_schulportal_client", invalidate)
+    auth = SimpleNamespace(user_id="student", client=SimpleNamespace(
+        meinunterricht_download_submission_file=lambda ref: {
+            "success": False, "status_code": status, "error": "Upstream failure",
+        },
+    ))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(api_module.meinunterricht_submission_file("ref", auth))
+    assert error.value.status_code == (status or 502)
+    assert evicted == ([("student", auth.client)] if status == 401 else [])
+
+
+def test_submission_download_preserves_unicode_filename_without_double_encoding():
+    from schulportal_hessen.applets.mein_unterricht.api import (
+        meinunterricht_download_file,
+    )
+
+    response = SimpleNamespace(
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''Pr%C3%BCfung.pdf"},
+        content=b"pdf", raise_for_status=lambda: None,
+    )
+    client = SimpleNamespace(
+        logged_in=True, BASE_START_URL="https://example.invalid",
+        session=SimpleNamespace(get=lambda url: response),
+    )
+    client.meinunterricht_download_submission_file = lambda ref: meinunterricht_download_file(
+        client, "dateiverteilung.php?a=download&f=123"
+    )
+    result = asyncio.run(api_module.meinunterricht_submission_file(
+        "ref", SimpleNamespace(user_id="student", client=client)
+    ))
+    assert result.body == b"pdf"
+    assert result.headers["Content-Disposition"] == "attachment; filename*=UTF-8''Pr%C3%BCfung.pdf"
