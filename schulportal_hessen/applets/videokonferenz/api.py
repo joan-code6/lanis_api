@@ -223,7 +223,6 @@ def parse_videokonferenz_overview(
     if (
         source_host == "login.schulportal.hessen.de"
         or soup.select_one("form[action*='login']")
-        or "login.schulportal.hessen.de" in (html or "")
     ):
         return {"success": False, "error": "Schulportal session expired", "error_kind": "authentication"}
 

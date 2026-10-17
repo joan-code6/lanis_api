@@ -355,3 +355,18 @@ def test_closed_cards_remain_visible_and_live_status_is_checked():
     assert result["status_live"] is True
     assert result["count"] == 2
     assert all(room["status"] == "closed" and not room["can_join"] for room in result["rooms"])
+
+
+def test_ordinary_login_link_does_not_expire_a_valid_overview():
+    result = parse_videokonferenz_overview(
+        FIXTURE.read_text(encoding="utf-8")
+        + '<a href="https://login.schulportal.hessen.de/">Portal login</a>')
+    assert result["success"] is True
+    assert result["count"] == 3
+
+
+def test_login_response_host_is_still_rejected():
+    result = parse_videokonferenz_overview('<h1>Login</h1>',
+        'https://login.schulportal.hessen.de/')
+    assert result["success"] is False
+    assert result["error_kind"] == 'authentication'
