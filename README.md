@@ -302,3 +302,12 @@ surface and method documentation.
 ## License
 
 This project is released under the [MIT License](LICENSE).
+
+## Automated regression checks
+
+Install `requirements-test.txt` in a virtual environment, then run
+`python -m pytest tests -q` from the repository root. This runs the mocked
+regression suite without SPH credentials; the optional live timetable fixture
+test is skipped unless explicitly configured. GitHub Actions runs the suite on
+Python 3.11 and 3.13 for pull requests and pushes to main, caches pip downloads,
+and cancels superseded runs. This workflow does not deploy the backend.
