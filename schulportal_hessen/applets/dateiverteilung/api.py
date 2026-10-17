@@ -169,7 +169,7 @@ def _parse_distribution(
     for link in container.select("a[href]"):
         href = str(link.get("href") or "").strip()
         absolute = urljoin(f"{base_url.rstrip('/')}/", href)
-        if _absolute_portal_url(base_url, href) or not absolute.startswith(
+        if unquote(urlparse(absolute).path).rstrip("/") == "/dateiverteilung.php" or not absolute.startswith(
             ("http://", "https://")
         ):
             continue

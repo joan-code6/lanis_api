@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import requests
 from fastapi import HTTPException
 
 from api import api as api_module
@@ -400,8 +401,11 @@ def test_download_response_preserves_filename_and_closes_before_stream_start():
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "Pers%C3%B6nlich%20_neu_.pdf" in response.headers["content-disposition"]
-    asyncio.run(response.background())
     assert closed == [True]
+    async def consume():
+        return b"".join([chunk async for chunk in response.body_iterator])
+    assert asyncio.run(consume()) == b"%PDF-test"
+    asyncio.run(response.background())
 
 
 def test_top_level_download_fragment_has_a_stable_container():
@@ -413,3 +417,30 @@ def test_top_level_download_fragment_has_a_stable_container():
 def test_empty_recipient_page_never_returns_navigation_as_distributions():
     html = '<nav><a href="dateiverteilung.php">Dateiverteilung</a></nav><div id="content"><h1>Dateiverteilung</h1><div class="alert alert-error">Aktuell stehen keine Dateien zur Verfügung.</div></div>'
     assert parse_dateiverteilung_html(html, BASE_URL) == []
+
+
+def test_related_links_exclude_all_applet_controls():
+    items = parse_dateiverteilung_html(
+        '<article><h2>Notice</h2>'
+        '<a href="/dateiverteilung.php?a=delete&amp;id=7">Delete</a>'
+        '<a href="/dateiverteilung.php?a=admin">Manage</a>'
+        '<a href="/dateiverteilung.php?a=download&amp;f=1">File</a>'
+        '<a href="https://example.edu/help">Help</a></article>', BASE_URL)
+    assert items[0]["links"] == [{"label": "Help", "url": "https://example.edu/help"}]
+
+
+@pytest.mark.parametrize("oversized", [False, True])
+def test_download_buffer_failure_closes_upstream(monkeypatch, oversized):
+    closed = []
+    def stream():
+        yield b"1234"
+        raise requests.ConnectionError("interrupted")
+    auth = AuthSession(client=SimpleNamespace(dateiverteilung_download_file=lambda url: {
+        "success": True, "stream": stream(), "close": lambda: closed.append(True),
+    }), user_id="test-user", school_id="test-school", username="test")
+    if oversized:
+        monkeypatch.setattr(api_module, "MAX_DATEISPEICHER_DOWNLOAD_BYTES", 3)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(api_module.download_dateiverteilung_file("url", auth=auth))
+    assert error.value.status_code == (413 if oversized else 502)
+    assert closed == [True]
