@@ -370,3 +370,30 @@ def test_login_response_host_is_still_rejected():
         'https://login.schulportal.hessen.de/')
     assert result["success"] is False
     assert result["error_kind"] == 'authentication'
+
+
+@pytest.mark.parametrize("status_fails", [False, True])
+def test_card_actions_never_become_supplemental_links(status_fails):
+    html = ('<div class="conference-room" data-room-id="card-1"><h2>Room</h2>'
+            '<a class="btn btn-success hidden" href="https://example.edu/hidden">Raum betreten</a>'
+            '<a role="button" href="https://example.edu/wait">Raum nicht offen</a>'
+            '<a class="btn" hidden href="https://example.edu/other">Other action</a>'
+            '<a href="https://example.edu/material">Material</a></div>')
+    parsed = parse_videokonferenz_overview(html)
+    room = parsed["rooms"][0]
+    assert room["status"] == "waiting"
+    assert room["join_url"] == "https://example.edu/wait"
+    assert room["links"] == [{"label": "Material", "url": "https://example.edu/material"}]
+    def get(url, **kwargs):
+        if kwargs.get("params") and status_fails:
+            raise requests.Timeout("status unavailable")
+        return SimpleNamespace(status_code=200, text='[]' if kwargs.get("params") else html,
+                               url=url, raise_for_status=lambda: None)
+    result = videokonferenz_get_rooms(SimpleNamespace(logged_in=True,
+        BASE_START_URL="https://start.schulportal.hessen.de", session=SimpleNamespace(get=get)))
+    room = result["rooms"][0]
+    assert result["status_live"] is not status_fails
+    assert room["can_join"] is False
+    assert room["links"] == [{"label": "Material", "url": "https://example.edu/material"}]
+    if status_fails:
+        assert room["join_url"] is None

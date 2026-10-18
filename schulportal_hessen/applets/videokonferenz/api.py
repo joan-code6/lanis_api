@@ -90,18 +90,30 @@ def _teachers(cell: Any) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
-def _links(cell: Any, source_url: str, action_link: Any = None) -> list[dict[str, str]]:
+def _links(cell: Any, source_url: str, action_links: list[Any] | None = None) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     if not cell:
         return result
     for link in cell.select("a[href]"):
-        if action_link is not None and link is action_link:
+        if any(link is action for action in (action_links or [])):
             continue
         href = _safe_url(str(link.get("href") or ""), source_url)
         if not href:
             continue
         result.append({"label": _text(link) or "Link öffnen", "url": href})
     return result
+
+
+def _visible_action(action_nodes: list[Any]) -> Any:
+    return next(
+        (
+            node for node in action_nodes
+            if "hidden" not in (node.get("class") or [])
+            and not node.has_attr("hidden")
+            and "display:none" not in str(node.get("style") or "").replace(" ", "").casefold()
+        ),
+        action_nodes[0] if action_nodes else None,
+    )
 
 
 def _parse_table(table: Any, source_url: str) -> list[dict[str, Any]]:
@@ -138,16 +150,7 @@ def _parse_table(table: Any, source_url: str) -> list[dict[str, Any]]:
             continue
         action_cell = cells[action_index]
         action_nodes = action_cell.select("a[href], [data-href], [data-url], button")
-        action_node = next(
-            (
-                node
-                for node in action_nodes
-                if "hidden" not in (node.get("class") or [])
-                and not node.has_attr("hidden")
-                and "display:none" not in str(node.get("style") or "").replace(" ", "").casefold()
-            ),
-            action_nodes[0] if action_nodes else None,
-        )
+        action_node = _visible_action(action_nodes)
         action_target = ""
         if action_node:
             action_target = str(
@@ -183,9 +186,10 @@ def _parse_cards(soup: BeautifulSoup, source_url: str) -> list[dict[str, Any]]:
     for position, card in enumerate(soup.select(selectors)):
         name_node = card.select_one(".caption, .room-name, .panel-title, h2, h3, h4")
         name = _text(name_node)
-        action_node = card.select_one(
+        action_nodes = card.select(
             "a[href].btn, a[href][role='button'], [data-href], [data-url], button"
         )
+        action_node = _visible_action(action_nodes)
         if not name:
             continue
         join_url = _safe_url(
@@ -207,7 +211,7 @@ def _parse_cards(soup: BeautifulSoup, source_url: str) -> list[dict[str, Any]]:
                 "status_label": action_text or "Status unbekannt",
                 "join_url": join_url,
                 "can_join": bool(join_url and _status(action_text, action_node, join_url) == "open"),
-                "links": _links(card, source_url, action_node),
+                "links": _links(card, source_url, action_nodes),
             }
         )
     return rooms
