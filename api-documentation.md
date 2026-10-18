@@ -978,8 +978,14 @@ response contains an individual status for every file.
 #### DELETE `/meinunterricht/submissions/file`
 
 Delete an uploaded file using multipart form fields `course_id`, `entry_id`,
-`upload_id`, `file_index`, and `password`. The password is encrypted by the
-backend for the Schulportal request and is not persisted.
+`upload_id`, and `file_index`, authenticated with `X-Session-Token`. The backend
+reuses the account's encrypted login credentials for Schulportal's required
+password check, so clients do not need to ask for the password again. Missing
+stored credentials return HTTP 401 before attempting deletion.
+
+An optional `password` field remains supported for older clients. An explicitly
+supplied password is encrypted for the Schulportal request and is not persisted
+by this endpoint.
 
 #### GET `/meinunterricht/submissions/file/{file_ref}`
 
