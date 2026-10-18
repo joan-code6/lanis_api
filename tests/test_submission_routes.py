@@ -453,3 +453,78 @@ def test_redirected_portal_login_is_not_cached_or_served_as_a_file(monkeypatch, 
             app.dependency_overrides.pop(api_module.client_dependency, None)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["upload", "delete"])
+@pytest.mark.parametrize("failure", ["redirect", "login-form", "http-401"])
+def test_submission_mutations_evict_expired_clients_without_retrying(monkeypatch, kind, failure):
+    import httpx
+    import requests
+
+    from schulportal_hessen.applets.mein_unterricht import submissions
+
+    async def scenario():
+        calls, evicted, invalidated, streams = [], [], [], []
+
+        def post(url, **kwargs):
+            calls.append(kwargs)
+            streams.extend(item[1][1] for item in kwargs.get("files", []))
+            response = requests.Response()
+            response.status_code = 401 if failure == "http-401" else 200
+            response.url = "https://login.schulportal.hessen.de/" if failure == "redirect" else url
+            response.encoding = "utf-8"
+            response._content = b'<html><form><input name="user2"><input type="password"></form></html>'
+            return response
+
+        portal = SimpleNamespace(
+            logged_in=True, BASE_START_URL="https://example.invalid",
+            session=SimpleNamespace(post=post),
+            cryptor=SimpleNamespace(authenticated=True, encrypt=lambda _password: "encrypted-password"),
+        )
+        portal.meinunterricht_upload_files = lambda *args: submissions.meinunterricht_upload_files(portal, *args)
+        portal.meinunterricht_delete_uploaded_file = lambda *args: submissions.meinunterricht_delete_uploaded_file(portal, *args)
+        auth = SimpleNamespace(user_id="mutation-student", session_id="test-session", client=portal)
+
+        async def authenticate(_token):
+            return auth
+
+        async def evict(user_id, client):
+            evicted.append((user_id, client))
+
+        async def invalidate(user_id, endpoint):
+            invalidated.append((user_id, endpoint))
+
+        async def stored(user_id):
+            return {"user_id": user_id, "password": "stored-test-password"}
+
+        monkeypatch.setattr(api_module, "local_auth_dependency", authenticate)
+        monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", stored)
+        monkeypatch.setattr(sessions, "invalidate_schulportal_client", evict)
+        monkeypatch.setattr(sessions, "invalidate_endpoint_cache", invalidate)
+        app.dependency_overrides[api_module.client_dependency] = lambda: auth
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test",
+                headers={"X-Session-Token": "test-token"},
+            ) as client:
+                data = {"course_id": "42", "entry_id": "7", "upload_id": "9"}
+                if kind == "upload":
+                    response = await client.post("/meinunterricht/submissions/upload", data=data,
+                                                 files={"files": ("work.pdf", b"pdf", "application/pdf")})
+                else:
+                    response = await client.request("DELETE", "/meinunterricht/submissions/file",
+                                                    data={**data, "file_index": "123"})
+            assert response.status_code == 401
+            assert evicted == [(auth.user_id, portal)]
+            assert invalidated == []
+            assert len(calls) == 1  # Never automatically repeat a mutation.
+            assert all(stream.closed for stream in streams)
+            if kind == "upload":
+                assert len(streams) == 1
+            else:
+                assert calls[0]["data"]["pw"] == "encrypted-password"
+            assert "stored-test-password" not in response.text
+        finally:
+            app.dependency_overrides.pop(api_module.client_dependency, None)
+
+    asyncio.run(scenario())

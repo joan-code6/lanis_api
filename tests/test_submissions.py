@@ -7,6 +7,7 @@ import requests
 from schulportal_hessen.applets.mein_unterricht.submissions import (
     _decode_ref,
     _encode_ref,
+    meinunterricht_delete_uploaded_file,
     meinunterricht_download_submission_file,
     meinunterricht_get_submission,
     meinunterricht_get_submissions,
@@ -376,3 +377,25 @@ def test_submission_download_rejects_login_html_but_allows_real_attachments(
     else:
         assert result["status_code"] == 401
         assert "content" not in result
+
+
+@pytest.mark.parametrize("kind", ["upload", "delete"])
+def test_submission_mutations_require_a_logged_in_client(kind):
+    client = SimpleNamespace(logged_in=False)
+    if kind == "upload":
+        result = meinunterricht_upload_files(client, "42", "7", "9", [{"content": b"pdf"}])
+    else:
+        result = meinunterricht_delete_uploaded_file(client, "42", "7", "9", "123", "test-password")
+    assert result["success"] is False
+    assert result["status_code"] == 401
+
+
+@pytest.mark.parametrize("code", ["-1", "-2", "0", "1"])
+def test_submission_deletion_keeps_portal_result_codes(monkeypatch, code):
+    client = _Client()
+    client.cryptor = SimpleNamespace(authenticated=True, encrypt=lambda _password: "encrypted-password")
+    monkeypatch.setattr(client.session, "post", lambda *args, **kwargs: _Response(code))
+    result = meinunterricht_delete_uploaded_file(client, "42", "7", "9", "123", "test-password")
+    assert result["code"] == code
+    assert result["success"] is (code == "1")
+    assert "status_code" not in result

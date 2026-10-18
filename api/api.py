@@ -3635,6 +3635,9 @@ async def meinunterricht_submission_upload(
     finally:
         for file in files:
             await file.close()
+    if not result.get("success") and result.get("status_code") == 401:
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(status_code=401, detail=result.get("error", "Schulportal session expired"))
     if result.get("success"):
         await asyncio.gather(
             sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions"),
@@ -3674,6 +3677,9 @@ async def meinunterricht_submission_delete_file(
         file_index,
         password,
     )
+    if not result.get("success") and result.get("status_code") == 401:
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(status_code=401, detail=result.get("error", "Schulportal session expired"))
     if result.get("success"):
         await asyncio.gather(
             sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions"),

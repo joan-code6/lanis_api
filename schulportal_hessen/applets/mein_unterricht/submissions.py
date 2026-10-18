@@ -464,7 +464,7 @@ def meinunterricht_upload_files(
     self, course_id: str, entry_id: str, upload_id: str, files: list[dict[str, Any]]
 ) -> dict[str, Any]:
     if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
+        return {"success": False, "error": "Not logged in", "status_code": 401}
     if not files or len(files) > 5:
         return {"success": False, "error": "Between one and five files are required"}
     try:
@@ -490,6 +490,8 @@ def meinunterricht_upload_files(
             headers={"Accept": "*/*"},
         )
         response.raise_for_status()
+        if _is_login_response(response, response.text):
+            return {"success": False, "error": "Schulportal session expired", "status_code": 401}
         statuses = parse_upload_statuses(response.text)
         if not statuses and response.text.strip() != "1":
             return {"success": False, "error": "Schulportal returned no upload status"}
@@ -510,7 +512,10 @@ def meinunterricht_upload_files(
             ),
         }
     except requests.RequestException as exc:
-        return {"success": False, "error": f"Failed to upload files: {exc}"}
+        return {
+            "success": False, "error": f"Failed to upload files: {exc}",
+            "status_code": 401 if getattr(exc.response, "status_code", None) == 401 else 502,
+        }
     except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
         return {"success": False, "error": f"Failed to upload files: {exc}"}
 
@@ -524,7 +529,7 @@ def meinunterricht_delete_uploaded_file(
     password: str,
 ) -> dict[str, Any]:
     if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
+        return {"success": False, "error": "Not logged in", "status_code": 401}
     if not password:
         return {"success": False, "error": "Password is required"}
     try:
@@ -544,6 +549,8 @@ def meinunterricht_delete_uploaded_file(
             headers={"Accept": "*/*", "X-Requested-With": "XMLHttpRequest"},
         )
         response.raise_for_status()
+        if _is_login_response(response, response.text):
+            return {"success": False, "error": "Schulportal session expired", "status_code": 401}
         code = response.text.strip()
         messages = {
             "-1": "Wrong password",
@@ -557,7 +564,10 @@ def meinunterricht_delete_uploaded_file(
             "message": messages.get(code, "Unknown deletion result"),
         }
     except requests.RequestException as exc:
-        return {"success": False, "error": f"Failed to delete file: {exc}"}
+        return {
+            "success": False, "error": f"Failed to delete file: {exc}",
+            "status_code": 401 if getattr(exc.response, "status_code", None) == 401 else 502,
+        }
     except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
         return {"success": False, "error": f"Failed to delete file: {exc}"}
 

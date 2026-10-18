@@ -991,6 +991,11 @@ by this endpoint.
 
 Download a submission file through the authenticated backend session.
 
+Submission reads, downloads, uploads, and deletions return HTTP 401 when
+Schulportal returns an expired-session login page or an authentication failure.
+The backend discards the expired portal client. Uploads and deletions are not
+automatically retried.
+
 ---
 
 ### Calendar (Kalender)
