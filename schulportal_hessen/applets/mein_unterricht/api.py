@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse
 import requests
 
 from schulportal_hessen.tools.cryptor import Cryptor
-from .submissions import extract_entry_uploads, meinunterricht_get_submissions as _get_submissions
+from .submissions import _is_login_response, extract_entry_uploads, meinunterricht_get_submissions as _get_submissions
 
 
 def _make_absolute_url(base_url: str, url: str) -> str:
@@ -762,6 +762,20 @@ def meinunterricht_download_file(self, url: str) -> Dict[str, Any]:
         download_url = _make_absolute_url(self.BASE_START_URL, url)
         response = self.session.get(download_url)
         response.raise_for_status()
+
+        disposition = response.headers.get("Content-Disposition", "")
+        has_attachment = "attachment" in disposition.lower()
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+        prefix = response.content[:8192].decode("utf-8", errors="ignore").lstrip("\ufeff \t\r\n").lower()
+        looks_like_html = (
+            "text/html" in content_type
+            or "application/xhtml+xml" in content_type
+            or bool(re.match(r"<(?:!doctype\s+html|html|head|body|form)\b", prefix))
+        )
+        if _is_login_response(response, "" if has_attachment else prefix) or (
+            looks_like_html and not has_attachment
+        ):
+            return {"success": False, "error": "Schulportal session expired or returned a login page", "status_code": 401}
 
         filename = _extract_filename(response.headers.get("Content-Disposition"), download_url)
         return {

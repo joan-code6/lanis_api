@@ -3502,6 +3502,9 @@ async def meinunterricht_submissions(
         auth.user_id, endpoint, advance=refresh
     )
     result = await run_in_threadpool(auth.client.meinunterricht_get_submissions)
+    if not result.get("success") and result.get("status_code") == 401:
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(status_code=401, detail=result.get("error", "Schulportal session expired"))
     if result.get("success"):
         await sessions.set_cache_if_current_version(
             auth.user_id, endpoint, result, "", cache_version
@@ -3559,6 +3562,9 @@ async def meinunterricht_submission(
     detail = await run_in_threadpool(
         auth.client.meinunterricht_get_submission, detail_ref
     )
+    if not detail.get("success") and detail.get("status_code") == 401:
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(status_code=401, detail=detail.get("error", "Schulportal session expired"))
     result: Dict[str, object] = (
         {
             "success": True,

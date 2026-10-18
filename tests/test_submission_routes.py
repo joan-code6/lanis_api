@@ -367,3 +367,89 @@ def test_submission_download_preserves_unicode_filename_without_double_encoding(
     ))
     assert result.body == b"pdf"
     assert result.headers["Content-Disposition"] == "attachment; filename*=UTF-8''Pr%C3%BCfung.pdf"
+
+
+@pytest.mark.parametrize("kind", ["list", "detail", "file"])
+def test_redirected_portal_login_is_not_cached_or_served_as_a_file(monkeypatch, kind):
+    import json
+
+    import httpx
+    import requests
+
+    from api import outage_cache
+    from schulportal_hessen.applets.mein_unterricht import api as course_api
+    from schulportal_hessen.applets.mein_unterricht import submissions
+
+    async def scenario():
+        manager = api_module.AuthManager()
+        store = outage_cache.SnapshotStore()
+        monkeypatch.setattr(api_module, "sessions", manager)
+        monkeypatch.setattr(api_module, "snapshots", store)
+        monkeypatch.setattr(outage_cache, "snapshots", store)
+        expired = False
+        evicted = []
+        base_url = "https://example.invalid"
+
+        def get(url, **_kwargs):
+            response = requests.Response()
+            response.status_code = 200
+            response.encoding = "utf-8"
+            response.url = "https://login.schulportal.hessen.de/" if expired else url
+            if expired:
+                response.headers["Content-Type"] = "text/html"
+                response._content = b'<html><form><input name="user2"><input type="password"></form></html>'
+            elif kind == "file":
+                response.headers["Content-Type"] = "application/pdf"
+                response._content = b"%PDF-1.7"
+            else:
+                response._content = b'<div id="content"><h1>Current assignment</h1></div>'
+            return response
+
+        portal = SimpleNamespace(logged_in=True, BASE_START_URL=base_url, session=SimpleNamespace(get=get))
+        portal.meinunterricht_get_submissions = lambda: submissions.meinunterricht_get_submissions(portal)
+        portal.meinunterricht_get_submission = lambda ref: submissions.meinunterricht_get_submission(portal, ref)
+        portal.meinunterricht_download_file = lambda url: course_api.meinunterricht_download_file(portal, url)
+        portal.meinunterricht_download_submission_file = lambda ref: submissions.meinunterricht_download_submission_file(portal, ref)
+        auth = SimpleNamespace(user_id="login-redirect-student", session_id="test-session", client=portal)
+
+        async def authenticate(_token):
+            return auth
+
+        async def evict(user_id, client):
+            evicted.append((user_id, client))
+
+        monkeypatch.setattr(api_module, "local_auth_dependency", authenticate)
+        monkeypatch.setattr(manager, "invalidate_schulportal_client", evict)
+        path = "/meinunterricht/submissions"
+        endpoint, params = path, ""
+        if kind == "detail":
+            ref = submissions._encode_ref("meinunterricht.php?a=sus_abgabe&b=42&e=7&id=9", base_url)
+            path += f"/{ref}"
+            endpoint += "/detail"
+            params = api_module._make_param_key({"detail_ref": ref})
+        elif kind == "file":
+            ref = submissions._encode_ref("dateiverteilung.php?a=download&f=123", base_url)
+            path += f"/file/{ref}"
+        app.dependency_overrides[api_module.client_dependency] = lambda: auth
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test",
+                headers={"X-Session-Token": "test-token"},
+            ) as client:
+                good = await client.get(path)
+                assert good.status_code == 200
+                expired = True
+                rejected = await client.get(path, params={"refresh": "true"})
+            assert rejected.status_code == 401
+            assert "Content-Disposition" not in rejected.headers
+            assert rejected.headers.get("X-LANIS-Cache") != "stale"
+            assert evicted == [(auth.user_id, portal)]
+            if kind != "file":
+                assert await manager.get_cached(auth.user_id, endpoint, params) == good.json()
+                key = (auth.user_id, path, ())
+                saved = store.get(key, store.version(auth.user_id, path))
+                assert json.loads(saved.body) == good.json()
+        finally:
+            app.dependency_overrides.pop(api_module.client_dependency, None)
+
+    asyncio.run(scenario())

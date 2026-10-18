@@ -2,6 +2,7 @@ import io
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 from schulportal_hessen.applets.mein_unterricht.submissions import (
     _decode_ref,
@@ -16,6 +17,18 @@ from schulportal_hessen.applets.mein_unterricht.submissions import (
 )
 
 BASE_URL = "https://example.invalid"
+
+LOGIN_HTML = '<html><form><input name="user2"><input type="password" name="password"></form></html>'
+
+
+def _portal_response(body: str, url: str, headers=None, status_code=200):
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = url
+    response._content = body.encode("utf-8")
+    response.encoding = "utf-8"
+    response.headers.update(headers or {})
+    return response
 
 
 SUMMARY_HTML = """
@@ -293,3 +306,73 @@ def test_six_files_are_rejected_before_contacting_portal(monkeypatch) -> None:
         client, "42", "7", "9", [{"filename": f"{i}.pdf", "content": b"pdf"} for i in range(6)]
     )
     assert result["success"] is False
+
+
+@pytest.mark.parametrize("kind", ["list", "detail"])
+@pytest.mark.parametrize("url,html,status_code", [
+    ("https://login.schulportal.hessen.de/?i=1234", "<html>Anmelden</html>", 200),
+    (f"{BASE_URL}/login.php", "<html>Anmelden</html>", 200),
+    (f"{BASE_URL}/meinunterricht.php", LOGIN_HTML, 200),
+    (f"{BASE_URL}/meinunterricht.php", "Unauthorized", 401),
+])
+def test_submission_reads_reject_login_responses(monkeypatch, kind, url, html, status_code):
+    client = _Client()
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: _portal_response(
+        html, url, status_code=status_code,
+    ))
+    if kind == "list":
+        result = meinunterricht_get_submissions(client)
+    else:
+        result = meinunterricht_get_submission(client, _encode_ref(
+            "meinunterricht.php?a=sus_abgabe&b=42&e=7&id=9", BASE_URL,
+        ))
+    assert result["success"] is False
+    assert result["status_code"] == 401
+    assert "submissions" not in result
+    assert "title" not in result
+
+
+def test_submission_detail_allows_deletion_password_field(monkeypatch):
+    client = _Client()
+    html = DETAIL_HTML + '<form><input type="password" name="password"></form>'
+    monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: _portal_response(
+        html, f"{BASE_URL}/meinunterricht.php",
+    ))
+    result = meinunterricht_get_submission(client, _encode_ref(
+        "meinunterricht.php?a=sus_abgabe&b=42&e=7&id=9", BASE_URL,
+    ))
+    assert result["success"] is True
+    assert result["title"] == "Testabgabe"
+
+
+@pytest.mark.parametrize("body,headers,url,success", [
+    (LOGIN_HTML, {"Content-Type": "text/html"}, f"{BASE_URL}/dateiverteilung.php", False),
+    (LOGIN_HTML, {"Content-Type": "application/octet-stream"}, f"{BASE_URL}/dateiverteilung.php", False),
+    ("<html>Anmelden</html>", {}, "https://login.schulportal.hessen.de/", False),
+    ("<div>" + LOGIN_HTML + "</div>", {}, f"{BASE_URL}/dateiverteilung.php", False),
+    ("<html>Arbeitsblatt</html>", {"Content-Type": "text/html", "Content-Disposition": 'attachment; filename="work.html"'}, f"{BASE_URL}/dateiverteilung.php", True),
+    (LOGIN_HTML, {"Content-Type": "text/html", "Content-Disposition": 'attachment; filename="login-exercise.html"'}, f"{BASE_URL}/dateiverteilung.php", True),
+    ("%PDF-1.7", {"Content-Type": "application/pdf"}, f"{BASE_URL}/dateiverteilung.php", True),
+])
+def test_submission_download_rejects_login_html_but_allows_real_attachments(
+    body, headers, url, success
+):
+    from schulportal_hessen.applets.mein_unterricht.api import (
+        meinunterricht_download_file,
+    )
+
+    response = _portal_response(body, url, headers)
+    client = SimpleNamespace(
+        logged_in=True, BASE_START_URL=BASE_URL,
+        session=SimpleNamespace(get=lambda _url: response),
+    )
+    client.meinunterricht_download_file = lambda ref: meinunterricht_download_file(client, ref)
+    result = meinunterricht_download_submission_file(client, _encode_ref(
+        "dateiverteilung.php?a=download&f=123", BASE_URL,
+    ))
+    assert result["success"] is success
+    if success:
+        assert result["content"] == body.encode("utf-8")
+    else:
+        assert result["status_code"] == 401
+        assert "content" not in result

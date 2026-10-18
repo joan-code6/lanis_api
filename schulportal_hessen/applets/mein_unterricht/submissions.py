@@ -397,6 +397,25 @@ def _ensure_cryptor(client: Any) -> Cryptor:
     return client.cryptor
 
 
+def _is_login_response(response: Any, html: str = "") -> bool:
+    """Recognize a followed login redirect or a portal login form."""
+    from bs4 import BeautifulSoup
+
+    url = urlparse(str(getattr(response, "url", "") or ""))
+    if url.hostname == "login.schulportal.hessen.de" or re.search(
+        r"(?:^|/)login(?:\.php)?/?$", url.path, re.IGNORECASE
+    ):
+        return True
+    if not html:
+        return False
+    soup = BeautifulSoup(html, "html.parser")
+    return any(
+        form.select_one('input[type="password"]') is not None
+        and form.select_one('input[name="user"], input[name="user2"], input[name="username"]') is not None
+        for form in soup.select("form")
+    )
+
+
 def meinunterricht_get_submissions(self) -> dict[str, Any]:
     if not self.logged_in:
         return {"success": False, "error": "Not logged in", "status_code": 401}
@@ -405,28 +424,38 @@ def meinunterricht_get_submissions(self) -> dict[str, Any]:
             f"{self.BASE_START_URL}/meinunterricht.php", params={"a": "sus_abgaben"}
         )
         response.raise_for_status()
+        if _is_login_response(response, response.text):
+            return {"success": False, "error": "Schulportal session expired", "status_code": 401}
         return {
             "success": True,
             "submissions": parse_submission_summaries(response.text, self.BASE_START_URL),
         }
     except requests.RequestException as exc:
-        return {"success": False, "error": f"Failed to fetch submissions: {exc}"}
+        return {
+            "success": False, "error": f"Failed to fetch submissions: {exc}",
+            "status_code": 401 if getattr(exc.response, "status_code", None) == 401 else 502,
+        }
     except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
         return {"success": False, "error": f"Failed to fetch submissions: {exc}"}
 
 
 def meinunterricht_get_submission(self, detail_ref: str) -> dict[str, Any]:
     if not self.logged_in:
-        return {"success": False, "error": "Not logged in"}
+        return {"success": False, "error": "Not logged in", "status_code": 401}
     try:
         url = _decode_ref(detail_ref, self.BASE_START_URL)
         response = self.session.get(url)
         response.raise_for_status()
+        if _is_login_response(response, response.text):
+            return {"success": False, "error": "Schulportal session expired", "status_code": 401}
         return parse_submission_detail(
             response.text, self.BASE_START_URL, detail_ref, source_url=url
         )
     except requests.RequestException as exc:
-        return {"success": False, "error": f"Failed to fetch submission: {exc}"}
+        return {
+            "success": False, "error": f"Failed to fetch submission: {exc}",
+            "status_code": 401 if getattr(exc.response, "status_code", None) == 401 else 502,
+        }
     except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
         return {"success": False, "error": f"Failed to fetch submission: {exc}"}
 
