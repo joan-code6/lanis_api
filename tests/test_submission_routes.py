@@ -94,6 +94,68 @@ def test_submission_delete_invalidates_submission_caches(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.parametrize("credentials", [
+    {"user_id": "student", "password": "stored-test-password"},
+    None,
+    {"user_id": "another-student", "password": "other-test-password"},
+    {"user_id": "student", "password": ""},
+])
+def test_submission_delete_without_password_uses_authenticated_account_credentials(
+    monkeypatch, credentials
+) -> None:
+    import httpx
+
+    async def scenario():
+        calls, lookups, invalidated = [], [], []
+
+        def delete(*args):
+            calls.append(args)
+            return {"success": True, "code": "1"}
+
+        auth = SimpleNamespace(
+            user_id="student", session_id="test-session",
+            client=SimpleNamespace(meinunterricht_delete_uploaded_file=delete),
+        )
+
+        async def authenticate(_token):
+            return auth
+
+        async def stored(user_id):
+            lookups.append(user_id)
+            return credentials
+
+        async def invalidate(user_id, endpoint):
+            invalidated.append((user_id, endpoint))
+
+        monkeypatch.setattr(api_module, "local_auth_dependency", authenticate)
+        monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", stored)
+        monkeypatch.setattr(sessions, "invalidate_endpoint_cache", invalidate)
+        app.dependency_overrides[api_module.client_dependency] = lambda: auth
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test",
+                headers={"X-Session-Token": "test-token"},
+            ) as client:
+                response = await client.request("DELETE", "/meinunterricht/submissions/file", data={
+                    "course_id": "42", "entry_id": "7", "upload_id": "9", "file_index": "123",
+                })
+            assert lookups == ["student"]
+            if credentials and credentials.get("password") and credentials["user_id"] == "student":
+                assert response.status_code == 200
+                assert response.json() == {"success": True, "code": "1"}
+                assert calls == [("42", "7", "9", "123", "stored-test-password")]
+                assert len(invalidated) == 4
+                assert "stored-test-password" not in response.text
+            else:
+                assert response.status_code == 401
+                assert calls == []
+                assert invalidated == []
+        finally:
+            app.dependency_overrides.pop(api_module.client_dependency, None)
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("kind", ["list", "detail", "course"])
 def test_submission_mutation_rejects_inflight_cache_writes(monkeypatch, kind) -> None:
     async def scenario():

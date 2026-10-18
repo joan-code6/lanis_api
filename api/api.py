@@ -3645,9 +3645,21 @@ async def meinunterricht_submission_delete_file(
     entry_id: str = Form(..., min_length=1, max_length=200),
     upload_id: str = Form(..., min_length=1, max_length=200),
     file_index: str = Form(..., min_length=1, max_length=20),
-    password: str = Form(..., min_length=1, max_length=500),
+    password: Optional[str] = Form(None, min_length=1, max_length=500),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
+    # Schulportal still requires a password for this action. Reuse the encrypted
+    # credentials already held for session restoration instead of asking the
+    # browser to collect them again. Keep explicit passwords for older clients.
+    if password is None:
+        persisted = await get_refresh_token_by_user_id(auth.user_id)
+        if (
+            not persisted
+            or canonicalize_user_id(persisted["user_id"]) != auth.user_id
+            or not persisted.get("password")
+        ):
+            raise HTTPException(status_code=401, detail="Please log in again")
+        password = persisted["password"]
     result = await run_in_threadpool(
         auth.client.meinunterricht_delete_uploaded_file,
         course_id,
