@@ -397,6 +397,8 @@ class DashboardPreferencesRequest(BaseModel):
     pinned_modules: Optional[List[str]] = None
     hidden_modules: Optional[List[str]] = None
     view_mode: Optional[Literal["grid", "list"]] = None
+    show_search: Optional[bool] = None
+    show_subtitle: Optional[bool] = None
     notifications_enabled: Optional[bool] = None
     notification_messages_enabled: Optional[bool] = None
     notification_native_enabled: Optional[bool] = None
@@ -480,6 +482,7 @@ class FeedbackSubmissionRequest(BaseModel):
 class TimetablePreferencesRequest(BaseModel):
     view_mode: Optional[Literal["rolling", "week"]] = None
     layout_mode: Optional[Literal["cards", "compact"]] = None
+    show_substitutions: Optional[bool] = None
     show_homework: Optional[bool] = None
     show_exams: Optional[bool] = None
     class_colors: Optional[Dict[str, str]] = None
@@ -1351,13 +1354,14 @@ app.add_middleware(
         "http://localhost:4173",
         "http://localhost:5173",
         "https://lanis.arg-server.de",
+        "https://lanis-ui.bennetjoanwegener.workers.dev",
         *(
             [os.getenv("LANIS_ADMIN_ORIGIN").rstrip("/")]
             if os.getenv("LANIS_ADMIN_ORIGIN")
             else []
         ),
     ],
-    allow_origin_regex=r"^https://.*\.surge\.sh$|^https://.*\.appwrite\.network$|^http://(?:localhost|127\.0\.0\.1):\d+$|^http://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$",
+    allow_origin_regex=r"^https://(?:[a-z0-9]+-)*lanis-ui-preview\.bennetjoanwegener\.workers\.dev$|^https://.*\.surge\.sh$|^https://.*\.appwrite\.network$|^http://(?:localhost|127\.0\.0\.1):\d+$|^http://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2194,6 +2198,7 @@ async def get_timetable_view(
     plan_mode: Literal["personal", "all"] = "personal",
     week_type: Optional[Literal["A", "B"]] = None,
     refresh: bool = False,
+    show_substitutions: bool = True,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     """Resolve dates, custom lessons and substitutions using source response caches.
@@ -2211,59 +2216,60 @@ async def get_timetable_view(
     changes = []
     sources = []
     own_class = ""
-    try:
-        modules = await get_modules(auth=auth)
-        if not modules.get("success"):
-            raise ValueError("Module unavailable")
-        dsb_available = native_available = False
-        for module in modules.get("modules") or []:
-            label = f"{module.get('name', '')} {module.get('url', '')} {module.get('direct_url', '')}".lower()
-            is_dsb = "dsb" in label
-            dsb_available |= is_dsb
-            native_available |= not is_dsb and "vertretungsplan" in label
-        if native_available or dsb_available:
-            try:
-                preferences, _ = await get_user_preferences(auth.user_id)
-                own_class = str(
-                    (preferences.get("vertretungsplan") or {}).get("class_override") or ""
-                ).strip()
-                if not own_class:
-                    profile = await get_user_data(auth=auth)
-                    if not profile.get("success"):
-                        raise ValueError("Profile unavailable")
-                    own_class = vertretungsplan_notification_options(profile, {})["own_class"]
-            except Exception:
-                # Source loading can still succeed, including lessons that
-                # supply their own class. Never discard both sources here.
-                sources.append({"name": "Klassenzuordnung", "error": True})
-        for name, enabled, fetch, normalize in (
-            (
-                "Schulportal",
-                native_available,
-                get_vertretungsplan,
-                native_substitutions,
-            ),
-            (
-                "DSB",
-                dsb_available,
-                get_school_dsb_plan,
-                lambda plan: dsb_substitutions(plan.get("tables") or []),
-            ),
-        ):
-            if not enabled:
-                continue
-            try:
-                plan = await fetch(refresh=refresh, auth=auth)
-                if not plan.get("success") or plan.get("available") is False:
-                    raise ValueError("Plan unavailable")
-                changes.extend(normalize(plan))
-                sources.append(
-                    {"name": name, "error": False, "updated": plan.get("last_updated")}
-                )
-            except Exception:
-                sources.append({"name": name, "error": True})
-    except Exception:
-        sources.append({"name": "Vertretungspläne", "error": True})
+    if show_substitutions:
+        try:
+            modules = await get_modules(auth=auth)
+            if not modules.get("success"):
+                raise ValueError("Module unavailable")
+            dsb_available = native_available = False
+            for module in modules.get("modules") or []:
+                label = f"{module.get('name', '')} {module.get('url', '')} {module.get('direct_url', '')}".lower()
+                is_dsb = "dsb" in label
+                dsb_available |= is_dsb
+                native_available |= not is_dsb and "vertretungsplan" in label
+            if native_available or dsb_available:
+                try:
+                    preferences, _ = await get_user_preferences(auth.user_id)
+                    own_class = str(
+                        (preferences.get("vertretungsplan") or {}).get("class_override") or ""
+                    ).strip()
+                    if not own_class:
+                        profile = await get_user_data(auth=auth)
+                        if not profile.get("success"):
+                            raise ValueError("Profile unavailable")
+                        own_class = vertretungsplan_notification_options(profile, {})["own_class"]
+                except Exception:
+                    # Source loading can still succeed, including lessons that
+                    # supply their own class. Never discard both sources here.
+                    sources.append({"name": "Klassenzuordnung", "error": True})
+            for name, enabled, fetch, normalize in (
+                (
+                    "Schulportal",
+                    native_available,
+                    get_vertretungsplan,
+                    native_substitutions,
+                ),
+                (
+                    "DSB",
+                    dsb_available,
+                    get_school_dsb_plan,
+                    lambda plan: dsb_substitutions(plan.get("tables") or []),
+                ),
+            ):
+                if not enabled:
+                    continue
+                try:
+                    plan = await fetch(refresh=refresh, auth=auth)
+                    if not plan.get("success") or plan.get("available") is False:
+                        raise ValueError("Plan unavailable")
+                    changes.extend(normalize(plan))
+                    sources.append(
+                        {"name": name, "error": False, "updated": plan.get("last_updated")}
+                    )
+                except Exception:
+                    sources.append({"name": name, "error": True})
+        except Exception:
+            sources.append({"name": "Vertretungspläne", "error": True})
     result = resolve_timetable(
         timetable,
         changes,
