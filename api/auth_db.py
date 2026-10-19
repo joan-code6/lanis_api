@@ -96,7 +96,9 @@ DEFAULT_SIDEBAR_ORDER = [
     "search",
     "dashboard",
     "messages",
+    "videokonferenz",
     "dateispeicher",
+    "dateiverteilung",
     "vertretungsplan",
     "dsb",
     "courses",
@@ -121,6 +123,8 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
         "pinned_modules": [],
         "hidden_modules": [],
         "view_mode": "grid",
+        "show_search": True,
+        "show_subtitle": True,
         "notifications_enabled": True,
         "notification_messages_enabled": True,
         "notification_native_enabled": True,
@@ -131,6 +135,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     "timetable": {
         "view_mode": "rolling",
         "layout_mode": "cards",
+        "show_substitutions": True,
         "show_homework": True,
         "show_exams": True,
         "class_colors": {},
@@ -171,6 +176,13 @@ def _merge_nested_preferences(
 
 def _normalize_user_preferences(preferences: Dict[str, Any]) -> Dict[str, Any]:
     """Enforce invariants for persisted preference groups."""
+    sidebar = preferences.get("sidebar")
+    if isinstance(sidebar, dict) and isinstance(sidebar.get("order"), list):
+        # Saved orders predate newly supported modules. Preserve customization
+        # and dividers while appending missing defaults; hidden_items is separate.
+        order = list(dict.fromkeys(sidebar["order"]))
+        order.extend(item for item in DEFAULT_SIDEBAR_ORDER if item not in order)
+        sidebar["order"] = order
     dashboard = preferences.get("dashboard")
     if isinstance(dashboard, dict):
         hidden_modules = dashboard.get("hidden_modules", [])

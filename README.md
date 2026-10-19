@@ -39,6 +39,9 @@ The portal modules are referred to as applets because SPH is built on top of Moo
 - `stundenplan` — timetable data
 - `lerngruppen` — study groups
 - `oberstufenwahl` — student-facing elections and course choices
+- `videokonferenz` — current student video rooms and safe join links
+- `dateispeicher` — school file storage and downloads
+- `dateiverteilung` — targeted notices, personal files, and authenticated downloads
 - `school_list` — school names and IDs for login and school selection
 
 
@@ -166,6 +169,7 @@ keep navigation responsive.
 
 - **Session TTL:** 1 hour inactivity timeout per session
 - **Response cache:** 10 minutes for most endpoints
+- **Always fresh:** `/videokonferenz` is never response-cached because room links may be short-lived and user-bound
 - **Long cache (30 days):** `/modules`, `/apps`, `/benutzer`
 - **School list cache:** 2 days with 3-day auto-refresh
 - **File cache:** SHA-256 hashed, stored in `data/files/`

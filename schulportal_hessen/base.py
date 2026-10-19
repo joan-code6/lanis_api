@@ -293,6 +293,10 @@ class SchulportalHessenAPI:
                 "dateispeicher_search_files",
                 "dateispeicher_download_file",
             ],
+            "dateiverteilung.php": [
+                "dateiverteilung_get_overview",
+                "dateiverteilung_download_file",
+            ],
             "lerngruppen.php": ["lerngruppen_get_overview"],
             "benutzerverwaltung.php": ["benutzer_get_data"],
             "oberstufenwahl.php": [
@@ -300,6 +304,7 @@ class SchulportalHessenAPI:
                 "wahlen_get_form",
                 "wahlen_submit",
             ],
+            "videokonferenz.php": ["videokonferenz_get_rooms"],
         }
 
         for entry in entries:
@@ -642,6 +647,15 @@ class SchulportalHessenAPI:
         """Download a file from the native dateispeicher."""
         ...
 
+    # Dateiverteilung methods
+    def dateiverteilung_get_overview(self) -> Dict[str, Any]:
+        """Fetch targeted file distributions for the authenticated user."""
+        ...
+
+    def dateiverteilung_download_file(self, url: str) -> Dict[str, Any]:
+        """Download a file from the native Dateiverteilung."""
+        ...
+
     # Lerngruppen methods
     def lerngruppen_get_overview(self) -> Dict[str, Any]:
         """Fetch study groups and exam data (lerngruppen.php)."""
@@ -847,6 +861,11 @@ from .applets.vertretungsplan.api import vertretungsplan_get_plan
 
 SchulportalHessenAPI.vertretungsplan_get_plan = vertretungsplan_get_plan
 
+# Import and attach the Videokonferenz methods
+from .applets.videokonferenz.api import videokonferenz_get_rooms
+
+SchulportalHessenAPI.videokonferenz_get_rooms = videokonferenz_get_rooms
+
 # Import and attach the stundenplan methods
 from .applets.stundenplan.api import stundenplan_get_plan
 
@@ -864,6 +883,15 @@ SchulportalHessenAPI.dateispeicher_get_root = dateispeicher_get_root
 SchulportalHessenAPI.dateispeicher_get_node = dateispeicher_get_node
 SchulportalHessenAPI.dateispeicher_search_files = dateispeicher_search_files
 SchulportalHessenAPI.dateispeicher_download_file = dateispeicher_download_file
+
+# Import and attach the Dateiverteilung methods
+from .applets.dateiverteilung.api import (
+    dateiverteilung_get_overview,
+    dateiverteilung_download_file,
+)
+
+SchulportalHessenAPI.dateiverteilung_get_overview = dateiverteilung_get_overview
+SchulportalHessenAPI.dateiverteilung_download_file = dateiverteilung_download_file
 
 # Import and attach the lerngruppen methods
 from .applets.lerngruppen.api import lerngruppen_get_overview
