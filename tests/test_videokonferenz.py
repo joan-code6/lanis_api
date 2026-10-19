@@ -397,3 +397,18 @@ def test_card_actions_never_become_supplemental_links(status_fails):
     assert room["links"] == [{"label": "Material", "url": "https://example.edu/material"}]
     if status_fails:
         assert room["join_url"] is None
+
+
+@pytest.mark.parametrize("which", ["overview", "status"])
+@pytest.mark.parametrize("kind", ["form", "host"])
+def test_http_200_login_responses_invalidate_expired_sessions(which, kind):
+    response = VideoResponse('<form action="https://login.schulportal.hessen.de/login"><input name="user"></form>'
+                             if kind == "form" else '<h1>Sign in</h1>')
+    if kind == "host":
+        response.url = 'https://login.schulportal.hessen.de/'
+    session = VideoSession()
+    setattr(session, which, response)
+    result = videokonferenz_get_rooms(video_client(session))
+    assert result["success"] is False
+    assert result["error_kind"] == "authentication"
+    assert len(session.calls) == (1 if which == "overview" else 2)

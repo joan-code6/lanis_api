@@ -217,17 +217,21 @@ def _parse_cards(soup: BeautifulSoup, source_url: str) -> list[dict[str, Any]]:
     return rooms
 
 
+def _is_login_page(soup: BeautifulSoup, source_url: str) -> bool:
+    """Recognize authentication responses without rejecting ordinary login links."""
+    source_host = (urlsplit(source_url).hostname or "").casefold()
+    return source_host == "login.schulportal.hessen.de" or bool(
+        soup.select_one("form[action*='login']")
+    )
+
+
 def parse_videokonferenz_overview(
     html: str,
     source_url: str = "https://start.schulportal.hessen.de/videokonferenz.php",
 ) -> dict[str, Any]:
     """Parse the video-room list without exposing session data or page markup."""
     soup = BeautifulSoup(html or "", "html.parser")
-    source_host = (urlsplit(source_url).hostname or "").casefold()
-    if (
-        source_host == "login.schulportal.hessen.de"
-        or soup.select_one("form[action*='login']")
-    ):
+    if _is_login_page(soup, source_url):
         return {"success": False, "error": "Schulportal session expired", "error_kind": "authentication"}
 
     rooms: list[dict[str, Any]] = []
@@ -297,6 +301,11 @@ def videokonferenz_get_rooms(self: Any) -> dict[str, Any]:
             if 300 <= status_response.status_code < 400 or status_response.status_code in {401, 403}:
                 return {"success": False, "error": "Schulportal session expired", "error_kind": "authentication"}
             status_response.raise_for_status()
+            if _is_login_page(
+                BeautifulSoup(status_response.text or "", "html.parser"),
+                getattr(status_response, "url", f"{self.BASE_START_URL}/videokonferenz.php"),
+            ):
+                return {"success": False, "error": "Schulportal session expired", "error_kind": "authentication"}
             payload = json.loads(status_response.text)
             if not isinstance(payload, list) or any(
                 isinstance(value, bool) or not isinstance(value, (str, int))
