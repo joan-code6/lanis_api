@@ -96,6 +96,7 @@ DEFAULT_SIDEBAR_ORDER = [
     "search",
     "dashboard",
     "messages",
+    "videokonferenz",
     "dateispeicher",
     "dateiverteilung",
     "vertretungsplan",

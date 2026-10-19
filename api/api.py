@@ -436,6 +436,7 @@ SidebarItemId = Literal[
     "search",
     "dashboard",
     "messages",
+    "videokonferenz",
     "dateispeicher",
     "dateiverteilung",
     "vertretungsplan",
@@ -1856,6 +1857,22 @@ async def get_modules(
     result = await run_in_threadpool(_fetch_modules, auth.client)
     if result.get("success"):
         await sessions.set_cache(auth.user_id, "/modules", result, is_long_term=True)
+    return result
+
+
+@app.get("/videokonferenz")
+async def get_videokonferenz(
+    response: Response,
+    refresh: bool = False,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return fresh rooms; user-bound join URLs must never enter response caches."""
+    # ``refresh`` remains accepted so clients can share a refresh-shaped API
+    # with other modules, but this endpoint intentionally always contacts SPH.
+    response.headers["Cache-Control"] = "private, no-store"
+    result = await run_in_threadpool(auth.client.videokonferenz_get_rooms)
+    if not result.get("success") and result.get("error_kind") == "authentication":
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
     return result
 
 
