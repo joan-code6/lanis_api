@@ -943,7 +943,8 @@ Retrieve a weekly view of course entries.
 
 #### GET `/meinunterricht/submissions`
 
-Retrieve all submissions/tasks that need attention.
+Retrieve all student upload assignments. Set the optional query parameter
+`refresh=true` to bypass the live cache and fetch current portal data.
 
 **Headers:**
 - `X-Session-Token: {token}` (required)
@@ -954,13 +955,15 @@ Retrieve all submissions/tasks that need attention.
   "success": true,
   "submissions": [
     {
-      "id": "{submission_id}",
+      "id": "{opaque_detail_reference}",
+      "detail_ref": "{opaque_detail_reference}",
+      "course_id": "{course_id}",
+      "entry_id": "{entry_id}",
       "title": "{submission_title}",
-      "course": "{course_name}",
-      "due_date": "{date}",
-      "status": "{status}",
-      "url": "{submission_url}",
-      "..."
+      "course_name": "{course_name}",
+      "status": "open",
+      "date_text": "{portal_date_text}",
+      "uploaded_count": 0
     },
     "..."
   ]
@@ -970,6 +973,42 @@ Retrieve all submissions/tasks that need attention.
 **Status Codes:**
 - `200 OK` - Submissions retrieved successfully
 - `401 Unauthorized` - Invalid or expired session token
+
+---
+
+#### GET `/meinunterricht/submissions/{detail_ref}`
+
+Retrieve the requirements, current files, and upload state for one submission.
+The `detail_ref` is the opaque reference returned by the list endpoint.
+Set `refresh=true` to bypass the live detail cache. Both read endpoints retain
+the last successful snapshot for a confirmed upstream outage.
+
+#### POST `/meinunterricht/submissions/upload`
+
+Upload one to five files using multipart form data. Required fields are
+`course_id`, `entry_id`, `upload_id`, and one or more `files` fields. The
+response contains an individual status for every file.
+
+#### DELETE `/meinunterricht/submissions/file`
+
+Delete an uploaded file using multipart form fields `course_id`, `entry_id`,
+`upload_id`, and `file_index`, authenticated with `X-Session-Token`. The backend
+reuses the account's encrypted login credentials for Schulportal's required
+password check, so clients do not need to ask for the password again. Missing
+stored credentials return HTTP 401 before attempting deletion.
+
+An optional `password` field remains supported for older clients. An explicitly
+supplied password is encrypted for the Schulportal request and is not persisted
+by this endpoint.
+
+#### GET `/meinunterricht/submissions/file/{file_ref}`
+
+Download a submission file through the authenticated backend session.
+
+Submission reads, downloads, uploads, and deletions return HTTP 401 when
+Schulportal returns an expired-session login page or an authentication failure.
+The backend discards the expired portal client. Uploads and deletions are not
+automatically retried.
 
 ---
 

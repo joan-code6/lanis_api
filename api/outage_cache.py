@@ -33,6 +33,7 @@ READ_ROUTES = {
     "/meinunterricht/entry",
     "/meinunterricht/weekly",
     "/meinunterricht/submissions",
+    "/meinunterricht/submissions/{detail_ref}",
     "/nachrichten/headers",
     "/nachrichten/{conversation_id}",
 }
@@ -60,6 +61,14 @@ DEPENDENT_SNAPSHOT_PATHS = {
         "/meinunterricht/submissions",
         "/stundenplan",
         "/stundenplan/view",
+    },
+    "/meinunterricht/submissions": {
+        "/meinunterricht/submissions",
+        "/meinunterricht/submissions/*",
+    },
+    "/meinunterricht/submissions/detail": {
+        "/meinunterricht/submissions",
+        "/meinunterricht/submissions/*",
     },
 }
 
@@ -100,6 +109,8 @@ class SnapshotStore:
             return "/nachrichten/*"
         if path.startswith("/meinunterricht/course/"):
             return "/meinunterricht/course/*"
+        if path.startswith("/meinunterricht/submissions/"):
+            return "/meinunterricht/submissions/*"
         return path
 
     def version(self, user_id, path):
@@ -111,6 +122,11 @@ class SnapshotStore:
             self.user_versions[user_id],
             self.path_versions.setdefault((user_id, version_path), 0),
         )
+
+    def advance_path_version(self, user_id, path):
+        """Reject older writes while retaining the last successful outage snapshot."""
+        key = (user_id, self._version_path(path))
+        self.path_versions[key] = self.path_versions.get(key, 0) + 1
 
     def invalidate(self, user_id):
         # Keep every user generation in the same monotonically increasing
@@ -146,6 +162,10 @@ class SnapshotStore:
             path = key[1]
             if (
                 path in paths
+                or any(
+                    pattern.endswith("/*") and path.startswith(pattern[:-1])
+                    for pattern in paths
+                )
                 or (
                     endpoint.startswith("/nachrichten")
                     and path.startswith("/nachrichten/")
@@ -252,6 +272,15 @@ class OutageCacheRoute(APIRoute):
                     )
                 ),
             )
+            if (
+                self.path in {
+                    "/meinunterricht/submissions",
+                    "/meinunterricht/submissions/{detail_ref}",
+                }
+                and request.query_params.get("refresh", "").lower()
+                in {"true", "1", "on", "yes"}
+            ):
+                snapshots.advance_path_version(identity.user_id, request.url.path)
             version = snapshots.version(identity.user_id, request.url.path)
             current = TransportObservation()
             current.cache_path = self.path
