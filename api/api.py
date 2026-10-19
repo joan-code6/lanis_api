@@ -437,6 +437,7 @@ SidebarItemId = Literal[
     "dashboard",
     "messages",
     "dateispeicher",
+    "dateiverteilung",
     "vertretungsplan",
     "dsb",
     "courses",
@@ -1174,7 +1175,8 @@ async def serialize_account_requests(request: Request, call_next):
         raise
 
     body_iterator = getattr(response, "body_iterator", None)
-    if request.url.path.startswith("/dateispeicher/file/"):
+    if (request.url.path.startswith("/dateispeicher/file/")
+        or request.url.path == "/dateiverteilung/file"):
         # The upstream stream is fully detached to a temporary file before the
         # route returns, so a slow client no longer needs this lock.
         lifecycle_lock.release()
@@ -2537,6 +2539,75 @@ async def download_dateispeicher_file(
         content=content,
         media_type=media_type,
         headers=response_headers,
+    )
+
+
+# --- Dateiverteilung ---
+
+
+@app.get("/dateiverteilung")
+async def get_dateiverteilung(
+    refresh: bool = False,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/dateiverteilung")
+        if cached is not None:
+            return cached
+
+    result = await run_in_threadpool(auth.client.dateiverteilung_get_overview)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/dateiverteilung", result)
+    elif result.get("error_kind") == "authentication":
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+    return result
+
+
+@app.get("/dateiverteilung/file")
+async def download_dateiverteilung_file(
+    url: str = Query(..., min_length=1, max_length=2048),
+    auth: AuthSession = Depends(client_dependency),
+):
+    result = await run_in_threadpool(auth.client.dateiverteilung_download_file, url)
+    stream = result.get("stream")
+    if not result.get("success") or stream is None:
+        error_kind = result.get("error_kind")
+        if error_kind == "validation":
+            error_status = status.HTTP_400_BAD_REQUEST
+        elif error_kind == "authentication":
+            await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+            error_status = status.HTTP_401_UNAUTHORIZED
+        elif result.get("upstream_status") == status.HTTP_404_NOT_FOUND:
+            error_status = status.HTTP_404_NOT_FOUND
+        else:
+            error_status = status.HTTP_502_BAD_GATEWAY
+        raise HTTPException(status_code=error_status, detail=result.get("error", "File not found"))
+
+    buffered_file = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b")
+    try:
+        await run_in_threadpool(_copy_download_stream_to_file, stream, buffered_file)
+    except DownloadTooLargeError as error:
+        buffered_file.close()
+        raise HTTPException(status_code=413, detail="File exceeds the 256 MiB download limit") from error
+    except BaseException as error:
+        buffered_file.close()
+        if not isinstance(error, Exception):
+            raise
+        raise HTTPException(status_code=502, detail="Failed to download file") from error
+    finally:
+        if callable(result.get("close")):
+            result["close"]()
+
+    filename = re.sub(r'[\r\n"]', "_", str(result.get("filename") or "dateiverteilung-datei"))
+    return StreamingResponse(
+        content=_iter_open_file(buffered_file),
+        media_type=result.get("content_type") or "application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+        background=BackgroundTask(buffered_file.close),
     )
 
 

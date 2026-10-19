@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import aiosqlite
@@ -374,3 +375,16 @@ def test_timetable_class_colors_validate_keys_values_and_limit() -> None:
         TimetablePreferencesRequest(
             class_colors={f"course:{index}": "#aabbcc" for index in range(101)},
         )
+
+
+def test_saved_sidebar_order_includes_new_defaults_without_losing_customization():
+    saved_order = ["settings", "divider-1788796958596", "dashboard", "messages"]
+    stored = json.dumps({"sidebar": {"order": saved_order, "hidden_items": ["messages"]}})
+
+    preferences = auth_db._decode_user_preferences(stored, "5201:student")
+
+    assert preferences["sidebar"]["order"] == saved_order + [
+        item for item in auth_db.DEFAULT_SIDEBAR_ORDER if item not in saved_order
+    ]
+    assert preferences["sidebar"]["hidden_items"] == ["messages"]
+    assert auth_db._decode_user_preferences(json.dumps(preferences), "5201:student") == preferences
