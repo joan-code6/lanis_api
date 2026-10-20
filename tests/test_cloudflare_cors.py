@@ -27,14 +27,18 @@ class CloudflareCORSTest(unittest.TestCase):
 
     def test_owned_preview_origins(self):
         for prefix in ["", "pr-92-", "a1b2c3d4-", "manual-"]:
-            with self.subTest(prefix=prefix):
-                self.assertIsNotNone(self.pattern.fullmatch(
-                    f"https://{prefix}lanis-ui-preview.bennetjoanwegener.workers.dev"
-                ))
+            for app in ["ui", "admin"]:
+                with self.subTest(prefix=prefix, app=app):
+                    self.assertIsNotNone(self.pattern.fullmatch(
+                        f"https://{prefix}lanis-{app}-preview.bennetjoanwegener.workers.dev"
+                    ))
 
     def test_unrelated_cloudflare_origins_are_blocked(self):
         for origin in [
             "https://attacker.workers.dev",
+            "https://pr-92-lanis-admin-preview.attacker.workers.dev",
+            "https://evil.pr-92-lanis-admin-preview.bennetjoanwegener.workers.dev",
+            "https://pr-92-lanis-admin-preview.bennetjoanwegener.workers.dev.evil.com",
             "https://pr-92-lanis-ui-preview.attacker.workers.dev",
             "https://pr-92-other-app.bennetjoanwegener.workers.dev",
             "https://pr-92-lanis-ui-preview.bennetjoanwegener.workers.dev.evil.com",
