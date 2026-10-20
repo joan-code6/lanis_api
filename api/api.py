@@ -1372,13 +1372,14 @@ app.add_middleware(
         "http://localhost:5173",
         "https://lanis.arg-server.de",
         "https://lanis-ui.bennetjoanwegener.workers.dev",
+        "https://lanis-admin.bennetjoanwegener.workers.dev",
         *(
             [os.getenv("LANIS_ADMIN_ORIGIN").rstrip("/")]
             if os.getenv("LANIS_ADMIN_ORIGIN")
             else []
         ),
     ],
-    allow_origin_regex=r"^https://(?:[a-z0-9]+-)*lanis-ui-preview\.bennetjoanwegener\.workers\.dev$|^https://.*\.surge\.sh$|^https://.*\.appwrite\.network$|^http://(?:localhost|127\.0\.0\.1):\d+$|^http://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$",
+    allow_origin_regex=r"^https://(?:[a-z0-9]+-)*lanis-(?:ui|admin)-preview\.bennetjoanwegener\.workers\.dev$|^https://.*\.surge\.sh$|^https://.*\.appwrite\.network$|^http://(?:localhost|127\.0\.0\.1):\d+$|^http://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
