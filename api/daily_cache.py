@@ -113,7 +113,11 @@ async def warm_users():
                                             (
                                                 "/kalender/event/"
                                                 + quote(str(event["id"]), safe=""),
-                                                (),
+                                                tuple(
+                                                    (name, value)
+                                                    for name, value in params
+                                                    if name == "view_id"
+                                                ),
                                             )
                                         )
                     except Exception:  # noqa: BLE001 - isolate per-user endpoint failures

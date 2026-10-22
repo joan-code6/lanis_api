@@ -1392,6 +1392,7 @@ async def delete_refresh_token(token: str) -> None:
 
 async def delete_refresh_token_by_session_id(session_id: str) -> None:
     """Revoke one browser session and unlink WhatsApp after the final session."""
+    final_user_id = None
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
@@ -1416,6 +1417,7 @@ async def delete_refresh_token_by_session_id(session_id: str) -> None:
                 ) as cursor:
                     has_active_session = await cursor.fetchone()
                 if has_active_session is None:
+                    final_user_id = user_id
                     await db.execute(
                         "DELETE FROM whatsapp_links WHERE user_id = ?", (user_id,)
                     )
@@ -1432,6 +1434,12 @@ async def delete_refresh_token_by_session_id(session_id: str) -> None:
                         (user_id,),
                     )
             await db.commit()
+
+        if final_user_id is not None:
+            from .outage_cache import snapshots
+
+            snapshots.delete_user_data(final_user_id)
+            await snapshots.flush(final_user_id)
 
 
 async def delete_user_tokens(user_id: str) -> None:

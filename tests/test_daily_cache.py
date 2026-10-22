@@ -129,7 +129,11 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
         "snapshots",
         SimpleNamespace(
             entries={
-                ("user", "/kalender/events", (("category", "special"),)): None,
+                (
+                    "user",
+                    "/kalender/events",
+                    (("category", "special"), ("view_id", "second")),
+                ): None,
                 ("user", "/nachrichten/private", ()): None,
                 ("other", "/kalender/event/other", ()): None,
             }
@@ -138,7 +142,8 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     assert asyncio.run(daily_cache.warm_users()) is (not failed)
     assert ("/meinunterricht/course/new-course", "") in requested
     assert ("/kalender/event/new-event", "") in requested
-    assert ("/kalender/events", "category=special") in requested
+    assert ("/kalender/event/new-event", "view_id=second") in requested
+    assert ("/kalender/events", "category=special&view_id=second") in requested
     assert not any(
         path in {"/nachrichten/private", "/kalender/event/other"}
         for path, _ in requested
@@ -361,8 +366,11 @@ def test_logout_closes_client_and_clears_live_cache_even_if_deletion_fails(monke
     asyncio.run(scenario())
 
 
-def test_expiry_deletes_snapshots_only_after_last_session(tmp_path, monkeypatch):
-    """Verify expiry deletes snapshots only after last session."""
+@pytest.mark.parametrize("revoke", ["expire", "logout"])
+def test_expiry_deletes_snapshots_only_after_last_session(
+    tmp_path, monkeypatch, revoke
+):
+    """Delete snapshots on final-session expiry or logout, preserving active users."""
     import aiosqlite
 
     from api import auth_db
@@ -387,22 +395,19 @@ def test_expiry_deletes_snapshots_only_after_last_session(tmp_path, monkeypatch)
         key = ("school:user", "/kalender", ())
         store.put(key, b"{}", outage_cache._utcnow(), store.version(*key[:2]))
         await store.flush()
-        async with aiosqlite.connect(path) as db:
-            await db.execute(
-                "UPDATE refresh_tokens SET expires_at = ? WHERE token = ?",
-                ("2000-01-01", expired_token),
-            )
-            await db.commit()
-        await auth_db._revoke_expired_sessions()
-        assert store.entries
-        async with aiosqlite.connect(path) as db:
-            await db.execute(
-                "UPDATE refresh_tokens SET expires_at = ? WHERE token = ?",
-                ("2000-01-01", valid_token),
-            )
-            await db.commit()
-        await auth_db._revoke_expired_sessions()
-        assert not store.entries
+        for token in (expired_token, valid_token):
+            if revoke == "logout":
+                session = await auth_db.get_refresh_token(token)
+                await auth_db.delete_refresh_token_by_session_id(session["session_id"])
+            else:
+                async with aiosqlite.connect(path) as db:
+                    await db.execute(
+                        "UPDATE refresh_tokens SET expires_at = ? WHERE token = ?",
+                        ("2000-01-01", token),
+                    )
+                    await db.commit()
+                await auth_db._revoke_expired_sessions()
+            assert bool(store.entries) is (token == expired_token)
         await store.close()
         restored = outage_cache.SnapshotStore()
         restored.enable_persistence(path)
@@ -436,3 +441,52 @@ def test_retry_budget_returns_to_next_daily_run(monkeypatch):
     assert len(attempts) == 2
     assert sleeps[1] == 15 * 60
     assert sleeps[0] > 15 * 60 and sleeps[2] > 15 * 60
+
+
+def test_course_warming_does_not_queue_attachment_downloads(monkeypatch):
+    """Keep course JSON and file links without scheduling bulk file transfers."""
+    from types import SimpleNamespace
+
+    from api import api as api_module
+
+    async def scenario():
+        """Fetch one course with an uncached attachment under the warm-up context."""
+        manager = api_module.AuthManager()
+        monkeypatch.setattr(api_module, "sessions", manager)
+        monkeypatch.setattr(api_module, "_course_file_interests", {})
+        monkeypatch.setattr(api_module, "is_file_cached", lambda _: False)
+        monkeypatch.setattr(api_module, "is_file_pending", lambda _: False)
+
+        async def add_reference(*_):
+            """Avoid writing test attachment references to the application database."""
+
+        async def queue(*_):
+            """Reject any unsolicited attachment transfer during cache warming."""
+            raise AssertionError("Warm-up must not queue downloads")
+
+        monkeypatch.setattr(api_module, "add_cached_file_reference", add_reference)
+        monkeypatch.setattr(api_module, "_queue_course_file_download", queue)
+        data = {
+            "success": True,
+            "entries": [
+                {"files": [{"download_url": "https://school.invalid/attachment"}]}
+            ],
+        }
+        auth = SimpleNamespace(
+            user_id="school:user",
+            session_id="session",
+            client=SimpleNamespace(meinunterricht_get_course=lambda _: data),
+        )
+        reset = daily_cache.warming.set(True)
+        try:
+            result = await api_module.meinunterricht_course("course", auth=auth)
+        finally:
+            daily_cache.warming.reset(reset)
+        assert result["success"]
+        assert (
+            "/meinunterricht/file/" in result["entries"][0]["files"][0]["download_url"]
+        )
+        assert manager._cache
+        assert not api_module._course_file_interests
+
+    asyncio.run(scenario())

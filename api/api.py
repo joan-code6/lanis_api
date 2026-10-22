@@ -3475,7 +3475,8 @@ async def meinunterricht_course(
                 file_info["file_hash"] = file_hash
 
                 if (
-                    original_url
+                    not warming.get()
+                    and original_url
                     and "/meinunterricht/file/" not in original_url
                     and not is_file_cached(file_hash)
                 ):
@@ -3485,7 +3486,8 @@ async def meinunterricht_course(
                         ] = (original_url, attachment_session_id)
 
                 if (
-                    original_url
+                    not warming.get()
+                    and original_url
                     and "/meinunterricht/file/" not in original_url
                     and not is_file_cached(file_hash)
                     and not is_file_pending(file_hash)
