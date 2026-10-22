@@ -1,9 +1,10 @@
 """Bounded, private HTTP snapshots for positively observed upstream outages."""
 
 import json
+import sqlite3
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from fastapi.responses import Response
@@ -11,7 +12,7 @@ from fastapi.routing import APIRoute
 
 from schulportal_hessen.tools.transport import TransportObservation, observation
 
-RETENTION_SECONDS = 24 * 60 * 60
+RETENTION_SECONDS = 0  # Last successful snapshots have no time-based expiry.
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_USER_ENTRIES = 100
@@ -87,21 +88,74 @@ class SnapshotStore:
     """Event-loop-owned store; no awaits during checks/mutations prevents races."""
 
     def __init__(self):
+        self.database_path = None
         self.entries = OrderedDict()
         self.user_versions = {}
         self.path_versions = {}
         self.total_bytes = 0
         self._generation = 0
 
+    def enable_persistence(self, database_path):
+        """Store encrypted private response bodies alongside the auth database."""
+        from .auth_db import _decrypt_password
+
+        with sqlite3.connect(database_path) as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS outage_snapshots (key TEXT PRIMARY KEY, body TEXT, fetched_at TEXT)"
+            )
+            rows = db.execute(
+                "SELECT key, body, fetched_at FROM outage_snapshots"
+            ).fetchall()
+        for raw_key, body, fetched_at in rows:
+            user_id, path, params = json.loads(raw_key)
+            key = (user_id, path, tuple(tuple(pair) for pair in params))
+            self.put(
+                key,
+                _decrypt_password(body).encode(),
+                datetime.fromisoformat(fetched_at),
+                self.version(user_id, path),
+            )
+        self.database_path = database_path
+        # Drop entries evicted by the size bounds while restoring.
+        with sqlite3.connect(database_path) as db:
+            for raw_key, _, _ in rows:
+                user_id, path, params = json.loads(raw_key)
+                if (
+                    user_id,
+                    path,
+                    tuple(tuple(pair) for pair in params),
+                ) not in self.entries:
+                    db.execute("DELETE FROM outage_snapshots WHERE key = ?", (raw_key,))
+
+    def _persist(self, key, entry=None):
+        if not self.database_path:
+            return
+        from .auth_db import _encrypt_password
+
+        with sqlite3.connect(self.database_path) as db:
+            if entry is None:
+                db.execute(
+                    "DELETE FROM outage_snapshots WHERE key = ?", (json.dumps(key),)
+                )
+            else:
+                db.execute(
+                    "INSERT OR REPLACE INTO outage_snapshots VALUES (?, ?, ?)",
+                    (
+                        json.dumps(key),
+                        _encrypt_password(entry.body.decode()),
+                        entry.fetched_at.isoformat(),
+                    ),
+                )
+
     def _remove(self, key):
+        self._persist(key)
         entry = self.entries.pop(key)
         self.total_bytes -= len(entry.body)
 
     def purge(self):
-        cutoff = _utcnow() - timedelta(seconds=RETENTION_SECONDS)
-        for key, entry in list(self.entries.items()):
-            if entry.fetched_at < cutoff:
-                self._remove(key)
+        # Keep the last successful response through outages of any duration.
+        # Size bounds and account deletion still remove private data.
+        return
 
     @staticmethod
     def _version_path(path):
@@ -147,7 +201,7 @@ class SnapshotStore:
             self.path_versions.pop(key, None)
         return count
 
-    def invalidate_endpoint(self, user_id, endpoint):
+    def invalidate_endpoint(self, user_id, endpoint, *, preserve=False):
         """Remove snapshots derived from an invalidated live-cache endpoint."""
         paths = DEPENDENT_SNAPSHOT_PATHS.get(endpoint, {endpoint})
         if endpoint.startswith("/nachrichten"):
@@ -156,6 +210,8 @@ class SnapshotStore:
             version_path = self._version_path(path)
             key = (user_id, version_path)
             self.path_versions[key] = self.path_versions.get(key, 0) + 1
+        if preserve:
+            return
         for key in list(self.entries):
             if key[0] != user_id:
                 continue
@@ -179,15 +235,14 @@ class SnapshotStore:
 
     def put(self, key, body, fetched_at, version):
         self.purge()
-        if (
-            self.version(key[0], key[1]) != version
-            or len(body) > MAX_BODY_BYTES
-            or _utcnow() - fetched_at > timedelta(seconds=RETENTION_SECONDS)
-        ):
+        if self.version(key[0], key[1]) != version or len(body) > MAX_BODY_BYTES:
             return
+        entry = Snapshot(body, fetched_at)
+        # Commit replacement first: an encryption/disk failure must retain the old copy.
+        self._persist(key, entry)
         if key in self.entries:
-            self._remove(key)
-        self.entries[key] = Snapshot(body, fetched_at)
+            self.total_bytes -= len(self.entries.pop(key).body)
+        self.entries[key] = entry
         self.total_bytes += len(body)
         owned = [candidate for candidate in self.entries if candidate[0] == key[0]]
         for candidate in owned[:-MAX_USER_ENTRIES]:
@@ -272,14 +327,15 @@ class OutageCacheRoute(APIRoute):
                     )
                 ),
             )
-            if (
-                self.path in {
-                    "/meinunterricht/submissions",
-                    "/meinunterricht/submissions/{detail_ref}",
-                }
-                and request.query_params.get("refresh", "").lower()
-                in {"true", "1", "on", "yes"}
-            ):
+            if self.path in {
+                "/meinunterricht/submissions",
+                "/meinunterricht/submissions/{detail_ref}",
+            } and request.query_params.get("refresh", "").lower() in {
+                "true",
+                "1",
+                "on",
+                "yes",
+            }:
                 snapshots.advance_path_version(identity.user_id, request.url.path)
             version = snapshots.version(identity.user_id, request.url.path)
             current = TransportObservation()

@@ -259,11 +259,8 @@ def test_auth_parameters_user_isolation_revocation_and_write_invalidation(setup)
         assert (await asgi_request(app, "GET", "/kalender", headers)).status_code == 401
         state.revoked = False
         await manager.invalidate_endpoint_cache("5201:student", "/kalender")
-        assert not store.status("5201:student")["available"]
-        assert (
-            "x-lanis-cache"
-            not in (await asgi_request(app, "GET", "/kalender", headers)).headers
-        )
+        assert store.status("5201:student")["available"]
+        assert (await asgi_request(app, "GET", "/kalender", headers)).headers["x-lanis-cache"] == "stale"
 
     asyncio.run(scenario())
 
@@ -274,7 +271,7 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     key = ("a", "/kalender", ())
     version = store.version("a", "/kalender")
     store.put(key, b"{}", now - timedelta(hours=25), version)
-    assert store.get(key, version) is None
+    assert store.get(key, version) is not None
     store.put(key, b"{}", now, version)
     store.invalidate("a")
     store.put(key, b"{}", now, version)

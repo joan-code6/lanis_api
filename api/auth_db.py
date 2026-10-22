@@ -2642,3 +2642,15 @@ async def admin_session_is_active(user_id: str, session_id: str) -> bool:
                 active = await cursor.fetchone() is not None
             await db.commit()
     return active
+async def get_cache_warmup_users() -> list[dict]:
+    """One valid session per user, without loading passwords into the scheduler."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT user_id, school_id, username, session_id FROM ("
+            "SELECT user_id, school_id, username, session_id, "
+            "ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) AS n "
+            "FROM refresh_tokens WHERE expires_at > ?) WHERE n = 1",
+            (datetime.utcnow(),),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]

@@ -306,3 +306,30 @@ surface and method documentation.
 ## License
 
 This project is released under the [MIT License](LICENSE).
+
+### Daily outage snapshots
+
+The API warms read-only user views daily starting at **03:00 Europe/Berlin**
+(including daylight saving changes). It processes one valid stored session per
+user, sequentially, and refreshes the standard profile, modules, calendar,
+substitution plan, timetable, courses, attendance, homework/submissions and
+message headers. Course and calendar detail IDs are discovered from overviews;
+previously requested parameter variants are refreshed too. Message bodies are
+not proactively opened because Schulportal uses a read action for those requests.
+Files and arbitrary search results are not bulk downloaded.
+
+A fresh authenticated uptime check must report `up` before the batch starts.
+Configure `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME` and
+`LANIS_UPTIME_PASSWORD` (or the existing `LANIS_API_*` equivalents). Unknown,
+unconfigured, degraded and down states defer the batch, retrying every 15 minutes.
+No credentials are copied into the scheduler or logs.
+
+Refreshes replace outage snapshots only after a successful response. Expiring or
+invalidating a live response does not delete its last successful outage snapshot.
+Snapshots have no age expiry (`/cache/status` reports `retention_seconds: 0`) and are encrypted in the auth SQLite database so
+backend restarts preserve them. Existing limits still apply: 2 MiB per response,
+100 snapshots per user and 64 MiB overall, with oldest entries evicted at capacity.
+This is bounded coverage, not a complete offline mirror of all Schulportal data.
+Session revocation and account deletion continue to remove private snapshots;
+serving them always requires a valid LANIS session. Cached responses retain their
+original fetch timestamps so the UI can identify stale data.

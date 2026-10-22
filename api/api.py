@@ -127,6 +127,7 @@ from .auth_db import (
     save_whatsapp_preferences,
     whatsapp_link_matches_sync,
 )
+from .daily_cache import run_daily_cache, warming
 from .outage_cache import OutageCacheRoute, snapshots
 from .account_data import (
     AccountDeletionCleanupError,
@@ -884,6 +885,8 @@ class AuthManager:
     async def get_cached(
         self, user_id: str, endpoint: str, params: str = ""
     ) -> Optional[Any]:
+        if warming.get():
+            return None
         await self._purge_expired_cache()
         cache_key = self._make_cache_key(user_id, endpoint, params)
 
@@ -906,6 +909,8 @@ class AuthManager:
     async def get_cached_with_revalidate(
         self, user_id: str, endpoint: str, params: str = ""
     ) -> tuple:
+        if warming.get():
+            return None, False
         await self._purge_expired_cache()
         cache_key = self._make_cache_key(user_id, endpoint, params)
 
@@ -992,7 +997,9 @@ class AuthManager:
 
     async def invalidate_endpoint_cache(self, user_id: str, endpoint: str) -> None:
         """Invalidate all cached parameter variants for one endpoint."""
-        snapshots.invalidate_endpoint(user_id, endpoint)
+        snapshots.invalidate_endpoint(user_id, endpoint, preserve=True)
+        # Live refreshes retain the last successful outage snapshot.
+        # Successful reads replace it atomically; failed reads leave it available.
         async with self._lock:
             version_key = (user_id, endpoint)
             self._cache_generation += 1
@@ -1022,6 +1029,7 @@ class AuthManager:
 
 
 sessions = AuthManager()
+_daily_cache_task = None
 _dsb_scheduler_task = None
 _message_notification_task = None
 _uptime_scheduler_task = None
@@ -1395,15 +1403,18 @@ app.include_router(school_pages_router)
 @app.on_event("startup")
 async def _startup() -> None:
     """Initialize stores and start the API's background schedulers."""
-    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
+    global _daily_cache_task, _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
     await auth_db_initialize()
     await run_in_threadpool(purge_expired_files)
+    from .auth_db import DB_PATH
+    snapshots.enable_persistence(DB_PATH)
     await purge_expired_whatsapp_ai_history()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
     await feedback_db.initialize()
     await task_queue.start()
     await whatsapp_task_queue.start()
+    _daily_cache_task = asyncio.create_task(run_daily_cache())
     _dsb_scheduler_task = await run_dsb_scheduler()
     _message_notification_task = await run_message_notification_scheduler(
         sessions._get_or_create_schulportal_client,
@@ -1422,7 +1433,10 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _cleanup_sessions() -> None:
     """Cancel background schedulers and close active sessions cleanly."""
-    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
+    global _daily_cache_task, _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
+    if _daily_cache_task:
+        _daily_cache_task.cancel()
+        await asyncio.gather(_daily_cache_task, return_exceptions=True)
     if _dsb_scheduler_task:
         _dsb_scheduler_task.cancel()
     if _message_notification_task:
@@ -3796,7 +3810,7 @@ async def meinunterricht_homework_done(
         auth.client.meinunterricht_set_homework_done, course_id, entry_id, done
     )
     if result.get("success"):
-        await sessions.invalidate_user_cache(auth.user_id)
+        await sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht")
     return result
 
 
