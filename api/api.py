@@ -48,7 +48,7 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
@@ -80,6 +80,7 @@ from .documentation import router as documentation_router
 from .homepage import router as homepage_router
 from .school_pages import router as school_pages_router
 from .admin import AdminLifecycleRoute, AdminPrincipal, admin_dependency, router as admin_router
+from . import impersonation
 from .auth_db import (
     DEFAULT_SIDEBAR_ORDER,
     allow_whatsapp_message,
@@ -578,6 +579,7 @@ class AuthSession:
     school_id: str
     username: str
     session_id: str = ''
+    impersonation_id: str = ''
 
 
 @dataclass
@@ -1154,6 +1156,31 @@ def _iter_open_file(file_handle):
 @app.middleware("http")
 async def serialize_account_requests(request: Request, call_next):
     """Keep concurrent authenticated work inside the account deletion barrier."""
+    preview_token = request.headers.get("X-Session-Token") or request.query_params.get(
+        "token"
+    )
+    if preview_token:
+        try:
+            preview_payload = sessions.decode_access_token(preview_token)
+        except HTTPException:
+            preview_payload = {}
+        if preview_payload.get("impersonation_id"):
+            try:
+                await local_auth_dependency(preview_token)
+            except HTTPException as error:
+                return JSONResponse(
+                    {"detail": error.detail},
+                    status_code=error.status_code,
+                    headers={"Cache-Control": "no-store"},
+                )
+            if not impersonation.permitted(request.method, request.url.path):
+                return JSONResponse(
+                    {
+                        "detail": "Read-only preview: this action or side-effecting read is unavailable"
+                    },
+                    status_code=403,
+                    headers={"Cache-Control": "no-store"},
+                )
     if (
         request.url.path == "/login"
         or request.url.path == "/account/deletion/recover"
@@ -1162,9 +1189,7 @@ async def serialize_account_requests(request: Request, call_next):
         or (request.method == "DELETE" and request.url.path == "/account")
     ):
         return await call_next(request)
-    token = request.headers.get("X-Session-Token") or request.query_params.get(
-        "token"
-    )
+    token = request.headers.get("X-Session-Token") or request.query_params.get("token")
     if not token:
         return await call_next(request)
     try:
@@ -1238,7 +1263,56 @@ async def local_auth_dependency(
         stored = None
     if not stored:
         raise HTTPException(status_code=401, detail="No valid session found — please log in again")
-    return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"], session_id=session_id)
+    preview_id = payload.get("impersonation_id", "")
+    if preview_id:
+        await impersonation.validate(preview_id, user_id, session_id)
+    return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"], session_id=session_id, impersonation_id=preview_id)
+
+
+class ImpersonationExchangeRequest(BaseModel):
+    code: str = Field(min_length=32, max_length=128)
+
+
+@app.post("/impersonation/exchange")
+async def exchange_impersonation(
+    payload: ImpersonationExchangeRequest, response: Response
+):
+    if not impersonation.enabled():
+        raise HTTPException(503, "Impersonation is disabled")
+    grant = await impersonation.consume(payload.code)
+    await impersonation.validate(grant["id"], grant["target"], grant["parent_id"])
+    stored = await get_refresh_token_by_session_id(grant["parent_id"])
+    if not stored or canonicalize_user_id(stored["user_id"]) != grant["target"]:
+        raise HTTPException(401, "The account session is no longer available")
+    token = jwt.encode(
+        {
+            "sub": grant["target"],
+            "jti": grant["parent_id"],
+            "impersonation_id": grant["id"],
+            "exp": int(grant["expires_at"]),
+            "iat": datetime.utcnow(),
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "access_token": token,
+        "expires_at": int(grant["expires_at"]),
+        "username": stored["username"],
+        "school_id": stored["school_id"],
+    }
+
+
+@app.post("/impersonation/end")
+async def end_impersonation(
+    response: Response, auth: AuthSession = Depends(local_auth_dependency)
+):
+    if not auth.impersonation_id:
+        raise HTTPException(400, "This is not a preview session")
+    await impersonation.revoke(auth.impersonation_id)
+    response.headers["Cache-Control"] = "no-store"
+    return {"success": True}
 
 
 @app.get("/cache/status")
@@ -1259,9 +1333,10 @@ async def client_dependency(
         user_id = identity.user_id
     session_data = await sessions._get_or_create_schulportal_client(user_id)
     try:
-        await user_metrics_db.record_activity(
-            session_data.school_id, session_data.username
-        )
+        if not identity.impersonation_id:
+            await user_metrics_db.record_activity(
+                session_data.school_id, session_data.username
+            )
     except Exception:
         logger.warning("Could not record authenticated activity", exc_info=True)
     return AuthSession(
@@ -1270,6 +1345,7 @@ async def client_dependency(
         school_id=session_data.school_id,
         username=session_data.username,
         session_id=identity.session_id,
+        impersonation_id=identity.impersonation_id,
     )
 
 
