@@ -290,7 +290,7 @@ def test_restore_skips_and_removes_unreadable_rows(tmp_path, monkeypatch):
     assert list(restored.entries) == [key]
     asyncio.run(restored.close())
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT COUNT(*) FROM outage_snapshots").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM outage_snapshots").fetchone()[0] == 2
 
 
 def test_flush_ignores_other_users_put_failure_but_reports_own_deletion(
@@ -717,3 +717,115 @@ def test_startup_removes_snapshots_without_active_sessions(tmp_path, monkeypatch
     asyncio.run(restored.close())
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT COUNT(*) FROM outage_snapshots").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("key_problem", ["wrong", "missing"])
+def test_bad_deployment_key_preserves_recoverable_ciphertext(
+    tmp_path, monkeypatch, key_problem
+):
+    """A temporary encryption misconfiguration must not destroy saved responses."""
+    import sqlite3
+
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
+    path = str(tmp_path / "auth.db")
+    key = ("user", "/kalender", ())
+    store = outage_cache.SnapshotStore()
+    store.enable_persistence(path)
+    store.put(key, b'{"saved":true}', outage_cache._utcnow(), store.version(*key[:2]))
+    asyncio.run(store.close())
+    with sqlite3.connect(path) as db:
+        original = db.execute("SELECT * FROM outage_snapshots").fetchall()
+    if key_problem == "wrong":
+        monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "y" * 32)
+    else:
+        monkeypatch.delenv("LANIS_CREDENTIAL_ENCRYPTION_KEY")
+        monkeypatch.setenv("JWT_SECRET", "")
+    unavailable = outage_cache.SnapshotStore()
+    unavailable.enable_persistence(path)
+    assert not unavailable.entries
+    asyncio.run(unavailable.close())
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT * FROM outage_snapshots").fetchall() == original
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
+    recovered = outage_cache.SnapshotStore()
+    recovered.enable_persistence(path)
+    assert recovered.get(key, recovered.version(*key[:2])).body == b'{"saved":true}'
+    asyncio.run(recovered.close())
+
+
+@pytest.mark.parametrize("revoke", ["logout", "expiry"])
+def test_failed_deletion_then_relogin_cannot_restore_revoked_snapshot(
+    tmp_path, monkeypatch, revoke
+):
+    """A durable cutoff survives deletion failure and a subsequent valid login."""
+    import sqlite3
+
+    import aiosqlite
+
+    from api import auth_db
+
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
+
+    async def scenario():
+        """Revoke a user while all snapshot deletes fail, then log in and restart."""
+        path = str(tmp_path / "auth.db")
+        monkeypatch.setattr(auth_db, "DB_PATH", path)
+        monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
+        await auth_db.initialize()
+        token = await auth_db.store_refresh_token(
+            "school:user", "school", "user", "password"
+        )
+        session = await auth_db.get_refresh_token(token)
+        store = outage_cache.SnapshotStore()
+        store.enable_persistence(path)
+        monkeypatch.setattr(outage_cache, "snapshots", store)
+        key = ("school:user", "/kalender", ())
+        old_time = outage_cache._utcnow()
+        store.put(key, b'{"old":true}', old_time, store.version(*key[:2]))
+        await store.flush()
+        original_write = store._write_snapshot
+
+        def fail_key_deletion(key, entry=None):
+            """Leave the old ciphertext on disk while allowing ordinary puts."""
+            if entry is None:
+                raise OSError("delete failed")
+            original_write(key, entry)
+
+        def fail_user_deletion(_):
+            """Simulate failure of the final user-scoped persistence deletion."""
+            raise OSError("delete failed")
+
+        monkeypatch.setattr(store, "_write_snapshot", fail_key_deletion)
+        monkeypatch.setattr(store, "_delete_persisted_user", fail_user_deletion)
+        if revoke == "logout":
+            await auth_db.delete_refresh_token_by_session_id(session["session_id"])
+        else:
+            async with aiosqlite.connect(path) as db:
+                await db.execute("UPDATE refresh_tokens SET expires_at = '2000-01-01'")
+                await db.commit()
+            await auth_db._revoke_expired_sessions()
+        assert not store.entries
+        await auth_db.store_refresh_token("school:user", "school", "user", "password")
+        # A delayed write queued before revocation must not bypass its cutoff.
+        await asyncio.to_thread(
+            original_write, key, outage_cache.Snapshot(b'{"late":true}', old_time)
+        )
+        with pytest.raises(OSError):
+            await store.close()
+        with sqlite3.connect(path) as db:
+            rows = db.execute("SELECT body FROM outage_snapshots").fetchall()
+            assert len(rows) == 1  # Ensure this test really left stale data on disk.
+        restored = outage_cache.SnapshotStore()
+        restored.enable_persistence(path)
+        assert not restored.entries
+        # Successful fetches after the cutoff are still persistable.
+        restored.put(
+            key, b'{"new":true}', outage_cache._utcnow(), restored.version(*key[:2])
+        )
+        await restored.close()
+        restarted = outage_cache.SnapshotStore()
+        restarted.enable_persistence(path)
+        assert restarted.get(key, restarted.version(*key[:2])).body == b'{"new":true}'
+        await restarted.close()
+
+    asyncio.run(scenario())

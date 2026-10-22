@@ -107,9 +107,26 @@ class SnapshotStore:
 
     def enable_persistence(self, database_path):
         """Store encrypted private response bodies alongside the auth database."""
-        from .auth_db import _decrypt_password
+        from .auth_db import _credential_key, _decrypt_password
 
+        try:
+            _credential_key()
+        except RuntimeError:
+            logging.getLogger(__name__).warning(
+                "Snapshot persistence disabled: encryption key unavailable"
+            )
+            return
         with sqlite3.connect(database_path) as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS outage_snapshot_revocations ("
+                "user_id TEXT PRIMARY KEY, revoked_at TEXT NOT NULL)"
+            )
+            revocations = {
+                user_id: datetime.fromisoformat(revoked_at)
+                for user_id, revoked_at in db.execute(
+                    "SELECT user_id, revoked_at FROM outage_snapshot_revocations"
+                )
+            }
             db.execute(
                 "CREATE TABLE IF NOT EXISTS outage_snapshots (key TEXT PRIMARY KEY, body TEXT, fetched_at TEXT)"
             )
@@ -133,6 +150,7 @@ class SnapshotStore:
                 else None
             )
         parsed_keys = {}
+        protected_rows = set()
         for raw_key, body, fetched_at in rows:
             try:
                 user_id, path, params = json.loads(raw_key)
@@ -148,11 +166,22 @@ class SnapshotStore:
                 ):
                     raise ValueError("Invalid snapshot parameters")
                 key = (user_id, path, tuple(tuple(pair) for pair in params))
-                plaintext = _decrypt_password(body).encode()
-                json.loads(plaintext)
                 timestamp = datetime.fromisoformat(fetched_at)
                 if timestamp.tzinfo:
                     timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+                if user_id in revocations and timestamp <= revocations[user_id]:
+                    continue
+                try:
+                    plaintext = _decrypt_password(body).encode()
+                except RuntimeError:
+                    # Failed authentication cannot distinguish corruption from a
+                    # wrong deployment key. Preserve ciphertext for recovery.
+                    protected_rows.add(raw_key)
+                    logging.getLogger(__name__).warning(
+                        "Leaving undecryptable snapshot on disk"
+                    )
+                    continue
+                json.loads(plaintext)
                 self.put(key, plaintext, timestamp, self.version(user_id, path))
                 parsed_keys[raw_key] = key
             except (RuntimeError, ValueError, TypeError, AttributeError):
@@ -163,7 +192,10 @@ class SnapshotStore:
         # Reuse validated keys; corrupt rows must not break the cleanup pass.
         with sqlite3.connect(database_path) as db:
             for raw_key, _, _ in rows:
-                if parsed_keys.get(raw_key) not in self.entries:
+                if (
+                    raw_key not in protected_rows
+                    and parsed_keys.get(raw_key) not in self.entries
+                ):
                     db.execute("DELETE FROM outage_snapshots WHERE key = ?", (raw_key,))
 
         self._writer = ThreadPoolExecutor(
@@ -225,6 +257,15 @@ class SnapshotStore:
                     "DELETE FROM outage_snapshots WHERE key = ?", (json.dumps(key),)
                 )
             else:
+                # Serialize this check with revocation's auth transaction: a
+                # delayed pre-logout writer must not overwrite a newer snapshot.
+                db.execute("BEGIN IMMEDIATE")
+                cutoff = db.execute(
+                    "SELECT revoked_at FROM outage_snapshot_revocations WHERE user_id = ?",
+                    (key[0],),
+                ).fetchone()
+                if cutoff and entry.fetched_at <= datetime.fromisoformat(cutoff[0]):
+                    return
                 db.execute(
                     "INSERT OR REPLACE INTO outage_snapshots VALUES (?, ?, ?)",
                     (

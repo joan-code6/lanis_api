@@ -189,7 +189,8 @@ bounded to 100 entries and 8 MiB of response bodies per account, with a 2 MiB
 per-response limit. Accounts never evict each other’s snapshots. It is
 cleared on logout, account deletion, and expiry of the last valid session.
 Endpoint refreshes retain the previous successful snapshot, and backend restarts
-restore persisted snapshots.
+restore persisted snapshots. Failed decryption leaves ciphertext on disk for
+recovery with the correct key; invalid snapshot structure is removed.
 
 Authenticated clients can read `GET /cache/status` without contacting
 Schulportal. It returns whether snapshots exist, their count, the most recent
@@ -225,7 +226,11 @@ overhead, pending disk writes, and the separate live-response cache in memory;
 encryption and SQLite add overhead on disk. `GET /cache/status` exposes
 `body_bytes`, `max_body_bytes`, and `max_snapshot_count` for the current user.
 This is bounded coverage, not a complete offline mirror of all Schulportal data.
-Session revocation and account deletion continue to remove private snapshots;
+Final-session revocation records a durable timestamp cutoff in the auth
+transaction, so pre-revocation snapshots cannot return after a failed disk
+deletion and later login. Account deletion removes this revocation metadata
+after runtime snapshot cleanup. Session revocation and account deletion remove
+private snapshots;
 serving them always requires a valid LANIS session. Cached responses retain their
 original fetch timestamps so the UI can identify stale data.
 

@@ -343,6 +343,10 @@ async def initialize() -> None:
             """
         )
         await db.execute(
+            "CREATE TABLE IF NOT EXISTS outage_snapshot_revocations ("
+            "user_id TEXT PRIMARY KEY, revoked_at TEXT NOT NULL)"
+        )
+        await db.execute(
             "CREATE TABLE IF NOT EXISTS account_deletion_markers ("
             "user_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)"
         )
@@ -1290,6 +1294,10 @@ async def _revoke_expired_sessions() -> None:
                     f"DELETE FROM push_subscriptions WHERE user_id IN ({revoke_placeholders})",
                     users_to_revoke,
                 )
+            await db.executemany(
+                "INSERT OR REPLACE INTO outage_snapshot_revocations VALUES (?, ?)",
+                [(user_id, now.isoformat()) for user_id in users_to_revoke],
+            )
             await db.commit()
 
         # Keep the auth lock through snapshot deletion so a new login cannot race
@@ -1441,6 +1449,11 @@ async def delete_refresh_token_by_session_id(session_id: str) -> None:
                         "DELETE FROM whatsapp_pairing_codes WHERE user_id = ?",
                         (user_id,),
                     )
+            if final_user_id is not None:
+                await db.execute(
+                    "INSERT OR REPLACE INTO outage_snapshot_revocations VALUES (?, ?)",
+                    (final_user_id, datetime.utcnow().isoformat()),
+                )
             await db.commit()
 
         if final_user_id is not None:
@@ -1706,6 +1719,7 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     user_id = _canonical_user_id(user_id)
     tables = (
         "refresh_tokens",
+        "outage_snapshot_revocations",
         "admin_sessions",
         "notification_preferences",
         "custom_lessons",
