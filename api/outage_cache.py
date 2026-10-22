@@ -597,8 +597,7 @@ class OutageCacheRoute(APIRoute):
                 if entry:
                     body = entry.body
                     if self.path.startswith("/nachrichten/"):
-                        from .daily_cache import warming
-                        from .message_read_state import mark_opened, overlay_headers
+                        from .message_read_state import overlay_headers
 
                         if self.path == "/nachrichten/headers":
                             body = json.dumps(
@@ -606,13 +605,6 @@ class OutageCacheRoute(APIRoute):
                                     identity.user_id, json.loads(body)
                                 )
                             ).encode()
-                        elif (
-                            self.path == "/nachrichten/{conversation_id}"
-                            and not warming.get()
-                        ):
-                            await mark_opened(
-                                identity.user_id, request.path_params["conversation_id"]
-                            )
                     result = Response(body, media_type="application/json")
                     set_headers(result, entry.fetched_at, "stale")
                     return result

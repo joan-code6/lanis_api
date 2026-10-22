@@ -129,7 +129,7 @@ from .auth_db import (
     whatsapp_link_matches_sync,
 )
 from .daily_cache import run_daily_cache, warming
-from .message_read_state import mark_opened, overlay_headers
+from .message_read_state import current_activity, mark_opened, overlay_headers
 from .outage_cache import OutageCacheRoute, snapshots
 from .account_data import (
     AccountDeletionCleanupError,
@@ -3128,34 +3128,14 @@ async def get_conversation(
     params = {"conversation_id": conversation_id, "last": last}
     cache_params = _make_param_key(params)
     cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
-    cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
-    if not warming.get():
-        task = Task(
-            name=f"update_message_cache:{endpoint}",
-            retain_completed=False,
-            func=_update_message_cache_task,
-            args=(
-                auth.user_id,
-                endpoint,
-                auth.session_id,
-                params,
-                cache_params,
-                cache_version,
-            ),
-            user_id=auth.user_id,
-            priority=TaskPriority.LOW,
-            max_retries=2,
-        )
-        await task_queue.add_task(task)
-    if cached is not None:
-        if not warming.get():
-            await mark_opened(auth.user_id, conversation_id)
-        return cached
+    # Cached bodies can predate the latest unread headers. Only a live body
+    # fetch may acknowledge the activity observed before this request.
+    activity = await current_activity(auth.user_id, conversation_id)
     result = await run_in_threadpool(
         auth.client.nachrichten_get_conversation, conversation_id, last
     )
-    if result.get('success') and not warming.get():
-        await mark_opened(auth.user_id, conversation_id)
+    if result.get('success') and not warming.get() and last == 0:
+        await mark_opened(auth.user_id, conversation_id, expected_activity=activity)
     await sessions.set_cache_if_current_version(
         auth.user_id, endpoint, result, cache_params, cache_version
     )

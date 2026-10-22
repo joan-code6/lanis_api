@@ -214,7 +214,9 @@ without redundant query parameters.
 
 Conversation bodies are proactively fetched. This marks them read in Schulportal;
 LANIS persists the pre-sync unread flags separately and overlays them on message
-headers and notification polling until the user opens the conversation in LANIS.
+headers and notification polling until the user opens the conversation in LANIS
+and a fresh full body is fetched successfully. Older outage snapshots remain
+viewable but do not clear unread flags for potentially newer messages.
 
 Files advertised by file-storage trees, file distributions, course entries, and
 submission details are downloaded sequentially through authenticated API routes.

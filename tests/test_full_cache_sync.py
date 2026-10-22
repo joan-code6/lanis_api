@@ -108,6 +108,25 @@ def test_opening_new_activity_clears_cached_unread_after_restart(
     )
 
 
+def test_live_read_does_not_acknowledge_headers_observed_during_fetch(state):
+    async def scenario():
+        def headers(activity):
+            return {
+                "success": True,
+                "conversations": [{"id": "c", "unread": 1, "date": activity}],
+            }
+
+        await message_read_state.overlay_headers("a", headers("first"), preserve=True)
+        activity = await message_read_state.current_activity("a", "c")
+        await message_read_state.overlay_headers("a", headers("second"))
+        await message_read_state.mark_opened("a", "c", expected_activity=activity)
+        assert (await message_read_state.overlay_headers("a", headers("second")))[
+            "conversations"
+        ][0]["unread"] == 1
+
+    asyncio.run(scenario())
+
+
 def test_binary_files_are_content_deduplicated_but_privately_authorized(state):
     app = FastAPI()
     app.router.route_class = outage_cache.OutageCacheRoute
@@ -232,6 +251,8 @@ def test_message_warmup_body_read_preserves_flags_until_user_opens(state, monkey
     app = FastAPI()
     app.router.route_class = outage_cache.OutageCacheRoute
     unread = True
+    online = True
+    content = "saved body"
 
     def headers(*_):
         return {
@@ -241,8 +262,11 @@ def test_message_warmup_body_read_preserves_flags_until_user_opens(state, monkey
 
     def conversation(*_):
         nonlocal unread
+        if not online:
+            outage_cache.observation.get().unavailable = True
+            return {"success": False}
         unread = False
-        return {"success": True, "messages": [{"content": "saved body"}]}
+        return {"success": True, "messages": [{"content": content}]}
 
     auth = SimpleNamespace(
         user_id="a",
@@ -263,6 +287,7 @@ def test_message_warmup_body_read_preserves_flags_until_user_opens(state, monkey
     monkeypatch.setattr(api_module.task_queue, "add_task", no_task)
 
     async def scenario():
+        nonlocal online, content
         reset = warming.set(True)
         try:
             await asgi_request(
@@ -279,7 +304,42 @@ def test_message_warmup_body_read_preserves_flags_until_user_opens(state, monkey
             app, "GET", "/nachrichten/headers", {"X-Session-Token": "a"}
         )
         assert result.json()["conversations"][0]["unread"] == 1
-        await asgi_request(app, "GET", "/nachrichten/c", {"X-Session-Token": "a"})
+        # New headers can arrive while both live and persistent bodies are old.
+        await message_read_state.overlay_headers(
+            "a",
+            {
+                "success": True,
+                "conversations": [{"id": "c", "unread": 1, "date": "second"}],
+            },
+        )
+        online = False
+        stale = await asgi_request(
+            app, "GET", "/nachrichten/c", {"X-Session-Token": "a"}
+        )
+        assert stale.headers["x-lanis-cache"] == "stale"
+        assert stale.json()["messages"][0]["content"] == "saved body"
+        current = {
+            "success": True,
+            "conversations": [{"id": "c", "unread": 1, "date": "second"}],
+        }
+        assert (await message_read_state.overlay_headers("a", current))[
+            "conversations"
+        ][0]["unread"] == 1
+        await api_module.sessions.set_cache(
+            "a",
+            "/nachrichten/headers",
+            current,
+            api_module._make_param_key({"get_type": "All", "last": 0}),
+        )
+        online = True
+        content = "new message body"
+        fresh = await asgi_request(
+            app, "GET", "/nachrichten/c", {"X-Session-Token": "a"}
+        )
+        assert fresh.json()["messages"][0]["content"] == content
+        assert (await message_read_state.overlay_headers("a", current))[
+            "conversations"
+        ][0]["unread"] == 0
         result = await asgi_request(
             app, "GET", "/nachrichten/headers", {"X-Session-Token": "a"}
         )

@@ -73,11 +73,25 @@ async def overlay_headers(user_id, result, *, preserve=False):
     return result
 
 
-async def mark_opened(user_id, identifier):
+async def current_activity(user_id, identifier):
+    """Capture the activity eligible for acknowledgement before a live body read."""
+    async with auth_db._lock, aiosqlite.connect(auth_db.DB_PATH) as db:
+        row = await (
+            await db.execute(
+                "SELECT signature FROM message_read_overrides WHERE user_id = ? AND conversation_id = ?",
+                (user_id, identifier),
+            )
+        ).fetchone()
+    return row[0] if row else None
+
+
+async def mark_opened(user_id, identifier, *, expected_activity=...):
     """Clear a preserved unread flag only for an interactive LANIS read."""
     async with auth_db._lock, aiosqlite.connect(auth_db.DB_PATH) as db:
-        await db.execute(
-            "UPDATE message_read_overrides SET unread = 0 WHERE user_id = ? AND conversation_id = ?",
-            (user_id, identifier),
-        )
+        sql = "UPDATE message_read_overrides SET unread = 0 WHERE user_id = ? AND conversation_id = ?"
+        params = (user_id, identifier)
+        if expected_activity is not ...:
+            sql += " AND signature = ?"
+            params += (expected_activity,)
+        await db.execute(sql, params)
         await db.commit()
