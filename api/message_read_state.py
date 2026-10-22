@@ -61,10 +61,13 @@ async def overlay_headers(user_id, result, *, preserve=False):
                 unread = previous[1]
             row["unread"] = int(unread)
             row["read"] = not unread
-            if preserve and unread:
+            # Keep the override tied to the latest activity shown to the user.
+            # Otherwise opening a newer body clears only the old signature and
+            # cached headers immediately make that conversation unread again.
+            if previous or (preserve and unread):
                 await db.execute(
-                    "INSERT OR REPLACE INTO message_read_overrides VALUES (?, ?, ?, 1)",
-                    (user_id, identifier, activity),
+                    "INSERT OR REPLACE INTO message_read_overrides VALUES (?, ?, ?, ?)",
+                    (user_id, identifier, activity, int(unread)),
                 )
         await db.commit()
     return result

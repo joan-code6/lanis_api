@@ -66,6 +66,48 @@ def test_sync_preserves_unread_until_interactive_open_and_new_activity(state):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("opened_before_new_activity", [False, True])
+def test_opening_new_activity_clears_cached_unread_after_restart(
+    state, opened_before_new_activity
+):
+    async def scenario():
+        original = {
+            "success": True,
+            "conversations": [{"id": "conversation", "unread": 1, "date": "nightly"}],
+        }
+        await message_read_state.overlay_headers("a", original, preserve=True)
+        if opened_before_new_activity:
+            await message_read_state.mark_opened("a", "conversation")
+        current = {
+            "success": True,
+            "conversations": [
+                {"id": "conversation", "unread": 1, "date": "new-message"}
+            ],
+        }
+        # An ordinary header read observes activity arriving after the sync.
+        headers = await message_read_state.overlay_headers("a", current)
+        assert headers["conversations"][0]["unread"] == 1
+        await message_read_state.mark_opened("a", "conversation")
+        return current
+
+    cached = asyncio.run(scenario())
+    # Separate event loops and database connections also exercise persisted state.
+    for _ in range(2):
+        headers = asyncio.run(message_read_state.overlay_headers("a", cached))
+        assert headers["conversations"][0]["unread"] == 0
+        assert headers["conversations"][0]["read"] is True
+    later = {
+        "success": True,
+        "conversations": [{"id": "conversation", "unread": 1, "date": "later-message"}],
+    }
+    assert (
+        asyncio.run(message_read_state.overlay_headers("a", later))["conversations"][0][
+            "unread"
+        ]
+        == 1
+    )
+
+
 def test_binary_files_are_content_deduplicated_but_privately_authorized(state):
     app = FastAPI()
     app.router.route_class = outage_cache.OutageCacheRoute
