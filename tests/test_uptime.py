@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
+import requests
+
 from api import uptime
 from api.metrics.user_metrics_db import UserMetricsDB
 
@@ -54,6 +56,53 @@ def configure_monitor(monkeypatch):
     monkeypatch.setenv("LANIS_UPTIME_SCHOOL_ID", "5201")
     monkeypatch.setenv("LANIS_UPTIME_USERNAME", "monitor-user")
     monkeypatch.setenv("LANIS_UPTIME_PASSWORD", "monitor-password")
+
+
+def test_probe_recognizes_real_maintenance_page_without_login(monkeypatch):
+    configure_monitor(monkeypatch)
+    response = FakeResponse(200)
+    response.text = (Path(__file__).parent / "fixtures/sph_maintenance.html").read_text()
+    closed = []
+    response.close = lambda: closed.append(True)
+
+    def get(session, url, **kwargs):
+        assert url == uptime.PORTAL_START_URL
+        return response
+
+    def unexpected_login(*args):
+        raise AssertionError("Maintenance must skip login")
+
+    monkeypatch.setattr(FakeSession, "get", get)
+    monkeypatch.setattr(FakeClient, "login", unexpected_login)
+    monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
+    result = uptime._probe_portal()
+    assert result["status"] == "down"
+    assert result["is_available"] is False
+    assert result["error"] == "maintenance"
+    assert result["status_code"] == 200
+    assert [item["status"] for item in result["features"]] == ["down", "skipped"]
+    assert closed == [True]
+
+
+def test_maintenance_link_on_normal_page_is_not_an_outage():
+    assert not uptime._is_maintenance_page(
+        '<title>Schulauswahl</title><h1>Institutionswahl</h1>'
+        '<a href="/maintenance">Wartungsarbeiten</a>'
+    )
+
+
+def test_preflight_timeout_falls_back_to_authenticated_checks(monkeypatch):
+    configure_monitor(monkeypatch)
+    original_get = FakeSession.get
+
+    def get(session, url, **kwargs):
+        if url == uptime.PORTAL_START_URL:
+            raise requests.Timeout()
+        return original_get(session, url, **kwargs)
+
+    monkeypatch.setattr(FakeSession, "get", get)
+    monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
+    assert uptime._probe_portal()["status"] == "up"
 
 
 def test_probe_runs_login_and_opens_all_modules(monkeypatch):
