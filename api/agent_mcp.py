@@ -11,7 +11,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from . import agent_store as store
 from . import auth_db
@@ -125,12 +125,28 @@ async def run(scope, fn):
                 session_id=credentials["session_id"],
             )
             result = await fn(auth)
+        except ValidationError as exc:
+            return {
+                "success": False,
+                "error": "INVALID_REQUEST",
+                "details": exc.errors(
+                    include_url=False, include_context=False, include_input=False
+                ),
+                "next_step": "Correct the request using these details. Do not retry unchanged.",
+            }
         except HTTPException as exc:
             if exc.status_code in (401, 403):
                 return {
                     "success": False,
                     "error": "SCHOOL_SESSION_EXPIRED",
                     "next_step": "Ask the user to sign in to LANIS again, then retry.",
+                }
+            if 400 <= exc.status_code < 500:
+                return {
+                    "success": False,
+                    "error": "INVALID_REQUEST",
+                    "details": exc.detail,
+                    "next_step": "Correct the request using these details. Do not retry unchanged.",
                 }
             return {
                 "success": False,

@@ -164,7 +164,7 @@ def test_oauth_pkce_permissions_revocation_and_account_isolation(environment):
                 rows = await store.one(
                     db,
                     "SELECT COUNT(*) AS count FROM agent_tokens WHERE id=?",
-                    (token,),
+                    (store.digest(token),),
                 )
                 assert rows["count"] == 0
 
@@ -453,6 +453,83 @@ def test_school_tool_holds_account_lifecycle_lease(environment, monkeypatch):
         assert (await task)["success"] is True
         await deletion
         assert deleting.is_set()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "failure, expected_error",
+    [
+        ("validation", "INVALID_REQUEST"),
+        (400, "INVALID_REQUEST"),
+        (404, "INVALID_REQUEST"),
+        (409, "INVALID_REQUEST"),
+        (422, "INVALID_REQUEST"),
+        (429, "INVALID_REQUEST"),
+        (499, "INVALID_REQUEST"),
+        (401, "SCHOOL_SESSION_EXPIRED"),
+        (403, "SCHOOL_SESSION_EXPIRED"),
+        (500, "SCHOOL_UNAVAILABLE"),
+        (503, "SCHOOL_UNAVAILABLE"),
+        ("unexpected", "SCHOOL_UNAVAILABLE"),
+    ],
+)
+def test_school_tool_error_recovery(environment, monkeypatch, failure, expected_error):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(return_value={"id": "test-grant", "user_id": "5201:alice"}),
+        )
+        monkeypatch.setattr(
+            api_module.sessions,
+            "_get_or_create_schulportal_client",
+            AsyncMock(return_value=SimpleNamespace(client=None)),
+        )
+        details = {"field": "period", "message": "Invalid lesson period"}
+
+        async def fail(_auth):
+            if failure == "validation":
+                api_module.CustomLessonRequest(date="2026-10-22", period="1", duration=0)
+            elif isinstance(failure, int):
+                raise HTTPException(failure, detail=details)
+            else:
+                raise RuntimeError("private session internals")
+
+        result = await agent_mcp.run("timetable:write", fail)
+        assert result["success"] is False
+        assert result["error"] == expected_error
+        if expected_error == "INVALID_REQUEST":
+            assert result["next_step"] == (
+                "Correct the request using these details. Do not retry unchanged."
+            )
+            if failure == "validation":
+                assert result["details"] == [
+                    {
+                        "type": "greater_than_equal",
+                        "loc": ("duration",),
+                        "msg": "Input should be greater than or equal to 1",
+                    }
+                ]
+            else:
+                assert result["details"] == details
+        else:
+            assert "details" not in result
+            if expected_error == "SCHOOL_SESSION_EXPIRED":
+                assert result["next_step"] == (
+                    "Ask the user to sign in to LANIS again, then retry."
+                )
+            elif failure == "unexpected":
+                assert result["next_step"] == "Retry later. No school data was returned."
+            else:
+                assert result["next_step"] == (
+                    "School data could not be loaded. Retry later; do not infer that there are no entries."
+                )
 
     asyncio.run(scenario())
 
