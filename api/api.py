@@ -1270,12 +1270,13 @@ async def client_dependency(
     else:
         user_id = identity.user_id
     session_data = await sessions._get_or_create_schulportal_client(user_id)
-    try:
-        await user_metrics_db.record_activity(
-            session_data.school_id, session_data.username
-        )
-    except Exception:
-        logger.warning("Could not record authenticated activity", exc_info=True)
+    if not warming.get():
+        try:
+            await user_metrics_db.record_activity(
+                session_data.school_id, session_data.username
+            )
+        except Exception:
+            logger.warning("Could not record authenticated activity", exc_info=True)
     return AuthSession(
         client=session_data.client,
         user_id=user_id,
@@ -3473,6 +3474,16 @@ async def meinunterricht_course(
                 file_info["download_url"] = local_url
                 file_info["url"] = local_url
                 file_info["file_hash"] = file_hash
+
+                if (
+                    warming.get()
+                    and original_url
+                    and "/meinunterricht/file/" not in original_url
+                    and not is_file_cached(file_hash)
+                ):
+                    # Preserve the upstream target for a later authenticated click,
+                    # without scheduling a file transfer during synthetic warming.
+                    await run_in_threadpool(write_pending_meta, file_hash, original_url)
 
                 if (
                     not warming.get()

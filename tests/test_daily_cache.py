@@ -443,14 +443,16 @@ def test_retry_budget_returns_to_next_daily_run(monkeypatch):
     assert sleeps[0] > 15 * 60 and sleeps[2] > 15 * 60
 
 
-def test_course_warming_does_not_queue_attachment_downloads(monkeypatch):
+def test_course_warming_does_not_queue_attachment_downloads(monkeypatch, tmp_path):
     """Keep course JSON and file links without scheduling bulk file transfers."""
     from types import SimpleNamespace
 
+    from api import account_data, file_cache
     from api import api as api_module
 
     async def scenario():
         """Fetch one course with an uncached attachment under the warm-up context."""
+        monkeypatch.setattr(file_cache, "FILE_CACHE_DIR", tmp_path)
         manager = api_module.AuthManager()
         monkeypatch.setattr(api_module, "sessions", manager)
         monkeypatch.setattr(api_module, "_course_file_interests", {})
@@ -488,5 +490,94 @@ def test_course_warming_does_not_queue_attachment_downloads(monkeypatch):
         )
         assert manager._cache
         assert not api_module._course_file_interests
+        file_hash = result["entries"][0]["files"][0]["file_hash"]
+        assert (
+            file_cache.get_meta(file_hash)["download_url"]
+            == "https://school.invalid/attachment"
+        )
+        assert not file_cache.get_content_path(file_hash).exists()
+        # A normal cached course read must still provide a usable on-demand link.
+        await api_module.meinunterricht_course("course", auth=auth)
+        downloads = []
+
+        def download(url):
+            """Return detached file bytes only after the user opens the attachment."""
+            downloads.append(url)
+            return {
+                "success": True,
+                "content": b"attachment",
+                "filename": "lesson.txt",
+                "content_type": "text/plain",
+            }
+
+        auth.client.meinunterricht_download_file = download
+
+        async def identity(*_):
+            """Authorize the test user without an external session database."""
+            return auth
+
+        async def owns_file(*_):
+            """Grant the file reference registered by the synthetic course read."""
+            return True
+
+        async def active_account(*_):
+            """Keep account-deletion gating inactive for this valid download."""
+            return False
+
+        async def client_for_user(*_):
+            """Restore the same upstream client for the authenticated file click."""
+            return SimpleNamespace(client=auth.client)
+
+        monkeypatch.setattr(api_module, "local_auth_dependency", identity)
+        monkeypatch.setattr(api_module, "has_cached_file_reference", owns_file)
+        monkeypatch.setattr(account_data, "account_deletion_is_recent", active_account)
+        monkeypatch.setattr(
+            manager, "_get_or_create_schulportal_client", client_for_user
+        )
+        response = await api_module.meinunterricht_file(
+            file_hash, x_session_token="test-token"
+        )
+        assert downloads == ["https://school.invalid/attachment"]
+        assert file_cache.get_content_path(file_hash).read_bytes() == b"attachment"
+        assert str(response.path) == str(file_cache.get_content_path(file_hash))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("synthetic", [False, True])
+def test_only_real_requests_record_activity(monkeypatch, synthetic):
+    """Synthetic cache reads must not alter last-seen or user engagement metrics."""
+    from types import SimpleNamespace
+
+    from api import api as api_module
+
+    async def scenario():
+        """Run the normal client dependency with an already authenticated identity."""
+        activity = []
+        identity = SimpleNamespace(user_id="school:user", session_id="session")
+        session = SimpleNamespace(client=object(), school_id="school", username="user")
+
+        async def restore(_):
+            """Supply an upstream session without performing a portal login."""
+            return session
+
+        async def record(*args):
+            """Capture activity writes so synthetic and interactive reads can be compared."""
+            activity.append(args)
+
+        monkeypatch.setattr(
+            api_module.sessions, "_get_or_create_schulportal_client", restore
+        )
+        monkeypatch.setattr(api_module.user_metrics_db, "record_activity", record)
+        request = SimpleNamespace(state=SimpleNamespace(lanis_auth=identity))
+        reset = daily_cache.warming.set(synthetic)
+        try:
+            result = await api_module.client_dependency(
+                request, x_session_token="test-token"
+            )
+        finally:
+            daily_cache.warming.reset(reset)
+        assert result.user_id == "school:user"
+        assert activity == ([] if synthetic else [("school", "user")])
 
     asyncio.run(scenario())
