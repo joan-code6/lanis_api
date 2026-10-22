@@ -8,10 +8,15 @@
       "interface": {
         "displayName": "LANIS",
         "shortDescription": "Dein Schulportal im Chat",
-        "longDescription": "Read homework, course entries, timetables, substitutions and calendar events from your LANIS account. Messages require separate permission. Every connection is approved in LANIS and can be revoked at any time.",
+        "longDescription": "Connect your Schulportal to your assistant. Choose Restricted, Full access, or Custom in LANIS. Change access or disconnect at any time.",
         "category": "Education & Research",
         "capabilities": [],
-        "defaultPrompt": ["Welche Hausaufgaben habe ich auf?", "Hilf mir, meinen nächsten Schultag zu planen."]
+        "defaultPrompt": [
+          "Welche Hausaufgaben habe ich auf?",
+          "Hilf mir, meinen nächsten Schultag zu planen."
+        ],
+        "logo": "assets/icon.png",
+        "composerIcon": "assets/icon.png"
       }
     }
   }

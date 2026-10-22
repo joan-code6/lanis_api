@@ -83,11 +83,7 @@ def main():
                         "auth": {
                             "type": "oauth",
                             "client": {"mode": "dcr"},
-                            "defaultScopes": [
-                                "schoolwork:read",
-                                "timetable:read",
-                                "calendar:read",
-                            ],
+                            "defaultScopes": metadata["scopes_supported"],
                         }
                     }
                 },
@@ -102,9 +98,14 @@ def main():
         archive.writestr(
             "lanis/mcp.json", json.dumps(mcp, ensure_ascii=False, indent=2)
         )
+        archive.write(root / "plugins/lanis/assets/icon.png", "lanis/assets/icon.png")
     with ZipFile(args.output) as archive:
-        assert sorted(archive.namelist()) == ["lanis/mcp.json", "lanis/plugin.json"]
-        for name in archive.namelist():
+        assert sorted(archive.namelist()) == [
+            "lanis/assets/icon.png",
+            "lanis/mcp.json",
+            "lanis/plugin.json",
+        ]
+        for name in ("lanis/mcp.json", "lanis/plugin.json"):
             json.loads(archive.read(name))
     print(f"Private LANIS plugin package created: {args.output}")
     print(

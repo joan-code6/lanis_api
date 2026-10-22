@@ -1160,6 +1160,7 @@ async def serialize_account_requests(request: Request, call_next):
     """Keep concurrent authenticated work inside the account deletion barrier."""
     if (
         request.url.path == "/login"
+        or request.url.path == "/mcp"  # MCP owns its bearer identity and lifecycle lease.
         or request.url.path == "/account/deletion/recover"
         or request.url.path == "/admin"
         or request.url.path.startswith("/admin/")

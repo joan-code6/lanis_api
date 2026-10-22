@@ -13,9 +13,13 @@ the same provider connects twice. No model is run by this feature.
 3. The client discovers OAuth metadata, registers its callback, and opens LANIS.
 4. LANIS keeps the authorization request through sign-in, shows the account,
    self-declared client name, callback domain, and requested permissions.
-5. Select permissions, optionally give this connection a name, and allow or deny.
+5. Choose Restricted (the default), Full access, or Custom, then connect or deny.
+   Individual permissions appear only under Custom. The screen uses the existing
+   themed LANIS icon and shows the requesting domain.
 6. Return to the agent. Manage, reduce permissions, rename, or disconnect each
-   connection in Settings → Agents. Additional permissions require fresh consent.
+   connection in Settings → Agents. Access can be changed within the client’s
+   original requested capability ceiling. Reconnect for capabilities the client
+   did not request.
 
 The app name is **not verified identity**. The consent screen explicitly explains
 this and displays the callback domain. Creating a client named “ChatGPT” does not
@@ -74,26 +78,57 @@ retained in account export and removed on account deletion; raw tokens, password
 and callback state are excluded from exports. Requests that have not yet been
 approved have no user association and expire automatically.
 
-## Tools and permissions
+## Access presets and tools
 
-| Permission | Tools | Notes |
+Clients request the complete scope catalog by default. This is the ceiling, not
+an automatic grant. The server derives Restricted/Full scopes itself; it does
+not trust a preset's submitted checkbox list. Custom grants exactly the selected
+requested scopes. A client that explicitly requests a smaller scope set cannot
+receive more than that set; Full is disabled until the full catalog is requested.
+
+- **Restricted:** ordinary read access, excluding grades, attendance, writes,
+  and opening new message conversations (Schulportal marks those as read).
+- **Full access:** all supported school-account reads and writes, including
+  grades/attendance. No admin, credentials, account deletion, or grant-management
+  tools are exposed to agents.
+- **Custom:** choose each capability separately, including sensitive reads,
+  message read-state changes, sending, homework, timetable overrides, submissions,
+  preferences and binding elections.
+
+| Capability | Scopes | Tools |
 | --- | --- | --- |
-| Connection only | `lanis_connection` | Granted permissions, Berlin clock, settings URL, next steps |
-| `schoolwork:read` | `lanis_courses`, `lanis_course` | Discover IDs, then read paginated lesson/homework entries; grades and attendance excluded |
-| `timetable:read` | `lanis_timetable`, `lanis_substitutions` | Raw plan without homework enrichment; substitutions can contain multiple classes |
-| `calendar:read` | `lanis_calendar` | Explicit year; resolve relative dates with the Berlin clock |
-| `messages:read` | `lanis_messages`, `lanis_message` | Separate consent, discover conversation IDs before fetching content |
+| Connection and clock | Always | `lanis_connection` |
+| Schoolwork | `schoolwork:read`, `schoolwork:write` | Courses, paginated homework/lessons, study groups; change homework completion |
+| Timetable | `timetable:read`, `timetable:write` | Raw plan and substitutions; personal lesson overrides |
+| Calendar | `calendar:read` | Events for an explicit year |
+| Messages | `messages:read`, `messages:mark-read`, `messages:write` | Headers and cached content; open/mark read; recipients, send and reply |
+| Files | `files:read` | Browse/search Dateispeicher, read files up to 2 MiB, list distributed files |
+| Submissions | `submissions:read`, `submissions:write` | List/detail, upload files up to 2 MiB, delete submitted files |
+| Elections | `elections:read`, `elections:write` | Discover forms/options; submit confirmed selections |
+| Profile | `profile:read` | School profile |
+| Sensitive records | `grades:read`, `attendance:read` | Course marks and attendance (separate opt-ins) |
+| Preferences | `preferences:read`, `preferences:write` | Read/patch personal display preferences |
 
-MCP discovery lists only tools allowed by the current grant. Calling a hidden
-tool still checks permission. All tools are annotated read-only, idempotent,
-non-destructive, and dependent on external school data. There are no arbitrary
-URL, request-proxy, admin, account-deletion, sending, or upload tools.
+Schoolwork responses always exclude grades and attendance, even under Full;
+these have their own tools and grants. Timetable reads do not use homework
+enrichment. `lanis_message` only reads the existing conversation cache; a cache
+miss returns instructions instead of making an upstream request. The separately
+permitted `lanis_open_message` discloses its read-state effect and has
+`readOnlyHint=false`. Restricted therefore cannot silently clear unread reminders.
 
-Tool descriptions explain IDs, dates, pagination, error handling, and next steps.
-Initialization instructs agents to treat school content as untrusted data,
-never invent IDs, never ask for credentials in chat, check `success`, and not
-interpret outages as empty results. Permission errors tell the agent to reconnect
-for consent; session errors ask for LANIS sign-in; transient errors ask for retry.
+Discovery lists only tools allowed by the current grant. Direct calls also check
+the required scope. Mutating tools have write annotations; file deletion and
+binding elections are marked destructive. Agents are instructed to perform
+writes only on user request and avoid automatic retries of ambiguous sends,
+uploads and submissions. Election submission requires an explicit confirm flag.
+External content is untrusted data, never instructions. IDs must come from read
+tools, dates use Europe/Berlin, and school outages are not empty results.
+
+OAuth consent uses the middleware's existing shared lifecycle lease; it never
+upgrades it to an exclusive lease. Agent code exchange and refresh check account
+existence through their existing SQLite transaction, without invoking session
+cleanup on a second connection. Tests cover real signed browser sessions and an
+expired session belonging to another account.
 
 ## ChatGPT plugin
 
@@ -105,9 +140,9 @@ python scripts/build_agent_plugin.py --issuer https://YOUR_PUBLIC_API_ORIGIN --o
 ```
 
 The builder verifies live OAuth discovery and writes `plugin.json` and `mcp.json`
-with Streamable HTTP, OAuth dynamic registration, and default schoolwork,
-timetable, and calendar scopes. Messages are optional and require a client to
-request `messages:read`. The package contains no user credentials or app IDs.
+with Streamable HTTP, OAuth dynamic registration, the existing LANIS icon, and
+the full advertised scope ceiling. Users still default to Restricted at consent.
+The package contains no user credentials or app IDs.
 Building it does not upload, install, publish, or deploy anything. A public
 listing still needs publisher details, privacy review, and platform submission;
 account/workspace availability of custom plugins varies. Claude can connect to

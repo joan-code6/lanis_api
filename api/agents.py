@@ -7,7 +7,8 @@ import os
 import re
 import secrets
 import time
-from typing import Annotated, Any
+from datetime import datetime, timezone
+from typing import Annotated, Any, Literal
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,25 +19,135 @@ from . import agent_store as store
 from . import auth_db
 
 router = APIRouter(tags=["Agents"])
+# One source of truth for OAuth, presets, tool discovery and Custom controls.
 SCOPES = {
     "schoolwork:read": {
-        "title": "Unterricht & Hausaufgaben",
-        "description": "Kurse, Unterrichtseinträge und Hausaufgaben lesen.",
+        "title": "Unterricht lesen",
+        "description": "Kurse und Hausaufgaben",
+        "group": "Unterricht",
+    },
+    "schoolwork:write": {
+        "title": "Hausaufgaben ändern",
+        "description": "Erledigt-Status ändern",
+        "group": "Unterricht",
     },
     "timetable:read": {
-        "title": "Stundenplan & Vertretungen",
-        "description": "Deinen Stundenplan und Vertretungen lesen.",
+        "title": "Stundenplan lesen",
+        "description": "Stunden und Vertretungen",
+        "group": "Stundenplan",
+    },
+    "timetable:write": {
+        "title": "Stundenplan ändern",
+        "description": "Eigene Stunden bearbeiten",
+        "group": "Stundenplan",
     },
     "calendar:read": {
-        "title": "Kalender",
-        "description": "Schultermine und Veranstaltungen lesen.",
+        "title": "Kalender lesen",
+        "description": "Schultermine",
+        "group": "Kalender",
     },
     "messages:read": {
-        "title": "Nachrichten",
-        "description": "Nachrichtenübersichten und angefragte Unterhaltungen lesen.",
+        "title": "Nachrichten lesen",
+        "description": "Übersicht und bereits geladene Inhalte",
+        "group": "Nachrichten",
+    },
+    "messages:mark-read": {
+        "title": "Öffnen & als gelesen markieren",
+        "description": "Neue Inhalte laden und als gelesen markieren",
+        "group": "Nachrichten",
+    },
+    "messages:write": {
+        "title": "Nachrichten senden",
+        "description": "Senden und antworten",
+        "group": "Nachrichten",
+    },
+    "files:read": {
+        "title": "Dateien lesen",
+        "description": "Dateispeicher und Dateiverteilung",
+        "group": "Dateien",
+    },
+    "submissions:read": {
+        "title": "Abgaben lesen",
+        "description": "Aufgaben und Abgabedetails",
+        "group": "Abgaben",
+    },
+    "submissions:write": {
+        "title": "Abgaben ändern",
+        "description": "Dateien hochladen und entfernen",
+        "group": "Abgaben",
+    },
+    "elections:read": {
+        "title": "Wahlen lesen",
+        "description": "Formulare und Optionen",
+        "group": "Wahlen",
+    },
+    "elections:write": {
+        "title": "Wahlen abgeben",
+        "description": "Auswahl verbindlich absenden",
+        "group": "Wahlen",
+    },
+    "profile:read": {
+        "title": "Profil lesen",
+        "description": "Schulprofil und Module",
+        "group": "Profil",
+    },
+    "grades:read": {
+        "title": "Noten lesen",
+        "description": "Leistungen eines Kurses",
+        "group": "Sensible Daten",
+        "sensitive": True,
+    },
+    "attendance:read": {
+        "title": "Fehlzeiten lesen",
+        "description": "Anwesenheit und Fehlstunden",
+        "group": "Sensible Daten",
+        "sensitive": True,
+    },
+    "preferences:read": {
+        "title": "Einstellungen lesen",
+        "description": "Persönliche LANIS-Einstellungen",
+        "group": "Einstellungen",
+    },
+    "preferences:write": {
+        "title": "Einstellungen ändern",
+        "description": "Persönliche LANIS-Einstellungen anpassen",
+        "group": "Einstellungen",
     },
 }
-DEFAULT_SCOPES = "schoolwork:read timetable:read calendar:read"
+RESTRICTED_SCOPES = [
+    key
+    for key, value in SCOPES.items()
+    if key.endswith(":read") and not value.get("sensitive")
+]
+# Clients request the complete capability ceiling; the person chooses the grant.
+DEFAULT_SCOPES = " ".join(SCOPES)
+
+
+def access_presets(requested):
+    return {
+        "restricted": [s for s in RESTRICTED_SCOPES if s in requested],
+        "full": list(requested) if set(SCOPES).issubset(requested) else None,
+    }
+
+
+def access_mode(scopes):
+    if set(scopes) == set(SCOPES):
+        return "full"
+    if set(scopes).issubset(RESTRICTED_SCOPES):
+        return "restricted"
+    return "custom"
+
+
+async def active_account(db, user_id):
+    # This lookup MUST use the caller's transaction. The credential helper also
+    # cleans expired sessions on another connection, which would self-deadlock.
+    return await store.one(
+        db,
+        "SELECT 1 FROM refresh_tokens WHERE user_id=? AND expires_at>? LIMIT 1",
+        (user_id, datetime.now(timezone.utc).replace(tzinfo=None)),
+    )
+
+
 HEADERS = {
     "Cache-Control": "no-store",
     "Pragma": "no-cache",
@@ -263,6 +374,7 @@ async def authorization_details(request_id: str, auth: Annotated[Any, Depends(ow
             "username": auth.username,
             "school_id": auth.school_id,
             "verified": False,
+            "presets": access_presets(data["scopes"]),
         },
         headers=HEADERS,
     )
@@ -270,59 +382,67 @@ async def authorization_details(request_id: str, auth: Annotated[Any, Depends(ow
 
 class Decision(BaseModel):
     approve: bool
+    mode: Literal["restricted", "full", "custom"] = "custom"
     scopes: list[str] = Field(default_factory=list, max_length=20)
     name: str = Field(default="", max_length=100)
 
 
 @router.post("/agents/authorization/{request_id}")
 async def decide(request_id: str, body: Decision, auth: Annotated[Any, Depends(owner)]):
-    from .account_data import account_lifecycle_lock
-
-    lock = await account_lifecycle_lock(auth.user_id)
-    async with lock:
-        # Recheck after taking the deletion lock.
-        if not await auth_db.get_refresh_token_by_user_id(auth.user_id):
+    # Authenticated browser requests already hold a shared lifecycle lease in
+    # middleware. Do not try to upgrade it to an exclusive lock here. SQLite
+    # serializes the account check, consent consumption and grant insertion.
+    async with store.database(True) as db:
+        if not await active_account(db, auth.user_id):
             raise HTTPException(401, "Log in again before approving a connection.")
-        async with store.database(True) as db:
-            data = await pending(db, request_id)
-            scopes = list(dict.fromkeys(body.scopes))
-            if body.approve and (not scopes or set(scopes) - set(data["scopes"])):
+        data = await pending(db, request_id)
+        scopes = list(dict.fromkeys(body.scopes))
+        if body.approve and body.mode != "custom":
+            selected = access_presets(data["scopes"])[body.mode]
+            if selected is None:
                 raise HTTPException(
-                    400, "Choose at least one of the requested permissions."
+                    400,
+                    "The client did not request full access. Reconnect with all scopes.",
                 )
-            await db.execute(
-                "DELETE FROM agent_requests WHERE id = ?", (store.digest(request_id),)
+            scopes = selected
+        if body.approve and (not scopes or set(scopes) - set(data["scopes"])):
+            raise HTTPException(
+                400, "Choose at least one of the requested permissions."
             )
-            query = {"state": data["state"]}
-            if not body.approve:
-                query["error"] = "access_denied"
-            else:
-                grant_id, code = secrets.token_urlsafe(24), secrets.token_urlsafe(32)
-                grant = {
-                    "name": body.name.strip() or data["client_name"],
-                    "client_name": data["client_name"],
-                    "client_id": data["client_id"],
-                    "redirect_origin": urlsplit(data["redirect_uri"]).netloc,
-                    "scopes": scopes,
-                }
-                await db.execute(
-                    "INSERT INTO agent_grants(id,user_id,data,created) VALUES(?,?,?,?)",
-                    (grant_id, auth.user_id, json.dumps(grant), time.time()),
-                )
-                await db.execute(
-                    "INSERT INTO agent_tokens VALUES(?,?,?,?,?,?,0,?)",
-                    (
-                        store.digest(code),
-                        auth.user_id,
-                        grant_id,
-                        data["client_id"],
-                        "code",
-                        time.time() + 120,
-                        json.dumps(data),
-                    ),
-                )
-                query["code"] = code
-            separator = "&" if "?" in data["redirect_uri"] else "?"
+        await db.execute(
+            "DELETE FROM agent_requests WHERE id = ?", (store.digest(request_id),)
+        )
+        query = {"state": data["state"]}
+        if not body.approve:
+            query["error"] = "access_denied"
+        else:
+            grant_id, code = secrets.token_urlsafe(24), secrets.token_urlsafe(32)
+            grant = {
+                "name": body.name.strip() or data["client_name"],
+                "client_name": data["client_name"],
+                "client_id": data["client_id"],
+                "redirect_origin": urlsplit(data["redirect_uri"]).netloc,
+                "scopes": scopes,
+                "requested_scopes": data["scopes"],
+            }
+            await db.execute(
+                "INSERT INTO agent_grants(id,user_id,data,created) VALUES(?,?,?,?)",
+                (grant_id, auth.user_id, json.dumps(grant), time.time()),
+            )
+            await db.execute(
+                "INSERT INTO agent_tokens VALUES(?,?,?,?,?,?,0,?)",
+                (
+                    store.digest(code),
+                    auth.user_id,
+                    grant_id,
+                    data["client_id"],
+                    "code",
+                    time.time() + 120,
+                    json.dumps(data),
+                ),
+            )
+            query["code"] = code
+        separator = "&" if "?" in data["redirect_uri"] else "?"
     return JSONResponse(
         {"redirect_url": data["redirect_uri"] + separator + urlencode(query)},
         headers=HEADERS,
@@ -398,10 +518,8 @@ async def token(request: Request):
             return oauth_error(
                 "invalid_grant", "Token replay detected. Reconnect LANIS."
             )
-        if row[
-            "expires"
-        ] <= time.time() or not await auth_db.get_refresh_token_by_user_id(
-            row["user_id"]
+        if row["expires"] <= time.time() or not await active_account(
+            db, row["user_id"]
         ):
             return oauth_error(
                 "invalid_grant",
@@ -464,12 +582,14 @@ async def list_agents(auth: Annotated[Any, Depends(owner)]):
             "connections": await store.connections(auth.user_id),
             "scopes": SCOPES,
             "mcp_url": api_url() + "/mcp",
+            "presets": access_presets(list(SCOPES)),
         },
         headers=HEADERS,
     )
 
 
 class ConnectionUpdate(BaseModel):
+    mode: Literal["restricted", "full", "custom"] = "custom"
     name: str = Field(min_length=1, max_length=100)
     scopes: list[str] = Field(max_length=20)
 
@@ -487,16 +607,16 @@ async def update_agent(
         if not row:
             raise HTTPException(404, "Connection not found.")
         data = json.loads(row["data"])
-        if (
-            not body.scopes
-            or set(body.scopes) - set(data["scopes"])
-            or not body.name.strip()
-        ):
+        ceiling = data.get("requested_scopes", data["scopes"])
+        scopes = list(dict.fromkeys(body.scopes))
+        if body.mode != "custom":
+            scopes = access_presets(ceiling)[body.mode]
+        if not scopes or set(scopes) - set(ceiling) or not body.name.strip():
             raise HTTPException(
                 400,
-                "Permissions can only be reduced. Reconnect to grant additional access.",
+                "Choose permissions requested by this client; reconnect for additional capabilities.",
             )
-        data.update(name=body.name.strip(), scopes=list(dict.fromkeys(body.scopes)))
+        data.update(name=body.name.strip(), scopes=scopes)
         await db.execute(
             "UPDATE agent_grants SET data=? WHERE id=?", (json.dumps(data), grant_id)
         )

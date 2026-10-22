@@ -299,7 +299,12 @@ def test_real_mcp_transport_scoped_discovery_and_revocation(environment):
             )
             assert response.status_code == 200, response.text
             names = {t["name"] for t in response.json()["result"]["tools"]}
-            assert names == {"lanis_connection", "lanis_courses", "lanis_course"}
+            assert names == {
+                "lanis_connection",
+                "lanis_courses",
+                "lanis_course",
+                "lanis_study_groups",
+            }
             response = await c.post(
                 "/mcp",
                 headers=headers,
@@ -450,3 +455,281 @@ def test_school_tool_holds_account_lifecycle_lease(environment, monkeypatch):
         assert deleting.is_set()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("approve", [True, False])
+def test_real_browser_consent_does_not_upgrade_middleware_lock(environment, approve):
+    async def scenario():
+        api_module.app.dependency_overrides.pop(agents.owner)
+        credentials = await auth_db.get_refresh_token_by_user_id("5201:alice")
+        jwt = api_module.sessions.create_access_token(
+            "5201:alice", "5201", "alice", credentials["session_id"]
+        )
+        async with client() as c:
+            cid = (
+                await c.post("/oauth/register", json={"redirect_uris": [CALLBACK]})
+            ).json()["client_id"]
+            response = await c.get(
+                "/oauth/authorize",
+                params={
+                    "client_id": cid,
+                    "redirect_uri": CALLBACK,
+                    "state": "signed-browser-state",
+                    "code_challenge": CHALLENGE,
+                },
+            )
+            rid = parse_qs(urlsplit(response.headers["location"]).query)["request"][0]
+            response = await asyncio.wait_for(
+                c.post(
+                    "/agents/authorization/" + rid,
+                    headers={"X-Session-Token": jwt},
+                    json={"approve": approve, "mode": "restricted"},
+                ),
+                2,
+            )
+            assert response.status_code == 200, response.text
+            query = parse_qs(urlsplit(response.json()["redirect_url"]).query)
+            assert ("code" if approve else "error") in query
+
+    asyncio.run(scenario())
+
+
+def test_token_exchange_and_rotation_with_unrelated_expired_browser_session(
+    environment,
+):
+    async def scenario():
+        async with client() as c:
+            cid, code, _ = await request_grant(c)
+            async with store.database(True) as db:
+                await db.execute(
+                    "UPDATE refresh_tokens SET expires_at='2000-01-01 00:00:00' WHERE user_id='5201:bob'"
+                )
+            result = await asyncio.wait_for(exchange(c, cid, code), 2)
+            assert result.status_code == 200, result.text
+            rotated = await asyncio.wait_for(
+                c.post(
+                    "/oauth/token",
+                    data={
+                        "client_id": cid,
+                        "grant_type": "refresh_token",
+                        "refresh_token": result.json()["refresh_token"],
+                    },
+                ),
+                2,
+            )
+            assert rotated.status_code == 200, rotated.text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["restricted", "full", "custom"])
+def test_presets_are_enforced_on_server_and_custom_is_exact(environment, mode):
+    async def scenario():
+        async with client() as c:
+            cid = (
+                await c.post("/oauth/register", json={"redirect_uris": [CALLBACK]})
+            ).json()["client_id"]
+            response = await c.get(
+                "/oauth/authorize",
+                params={
+                    "client_id": cid,
+                    "redirect_uri": CALLBACK,
+                    "state": "state",
+                    "code_challenge": CHALLENGE,
+                },
+            )
+            rid = parse_qs(urlsplit(response.headers["location"]).query)["request"][0]
+            details = (await c.get("/agents/authorization/" + rid, headers=HEAD)).json()
+            assert set(details["presets"]["full"]) == set(agents.SCOPES)
+            assert not any(
+                s in details["presets"]["restricted"]
+                for s in [
+                    "grades:read",
+                    "attendance:read",
+                    "messages:mark-read",
+                    "messages:write",
+                    "schoolwork:write",
+                ]
+            )
+            selected = ["grades:read", "schoolwork:write"]
+            result = await c.post(
+                "/agents/authorization/" + rid,
+                headers=HEAD,
+                json={"approve": True, "mode": mode, "scopes": selected},
+            )
+            assert result.status_code == 200, result.text
+            grant = (await c.get("/agents", headers=HEAD)).json()["connections"][0]
+            expected = (
+                agents.RESTRICTED_SCOPES
+                if mode == "restricted"
+                else list(agents.SCOPES)
+                if mode == "full"
+                else selected
+            )
+            assert set(grant["scopes"]) == set(expected)
+            assert set(grant["requested_scopes"]) == set(agents.SCOPES)
+            # Changes stay inside the original client's requested capability ceiling.
+            change = await c.patch(
+                "/agents/" + grant["id"],
+                headers=HEAD,
+                json={"name": "Updated", "mode": "custom", "scopes": ["calendar:read"]},
+            )
+            assert change.status_code == 200
+
+    asyncio.run(scenario())
+
+
+def test_full_preset_cannot_expand_client_requested_scope(environment):
+    async def scenario():
+        async with client() as c:
+            cid = (
+                await c.post("/oauth/register", json={"redirect_uris": [CALLBACK]})
+            ).json()["client_id"]
+            response = await c.get(
+                "/oauth/authorize",
+                params={
+                    "client_id": cid,
+                    "redirect_uri": CALLBACK,
+                    "state": "state",
+                    "code_challenge": CHALLENGE,
+                    "scope": "calendar:read",
+                },
+            )
+            rid = parse_qs(urlsplit(response.headers["location"]).query)["request"][0]
+            response = await c.post(
+                "/agents/authorization/" + rid,
+                headers=HEAD,
+                json={"approve": True, "mode": "full"},
+            )
+            assert response.status_code == 400
+
+    asyncio.run(scenario())
+
+
+def test_restricted_message_read_never_fetches_or_marks_conversation(
+    environment, monkeypatch
+):
+    from api import agent_mcp
+
+    async def scenario():
+        async def identity(scope=None):
+            assert scope == "messages:read"
+            return {"user_id": "5201:alice", "scopes": ["messages:read"]}
+
+        async def cache(*_args):
+            return None
+
+        async def forbidden_fetch(*_args, **_kwargs):
+            raise AssertionError("Read-only tool fetched a conversation")
+
+        monkeypatch.setattr(agent_mcp, "identity", identity)
+        monkeypatch.setattr(api_module.sessions, "get_cached", cache)
+        monkeypatch.setattr(api_module, "get_conversation", forbidden_fetch)
+        result = await agent_mcp.lanis_message("conversation-1")
+        assert result["error"] == "MESSAGE_NOT_CACHED"
+
+    asyncio.run(scenario())
+
+
+def test_write_and_sensitive_tools_enforce_separate_permissions(
+    environment, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        allowed = set(agents.RESTRICTED_SCOPES)
+
+        async def identity(scope=None):
+            if scope and scope not in allowed:
+                raise ValueError("PERMISSION_REQUIRED")
+            return {
+                "id": "test-grant",
+                "user_id": "5201:alice",
+                "scopes": list(allowed),
+            }
+
+        async def session(_user):
+            return SimpleNamespace(client=None)
+
+        monkeypatch.setattr(agent_mcp, "identity", identity)
+        monkeypatch.setattr(
+            api_module.sessions, "_get_or_create_schulportal_client", session
+        )
+        writer = AsyncMock(return_value={"success": True})
+        monkeypatch.setattr(api_module, "meinunterricht_homework_done", writer)
+        tool = mcp._tool_manager.get_tool("lanis_set_homework")
+        with pytest.raises(ValueError, match="PERMISSION_REQUIRED"):
+            await tool.fn(course_id="42", entry_id="1", done=True)
+        writer.assert_not_called()
+        allowed.add("schoolwork:write")
+        assert (await tool.fn(course_id="42", entry_id="1", done=True))[
+            "success"
+        ] is True
+        writer.assert_awaited_once()
+        assert writer.call_args.kwargs["auth"].user_id == "5201:alice"
+        assert not tool.annotations.readOnlyHint
+        assert (
+            mcp._tool_manager.get_tool("lanis_open_message").annotations.readOnlyHint
+            is False
+        )
+        assert (
+            mcp._tool_manager.get_tool(
+                "lanis_delete_submission_file"
+            ).annotations.destructiveHint
+            is True
+        )
+        with pytest.raises(ValueError, match="PERMISSION_REQUIRED"):
+            await mcp._tool_manager.get_tool("lanis_grades").fn(course_id="42")
+        allowed.add("grades:read")
+        monkeypatch.setattr(
+            api_module,
+            "meinunterricht_course",
+            AsyncMock(
+                return_value={
+                    "success": True,
+                    "marks": ["A"],
+                    "attendance_summary": {"absent": 2},
+                    "entries": [],
+                }
+            ),
+        )
+        result = await mcp._tool_manager.get_tool("lanis_grades").fn(course_id="42")
+        assert result == {"success": True, "course_id": "42", "marks": ["A"]}
+
+    asyncio.run(scenario())
+
+
+def test_file_download_is_bounded_and_closes_stream():
+    from types import SimpleNamespace
+
+    from api.agent_tools import download_file
+
+    closed = []
+
+    def oversized():
+        try:
+            yield b"x" * (2 * 1024 * 1024)
+            yield b"x"
+        finally:
+            closed.append(True)
+
+    client = SimpleNamespace(
+        dateispeicher_download_file=lambda _id: {"success": True, "stream": oversized()}
+    )
+    assert download_file(client, 1)["error"] == "FILE_TOO_LARGE"
+    assert closed == [True]
+    client.dateispeicher_download_file = lambda _id: {
+        "success": True,
+        "content": b"homework",
+        "content_type": "text/plain",
+        "filename": "task.txt",
+    }
+    assert download_file(client, 1) == {
+        "success": True,
+        "filename": "task.txt",
+        "mime_type": "text/plain",
+        "text": "homework",
+    }
