@@ -74,12 +74,13 @@ def test_preserved_snapshot_rejects_inflight_pre_refresh_write():
     assert store.get(key, store.version(*key[:2])).body == b"old"
 
 
-@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("failed", [None, "body", 302, 401, 403, 404, 422, 500, 503])
 def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, failed):
     """Verify warmup discovers unvisited details and replays variants."""
     from types import SimpleNamespace
 
     from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
 
     from api import api as api_module
     from api import uptime
@@ -91,8 +92,10 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     async def read(path: str, request: Request):
         """Serve deterministic read responses for cache warming integration tests."""
         requested.append((request.url.path, request.url.query))
-        if path == "benutzer" and failed:
-            return {"success": False, "error": "upstream unavailable"}
+        if path == "benutzer" and failed is not None:
+            if failed == "body":
+                return {"success": False, "error": "upstream unavailable"}
+            return JSONResponse({"detail": "read rejected"}, status_code=failed)
         if path == "meinunterricht":
             return {"success": True, "courses": [{"book_id": "new-course"}]}
         if path == "kalender/events":
@@ -139,7 +142,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
             }
         ),
     )
-    assert asyncio.run(daily_cache.warm_users()) is (not failed)
+    assert asyncio.run(daily_cache.warm_users()) is (failed is None)
     assert ("/meinunterricht/course/new-course", "") in requested
     assert ("/kalender/event/new-event", "") in requested
     assert ("/kalender/event/new-event", "view_id=second") in requested

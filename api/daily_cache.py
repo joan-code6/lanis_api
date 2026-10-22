@@ -87,7 +87,7 @@ async def warm_users():
                             timeout=60,
                         )
                         if (
-                            response.status_code >= 500
+                            response.status_code != 200
                             or response.headers.get("X-LANIS-Cache") == "stale"
                         ):
                             completed = False
