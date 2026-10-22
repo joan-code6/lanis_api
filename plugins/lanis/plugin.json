@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "lanis",
+  "version": "0.1.0",
+  "description": "Connect your LANIS school account to an external assistant with individually approved, revocable access.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "LANIS",
+        "shortDescription": "Dein Schulportal im Chat",
+        "longDescription": "Read homework, course entries, timetables, substitutions and calendar events from your LANIS account. Messages require separate permission. Every connection is approved in LANIS and can be revoked at any time.",
+        "category": "Education & Research",
+        "capabilities": [],
+        "defaultPrompt": ["Welche Hausaufgaben habe ich auf?", "Hilf mir, meinen nächsten Schultag zu planen."]
+      }
+    }
+  }
+}

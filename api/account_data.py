@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict
 
-from . import auth_db, feedback_db
+from . import auth_db, feedback_db, agent_store
 from .metrics import user_metrics_db
 from .identity import canonicalize_user_id
 
@@ -164,6 +164,7 @@ async def build_account_export(user_id: str) -> dict:
         "account": credential,
         "profile": profile,
         "feedback": await feedback_db.get_account_data(user_id),
+        "agents": await agent_store.connections(user_id),
         "preferences": persisted["preferences"],
         "notification_preferences": persisted["notification_preferences"],
         "custom_lessons": persisted["custom_lessons"],

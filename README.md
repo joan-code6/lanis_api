@@ -306,3 +306,9 @@ surface and method documentation.
 ## License
 
 This project is released under the [MIT License](LICENSE).
+
+## External agents
+
+ChatGPT plugins, Claude connectors, and other MCP clients can connect through a
+shared OAuth-protected `/mcp` endpoint. Users approve and manage each connection
+in LANIS Settings → Agents. See [setup, permissions, and plugin packaging](docs/agents.md).

@@ -328,6 +328,8 @@ async def initialize() -> None:
     """Create the database and tables if they don't exist."""
     os.makedirs("data", exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
+        from .agent_store import SCHEMA
+        await db.executescript(SCHEMA)
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -1698,6 +1700,9 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
         "whatsapp_links",
         "whatsapp_ai_conversations",
         "whatsapp_pending_actions",
+        "agent_requests",
+        "agent_grants",
+        "agent_tokens",
     )
     counts: Dict[str, int] = {}
     orphaned_file_hashes: List[str] = []
