@@ -214,7 +214,10 @@ async def warm_users():
             )
             reset = warming.set(True)
             try:
-                pending = sorted(targets)
+                # Body reads mark conversations read upstream. Preserve the current
+                # header flags before replaying even previously saved bodies.
+                pending = [("/nachrichten/headers", ())] + sorted(targets)
+                headers_preserved = False
                 seen = set()
                 while pending:
                     path, params = pending.pop(0)
@@ -222,6 +225,13 @@ async def warm_users():
                         continue
                     seen.add((path, params))
                     attempted += 1
+                    if (
+                        path.startswith("/nachrichten/")
+                        and path != "/nachrichten/headers"
+                        and not headers_preserved
+                    ):
+                        failed += 1
+                        continue
                     read_failed = False
                     try:
                         response = await asyncio.wait_for(
@@ -246,6 +256,9 @@ async def warm_users():
                             pending.extend(
                                 sorted(discover_metadata(path, params, data))
                             )
+                            pending.extend(sorted(discover_files(path, data)))
+                            if path == "/nachrichten/headers" and not read_failed:
+                                headers_preserved = True
                     except Exception:  # noqa: BLE001 - isolate per-user endpoint failures
                         read_failed = True
                         logger.warning("Daily cache read failed for %s", path)

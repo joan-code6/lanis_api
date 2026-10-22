@@ -74,7 +74,10 @@ def test_preserved_snapshot_rejects_inflight_pre_refresh_write():
     assert store.get(key, store.version(*key[:2])).body == b"old"
 
 
-@pytest.mark.parametrize("failed", [None, "body", 302, 401, 403, 404, 422, 500, 503])
+@pytest.mark.parametrize(
+    "failed",
+    [None, "body", "headers", "stale_headers", 302, 401, 403, 404, 422, 500, 503],
+)
 def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, failed):
     """Verify warmup discovers unvisited details and replays variants."""
     from types import SimpleNamespace
@@ -93,6 +96,14 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
         """Serve deterministic read responses for cache warming integration tests."""
         response.headers["X-LANIS-Cache"] = "fresh"
         requested.append((request.url.path, request.url.query))
+        if daily_cache.binary_path(request.url.path):
+            return Response(b"file bytes", media_type="application/octet-stream")
+        if path == "nachrichten/headers":
+            if failed == "headers":
+                return {"success": False}
+            if failed == "stale_headers":
+                response.headers["X-LANIS-Cache"] = "stale"
+            return {"success": True, "conversations": [{"id": "123", "unread": 1}]}
         if path == "benutzer" and failed is not None:
             if failed == "body":
                 return {"success": False, "error": "upstream unavailable"}
@@ -120,6 +131,29 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
                         else 0
                     }
                 ],
+                "files": [{"id": "storage-file"}],
+            }
+        if path == "dateiverteilung":
+            return {
+                "success": True,
+                "distributions": [
+                    {"files": [{"download_url": "https://portal.example/file"}]}
+                ],
+            }
+        if path == "meinunterricht/course/new-course":
+            return {
+                "success": True,
+                "entries": [
+                    {"files": [{"download_url": "/meinunterricht/file/course-hash"}]}
+                ],
+            }
+        if path == "meinunterricht/submissions/unopened":
+            return {
+                "success": True,
+                "submission": {
+                    "own_files": [{"download_ref": "own-file"}],
+                    "public_files": [{"download_ref": "public-file"}],
+                },
             }
         if path == "wahlen":
             return {"success": True, "elections": [{"id": "new-election"}]}
@@ -171,6 +205,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
                     (("category", "special"), ("view_id", "second")),
                 ): None,
                 ("user", "/nachrichten/private", ()): None,
+                ("user", "/nachrichten/123", ()): None,
                 ("other", "/kalender/event/other", ()): None,
             }
         ),
@@ -181,6 +216,28 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     assert ("/dateiverteilung", "") in requested
     assert ("/wahlen/new-election", "") in requested
     assert ("/meinunterricht/submissions/unopened", "") in requested
+    for path in (
+        "/dateispeicher/file/storage-file",
+        "/meinunterricht/file/course-hash",
+        "/meinunterricht/submissions/file/own-file",
+        "/meinunterricht/submissions/file/public-file",
+    ):
+        assert (path, "") in requested
+        assert requested.count((path, "")) == 1
+    assert (
+        "/dateiverteilung/file",
+        "url=https%3A%2F%2Fportal.example%2Ffile",
+    ) in requested
+    if failed in {"headers", "stale_headers"}:
+        assert not any(
+            path in {"/nachrichten/123", "/nachrichten/private"}
+            for path, _ in requested
+        )
+    else:
+        assert requested.index(("/nachrichten/headers", "")) < requested.index(
+            ("/nachrichten/123", "")
+        )
+        assert requested.count(("/nachrichten/123", "")) == 1
     assert len([path for path, _ in requested if path == "/dateispeicher"]) == 3
     assert ("/kalender/event/new-event", "") in requested
     assert ("/kalender/event/new-event", "view_id=second") in requested
