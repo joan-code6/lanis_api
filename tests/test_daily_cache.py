@@ -1,6 +1,8 @@
 import asyncio
 from datetime import datetime, timedelta
 
+import pytest
+
 from api import daily_cache, outage_cache
 
 
@@ -39,6 +41,7 @@ def test_encrypted_snapshots_survive_restart_and_delete(tmp_path, monkeypatch):
     store.enable_persistence(path)
     now = outage_cache._utcnow()
     store.put(key, b'{"secret":"homework"}', now, store.version(key[0], key[1]))
+    asyncio.run(store.close())
     assert b"homework" not in (tmp_path / "auth.db").read_bytes()
     restored = outage_cache.SnapshotStore()
     restored.enable_persistence(path)
@@ -47,9 +50,11 @@ def test_encrypted_snapshots_survive_restart_and_delete(tmp_path, monkeypatch):
         == b'{"secret":"homework"}'
     )
     restored.delete_user_data(key[0])
+    asyncio.run(restored.close())
     restarted = outage_cache.SnapshotStore()
     restarted.enable_persistence(path)
     assert not restarted.entries
+    asyncio.run(restarted.close())
 
 
 def test_preserved_snapshot_rejects_inflight_pre_refresh_write():
@@ -63,7 +68,8 @@ def test_preserved_snapshot_rejects_inflight_pre_refresh_write():
     assert store.get(key, store.version(*key[:2])).body == b"old"
 
 
-def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch):
+@pytest.mark.parametrize("failed", [False, True])
+def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, failed):
     from types import SimpleNamespace
 
     from fastapi import FastAPI, Request
@@ -77,6 +83,8 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch):
     @app.get("/{path:path}")
     async def read(path: str, request: Request):
         requested.append((request.url.path, request.url.query))
+        if path == "benutzer" and failed:
+            return {"success": False, "error": "upstream unavailable"}
         if path == "meinunterricht":
             return {"success": True, "courses": [{"book_id": "new-course"}]}
         if path == "kalender/events":
@@ -117,7 +125,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch):
             }
         ),
     )
-    assert asyncio.run(daily_cache.warm_users())
+    assert asyncio.run(daily_cache.warm_users()) is (not failed)
     assert ("/meinunterricht/course/new-course", "") in requested
     assert ("/kalender/event/new-event", "") in requested
     assert ("/kalender/events", "category=special") in requested
@@ -163,5 +171,66 @@ def test_warmup_bypasses_live_cache_without_deleting_it():
         finally:
             daily_cache.warming.reset(reset)
         assert await manager.get_cached("user", "/kalender") == {"success": True}
+
+    asyncio.run(scenario())
+
+
+def test_snapshot_writer_allows_auth_transaction_to_release(tmp_path, monkeypatch):
+    import aiosqlite
+
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
+
+    async def scenario():
+        path = str(tmp_path / "auth.db")
+        store = outage_cache.SnapshotStore()
+        store.enable_persistence(path)
+        async with aiosqlite.connect(path) as auth:
+            await auth.execute("BEGIN IMMEDIATE")
+            key = ("user", "/kalender", ())
+            store.put(key, b"{}", outage_cache._utcnow(), store.version(*key[:2]))
+            # The worker may wait on SQLite; the event loop must remain free to commit.
+            await asyncio.wait_for(auth.commit(), timeout=1)
+            await asyncio.wait_for(store.close(), timeout=1)
+        restored = outage_cache.SnapshotStore()
+        restored.enable_persistence(path)
+        assert restored.get(key, restored.version(*key[:2])).body == b"{}"
+        await restored.close()
+
+    asyncio.run(scenario())
+
+
+def test_homework_change_invalidates_live_course_views_and_preserves_snapshots(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from api import api as api_module
+
+    async def scenario():
+        manager = api_module.AuthManager()
+        store = outage_cache.SnapshotStore()
+        monkeypatch.setattr(api_module, "sessions", manager)
+        monkeypatch.setattr(api_module, "snapshots", store)
+        for endpoint in (
+            "/meinunterricht",
+            "/meinunterricht/course",
+            "/meinunterricht/entry",
+            "/meinunterricht/weekly",
+            "/stundenplan",
+        ):
+            await manager.set_cache(
+                "user", endpoint, {"success": True, "homework_done": False}
+            )
+            key = ("user", endpoint, ())
+            store.put(key, b"{}", outage_cache._utcnow(), store.version(*key[:2]))
+        client = SimpleNamespace(
+            meinunterricht_set_homework_done=lambda *_: {"success": True}
+        )
+        auth = SimpleNamespace(user_id="user", client=client)
+        await api_module.meinunterricht_homework_done(
+            auth=auth, course_id="course", entry_id="entry", done=True
+        )
+        assert not manager._cache
+        assert len(store.entries) == 5
 
     asyncio.run(scenario())

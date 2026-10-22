@@ -1,8 +1,11 @@
 """Bounded, private HTTP snapshots for positively observed upstream outages."""
 
+import asyncio
 import json
+import logging
 import sqlite3
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -89,6 +92,8 @@ class SnapshotStore:
 
     def __init__(self):
         self.database_path = None
+        self._writer = None
+        self._write_errors = []
         self.entries = OrderedDict()
         self.user_versions = {}
         self.path_versions = {}
@@ -127,7 +132,39 @@ class SnapshotStore:
                 ) not in self.entries:
                     db.execute("DELETE FROM outage_snapshots WHERE key = ?", (raw_key,))
 
+        self._writer = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="outage-snapshots"
+        )
+
     def _persist(self, key, entry=None):
+        if self._writer is None:
+            return
+        future = self._writer.submit(self._write_snapshot, key, entry)
+        future.add_done_callback(self._write_completed)
+
+    def _write_completed(self, future):
+        error = future.exception()
+        if error:
+            self._write_errors.append(error)
+            logging.getLogger(__name__).warning("Outage snapshot persistence failed")
+
+    async def flush(self):
+        """Wait for ordered writes without blocking auth transactions on the loop."""
+        if self._writer is not None:
+            await asyncio.wrap_future(self._writer.submit(lambda: None))
+        if self._write_errors:
+            error = self._write_errors.pop(0)
+            raise error
+
+    async def close(self):
+        try:
+            await self.flush()
+        finally:
+            if self._writer is not None:
+                await asyncio.to_thread(self._writer.shutdown, wait=True)
+                self._writer = None
+
+    def _write_snapshot(self, key, entry=None):
         if not self.database_path:
             return
         from .auth_db import _encrypt_password
@@ -238,7 +275,7 @@ class SnapshotStore:
         if self.version(key[0], key[1]) != version or len(body) > MAX_BODY_BYTES:
             return
         entry = Snapshot(body, fetched_at)
-        # Commit replacement first: an encryption/disk failure must retain the old copy.
+        # Queue replacements in order; a failed SQL transaction retains the disk copy.
         self._persist(key, entry)
         if key in self.entries:
             self.total_bytes -= len(self.entries.pop(key).body)

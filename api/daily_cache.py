@@ -88,6 +88,8 @@ async def warm_users():
                             completed = False
                         if response.status_code == 200:
                             data = response.json()
+                            if data.get("success") is False:
+                                completed = False
                             if path == "/meinunterricht" and data.get("success"):
                                 for course in data.get("courses", []):
                                     course_id = course.get("book_id")

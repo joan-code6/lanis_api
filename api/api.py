@@ -692,6 +692,7 @@ class AuthManager:
             for key in [key for key in self._cache_versions if key[0] == user_id]:
                 self._cache_versions.pop(key, None)
         snapshots.delete_user_data(user_id)
+        await snapshots.flush()
         return {"cache_entries": cache_count, "snapshot_entries": snapshot_count}
 
     # -- Schulportal client cache ------------------------------------
@@ -1014,6 +1015,7 @@ class AuthManager:
 
     async def invalidate_user_cache(self, user_id: str) -> None:
         snapshots.invalidate(user_id)
+        await snapshots.flush()
         async with self._lock:
             version_keys = [
                 key for key in self._cache_versions if key[0] == user_id
@@ -1407,7 +1409,7 @@ async def _startup() -> None:
     await auth_db_initialize()
     await run_in_threadpool(purge_expired_files)
     from .auth_db import DB_PATH
-    snapshots.enable_persistence(DB_PATH)
+    await run_in_threadpool(snapshots.enable_persistence, DB_PATH)
     await purge_expired_whatsapp_ai_history()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
@@ -1463,6 +1465,7 @@ async def _cleanup_sessions() -> None:
                 confirmation_task.cancel()
             await asyncio.gather(*pending_confirmations, return_exceptions=True)
     await sessions.shutdown()
+    await snapshots.close()
 
 
 # --- Public Endpoints ---
@@ -3810,7 +3813,11 @@ async def meinunterricht_homework_done(
         auth.client.meinunterricht_set_homework_done, course_id, entry_id, done
     )
     if result.get("success"):
-        await sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht")
+        for endpoint in (
+            "/meinunterricht", "/meinunterricht/course", "/meinunterricht/entry",
+            "/meinunterricht/weekly", "/meinunterricht/submissions", "/stundenplan",
+        ):
+            await sessions.invalidate_endpoint_cache(auth.user_id, endpoint)
     return result
 
 
