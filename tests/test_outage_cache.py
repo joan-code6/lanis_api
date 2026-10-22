@@ -260,7 +260,9 @@ def test_auth_parameters_user_isolation_revocation_and_write_invalidation(setup)
         state.revoked = False
         await manager.invalidate_endpoint_cache("5201:student", "/kalender")
         assert store.status("5201:student")["available"]
-        assert (await asgi_request(app, "GET", "/kalender", headers)).headers["x-lanis-cache"] == "stale"
+        assert (await asgi_request(app, "GET", "/kalender", headers)).headers[
+            "x-lanis-cache"
+        ] == "stale"
 
     asyncio.run(scenario())
 
@@ -378,5 +380,46 @@ def test_old_metadata_does_not_age_timetable_snapshot(setup):
             assert utcnow() - context.cached_timestamps[0] < timedelta(seconds=5)
         finally:
             observation.reset(token)
+
+    asyncio.run(scenario())
+
+
+def test_default_query_parameters_share_proactively_warmed_snapshot(setup):
+    app, _manager, store, state, headers = setup
+
+    @app.get("/kalender/events")
+    async def events(
+        year: int = 0,
+        start: str = "year",
+        include_raw: bool = False,
+        auth=Depends(api_module.local_auth_dependency),  # noqa: B008
+    ):
+        try:
+            ObservedSession().get("https://example.invalid").raise_for_status()
+        except requests.RequestException:
+            return {"success": False}
+        return {
+            "success": True,
+            "year": year,
+            "start": start,
+            "include_raw": include_raw,
+        }
+
+    async def scenario():
+        fresh = await asgi_request(app, "GET", "/kalender/events", headers)
+        assert fresh.headers["x-lanis-cache"] == "fresh"
+        state.mode = "timeout"
+        stale = await asgi_request(
+            app, "GET", "/kalender/events?year=0&start=year&include_raw=no", headers
+        )
+        assert stale.headers["x-lanis-cache"] == "stale"
+        assert stale.json() == fresh.json()
+        assert len(store.entries) == 1
+        other = await asgi_request(app, "GET", "/kalender/events?year=1", headers)
+        assert "x-lanis-cache" not in other.headers
+        invalid = await asgi_request(
+            app, "GET", "/kalender/events?year=invalid", headers
+        )
+        assert invalid.status_code == 422
 
     asyncio.run(scenario())

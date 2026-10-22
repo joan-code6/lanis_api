@@ -203,8 +203,14 @@ The API warms read-only user views daily starting at **03:00 Europe/Berlin**
 (including daylight saving changes). It processes one valid stored session per
 user, sequentially, and refreshes the standard profile, modules, calendar,
 substitution plan, timetable, courses, attendance, homework/submissions and
-message headers. Course and calendar detail IDs are discovered from overviews;
-previously requested parameter variants are refreshed too. Message bodies are
+message headers. Supported file-storage folder trees, file-distribution lists,
+and election forms are discovered from the user’s module capabilities. Submission
+details are discovered from submission and course views. Current and next-year
+calendar lists, course details, and calendar event details are discovered from
+overviews;
+previously requested parameter variants are refreshed too. Snapshot keys normalize
+explicit route defaults, allowing a default UI request to use a view warmed
+without redundant query parameters. Message bodies are
 not proactively opened because Schulportal uses a read action for those requests.
 Files and arbitrary search results are not bulk downloaded.
 

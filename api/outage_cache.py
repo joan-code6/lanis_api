@@ -31,6 +31,11 @@ READ_ROUTES = {
     "/stundenplan",
     "/stundenplan/view",
     "/lerngruppen",
+    "/wahlen",
+    "/wahlen/{election_id}",
+    "/dateispeicher",
+    "/dateispeicher/search",
+    "/dateiverteilung",
     "/meinunterricht",
     "/meinunterricht/attendance",
     "/meinunterricht/course/{course_id}",
@@ -480,17 +485,27 @@ class OutageCacheRoute(APIRoute):
                 return await original(request)
             identity = await local_auth_dependency(token)
             request.state.lanis_auth = identity
-            key = (
-                identity.user_id,
-                request.url.path,
-                tuple(
-                    sorted(
-                        (name, value)
-                        for name, value in request.query_params.multi_items()
-                        if name not in {"refresh", "force_refresh"}
-                    )
-                ),
-            )
+            defaults = {
+                field.alias: field.default
+                for field in self.dependant.query_params
+                if not field.field_info.is_required()
+            }
+            normalized_params = []
+            for name, value in request.query_params.multi_items():
+                if name in {"refresh", "force_refresh"}:
+                    continue
+                default = defaults.get(name)
+                if isinstance(default, bool):
+                    if value.lower() in {"true", "1", "on", "yes"}:
+                        value = "true"
+                    elif value.lower() in {"false", "0", "off", "no"}:
+                        value = "false"
+                    if value == str(default).lower():
+                        continue
+                elif name in defaults and default is not None and value == str(default):
+                    continue
+                normalized_params.append((name, value))
+            key = (identity.user_id, request.url.path, tuple(sorted(normalized_params)))
             if self.path in {
                 "/meinunterricht/submissions",
                 "/meinunterricht/submissions/{detail_ref}",

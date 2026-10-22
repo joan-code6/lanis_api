@@ -96,6 +96,34 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
             if failed == "body":
                 return {"success": False, "error": "upstream unavailable"}
             return JSONResponse({"detail": "read rejected"}, status_code=failed)
+        if path == "modules":
+            return {
+                "success": True,
+                "modules": [
+                    {
+                        "usage": [
+                            "dateispeicher_get_node",
+                            "dateiverteilung_get_overview",
+                            "wahlen_get_overview",
+                        ]
+                    }
+                ],
+            }
+        if path == "dateispeicher":
+            return {
+                "success": True,
+                "folders": [
+                    {
+                        "id": 7
+                        if request.query_params.get("folder_id", "0") == "0"
+                        else 0
+                    }
+                ],
+            }
+        if path == "wahlen":
+            return {"success": True, "elections": [{"id": "new-election"}]}
+        if path == "meinunterricht/submissions":
+            return {"success": True, "submissions": [{"detail_ref": "unopened"}]}
         if path == "meinunterricht":
             return {"success": True, "courses": [{"book_id": "new-course"}]}
         if path == "kalender/events":
@@ -144,6 +172,11 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     )
     assert asyncio.run(daily_cache.warm_users()) is (failed is None)
     assert ("/meinunterricht/course/new-course", "") in requested
+    assert ("/dateispeicher", "folder_id=7") in requested
+    assert ("/dateiverteilung", "") in requested
+    assert ("/wahlen/new-election", "") in requested
+    assert ("/meinunterricht/submissions/unopened", "") in requested
+    assert len([path for path, _ in requested if path == "/dateispeicher"]) == 3
     assert ("/kalender/event/new-event", "") in requested
     assert ("/kalender/event/new-event", "view_id=second") in requested
     assert ("/kalender/events", "category=special&view_id=second") in requested
@@ -829,3 +862,55 @@ def test_failed_deletion_then_relogin_cannot_restore_revoked_snapshot(
         await restarted.close()
 
     asyncio.run(scenario())
+
+
+def test_metadata_discovery_covers_supported_unvisited_views():
+    """Walk folder trees, elections and submission details without mutations."""
+    discover = daily_cache.discover_metadata
+    assert discover(
+        "/modules",
+        (),
+        {
+            "success": True,
+            "modules": [
+                {
+                    "usage": [
+                        "dateispeicher_get_node",
+                        "wahlen_get_overview",
+                        "dateiverteilung_get_overview",
+                        "wahlen_submit",
+                    ]
+                }
+            ],
+        },
+    ) == {("/dateispeicher", ()), ("/wahlen", ()), ("/dateiverteilung", ())}
+    assert discover(
+        "/dateispeicher", (), {"success": True, "folders": [{"id": 12}, {"id": 0}]}
+    ) == {
+        ("/dateispeicher", (("folder_id", "12"),)),
+        ("/dateispeicher", (("folder_id", "0"),)),
+    }
+    assert discover(
+        "/wahlen", (), {"success": True, "elections": [{"id": "form"}]}
+    ) == {("/wahlen/form", ())}
+    assert discover(
+        "/meinunterricht/submissions",
+        (),
+        {"success": True, "submissions": [{"detail_ref": "new"}]},
+    ) == {("/meinunterricht/submissions/new", ())}
+    assert discover(
+        "/meinunterricht/course/c",
+        (),
+        {"success": True, "entries": [{"uploads": [{"detail_ref": "upload"}]}]},
+    ) == {("/meinunterricht/submissions/upload", ())}
+    assert discover(
+        "/kalender", (), {"success": True, "calendar": {"first_id": "first"}}
+    ) == {
+        ("/kalender/events", (("year", "0"),)),
+        ("/kalender/events", (("year", "1"),)),
+        ("/kalender/events", (("view_id", "first"), ("year", "0"))),
+        ("/kalender/events", (("view_id", "first"), ("year", "1"))),
+    }
+    assert not discover(
+        "/dateispeicher", (), {"success": False, "folders": [{"id": 12}]}
+    )

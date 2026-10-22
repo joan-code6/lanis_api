@@ -42,6 +42,82 @@ def next_run(now):
     return target
 
 
+def discover_metadata(path, params, data):
+    """Enumerate supported read views from portal-owned identifiers and capabilities."""
+    targets = set()
+    if data.get("success") is not True:
+        return targets
+    if path == "/modules":
+        routes = {
+            "dateispeicher_get_node": "/dateispeicher",
+            "dateiverteilung_get_overview": "/dateiverteilung",
+            "wahlen_get_overview": "/wahlen",
+        }
+        for module in data.get("modules", []):
+            for method in module.get("usage", []):
+                if method in routes:
+                    targets.add((routes[method], ()))
+    if path == "/wahlen":
+        for election in data.get("elections", []):
+            if election.get("id"):
+                targets.add(("/wahlen/" + quote(str(election["id"]), safe=""), ()))
+    if path == "/dateispeicher":
+        for folder in data.get("folders", []):
+            if folder.get("id") is not None:
+                targets.add(("/dateispeicher", (("folder_id", str(folder["id"])),)))
+    if path == "/meinunterricht":
+        for course in [*data.get("courses", []), *data.get("entries", [])]:
+            if course.get("book_id"):
+                targets.add(
+                    (
+                        "/meinunterricht/course/"
+                        + quote(str(course["book_id"]), safe=""),
+                        (),
+                    )
+                )
+    submissions = (
+        list(data.get("submissions", []))
+        if path == "/meinunterricht/submissions"
+        else []
+    )
+    if path.startswith("/meinunterricht/course/"):
+        for entry in data.get("entries", []):
+            submissions.extend(entry.get("uploads", []))
+    for submission in submissions:
+        if submission.get("detail_ref"):
+            targets.add(
+                (
+                    "/meinunterricht/submissions/"
+                    + quote(str(submission["detail_ref"]), safe=""),
+                    (),
+                )
+            )
+    if path == "/kalender":
+        first_view = data.get("calendar", {}).get("first_id")
+        for year in ("0", "1"):
+            values = (("year", year),)
+            targets.add(("/kalender/events", values))
+            if first_view:
+                targets.add(
+                    ("/kalender/events", (("view_id", str(first_view)), *values))
+                )
+    if path == "/kalender/events":
+        views = {tuple((name, value) for name, value in params if name == "view_id")}
+        selected_view = data.get("filters", {}).get("view_id")
+        if selected_view:
+            views.add((("view_id", str(selected_view)),))
+        for event in data.get("events", []):
+            if event.get("id"):
+                for view_params in views:
+                    targets.add(
+                        (
+                            "/kalender/event/" + quote(str(event["id"]), safe=""),
+                            view_params,
+                        )
+                    )
+    return targets
+
+
 async def warm_users():
     """Refresh authenticated read views without discarding successful snapshots."""
     from .api import app, sessions
@@ -95,31 +171,9 @@ async def warm_users():
                             data = response.json()
                             if data.get("success") is False:
                                 completed = False
-                            if path == "/meinunterricht" and data.get("success"):
-                                for course in data.get("courses", []):
-                                    course_id = course.get("book_id")
-                                    if course_id:
-                                        pending.append(
-                                            (
-                                                "/meinunterricht/course/"
-                                                + quote(str(course_id), safe=""),
-                                                (),
-                                            )
-                                        )
-                            if path == "/kalender/events" and data.get("success"):
-                                for event in data.get("events", []):
-                                    if event.get("id"):
-                                        pending.append(
-                                            (
-                                                "/kalender/event/"
-                                                + quote(str(event["id"]), safe=""),
-                                                tuple(
-                                                    (name, value)
-                                                    for name, value in params
-                                                    if name == "view_id"
-                                                ),
-                                            )
-                                        )
+                            pending.extend(
+                                sorted(discover_metadata(path, params, data))
+                            )
                     except Exception:  # noqa: BLE001 - isolate per-user endpoint failures
                         completed = False
                         logger.warning("Daily cache read failed for %s", path)
