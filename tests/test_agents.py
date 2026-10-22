@@ -402,3 +402,51 @@ def test_rate_limit_and_authorization_request_expiry(environment):
             assert not await store.rate_limit("test-limiter", 1, 60)
 
     asyncio.run(scenario())
+
+
+def test_school_tool_holds_account_lifecycle_lease(environment, monkeypatch):
+    """Account deletion cannot race a tool into recreating school caches."""
+    from types import SimpleNamespace
+
+    from api import agent_mcp
+    from api.account_data import account_lifecycle_lock
+
+    async def scenario():
+        entered, release, deleting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def identity(_scope=None):
+            return {
+                "id": "test-grant",
+                "user_id": "5201:alice",
+                "scopes": ["schoolwork:read"],
+            }
+
+        async def session(_user_id):
+            return SimpleNamespace(client=None)
+
+        async def read_school(auth):
+            assert auth.session_id
+            entered.set()
+            await release.wait()
+            return {"success": True}
+
+        async def delete():
+            lock = await account_lifecycle_lock("5201:alice")
+            async with lock:
+                deleting.set()
+
+        monkeypatch.setattr(agent_mcp, "identity", identity)
+        monkeypatch.setattr(
+            api_module.sessions, "_get_or_create_schulportal_client", session
+        )
+        task = asyncio.create_task(agent_mcp.run("schoolwork:read", read_school))
+        await asyncio.wait_for(entered.wait(), 3)
+        deletion = asyncio.create_task(delete())
+        await asyncio.sleep(0)
+        assert not deleting.is_set()
+        release.set()
+        assert (await task)["success"] is True
+        await deletion
+        assert deleting.is_set()
+
+    asyncio.run(scenario())

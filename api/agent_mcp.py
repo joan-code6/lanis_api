@@ -105,44 +105,50 @@ async def run(scope, fn):
             "error": "RATE_LIMITED",
             "next_step": "Wait one minute before calling more school tools.",
         }
+    from .account_data import account_lifecycle_lock
     from .api import AuthSession, sessions
 
-    try:
-        session = await sessions._get_or_create_schulportal_client(grant["user_id"])
-        credentials = await auth_db.get_refresh_token_by_user_id(grant["user_id"])
-        if not credentials:
-            raise HTTPException(401)
-        auth = AuthSession(
-            client=session.client,
-            user_id=grant["user_id"],
-            school_id=credentials["school_id"],
-            username=credentials["username"],
-        )
-        result = await fn(auth)
-    except HTTPException as exc:
-        if exc.status_code in (401, 403):
+    lifecycle = await account_lifecycle_lock(grant["user_id"])
+    async with lifecycle.shared():
+        # Deletion or revocation may have completed while this call waited.
+        grant = await identity(scope)
+        try:
+            session = await sessions._get_or_create_schulportal_client(grant["user_id"])
+            credentials = await auth_db.get_refresh_token_by_user_id(grant["user_id"])
+            if not credentials:
+                raise HTTPException(401)
+            auth = AuthSession(
+                client=session.client,
+                user_id=grant["user_id"],
+                school_id=credentials["school_id"],
+                username=credentials["username"],
+                session_id=credentials["session_id"],
+            )
+            result = await fn(auth)
+        except HTTPException as exc:
+            if exc.status_code in (401, 403):
+                return {
+                    "success": False,
+                    "error": "SCHOOL_SESSION_EXPIRED",
+                    "next_step": "Ask the user to sign in to LANIS again, then retry.",
+                }
             return {
                 "success": False,
-                "error": "SCHOOL_SESSION_EXPIRED",
-                "next_step": "Ask the user to sign in to LANIS again, then retry.",
+                "error": "SCHOOL_UNAVAILABLE",
+                "next_step": "School data could not be loaded. Retry later; do not infer that there are no entries.",
             }
-        return {
-            "success": False,
-            "error": "SCHOOL_UNAVAILABLE",
-            "next_step": "School data could not be loaded. Retry later; do not infer that there are no entries.",
-        }
-    except Exception:  # noqa: BLE001 -- upstream failures must not expose session internals
-        return {
-            "success": False,
-            "error": "SCHOOL_UNAVAILABLE",
-            "next_step": "Retry later. No school data was returned.",
-        }
-    async with store.database(True) as db:
-        await db.execute(
-            "UPDATE agent_grants SET last_used=? WHERE id=? AND revoked=0",
-            (time.time(), grant["id"]),
-        )
-    return result
+        except Exception:  # noqa: BLE001 -- upstream failures must not expose session internals
+            return {
+                "success": False,
+                "error": "SCHOOL_UNAVAILABLE",
+                "next_step": "Retry later. No school data was returned.",
+            }
+        async with store.database(True) as db:
+            await db.execute(
+                "UPDATE agent_grants SET last_used=? WHERE id=? AND revoked=0",
+                (time.time(), grant["id"]),
+            )
+        return result
 
 
 @tool(title="Your LANIS connection")
