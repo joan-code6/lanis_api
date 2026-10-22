@@ -44,6 +44,7 @@ READ_ROUTES = {
 
 
 def _utcnow():
+    """Return a naive UTC timestamp consistent with stored snapshot metadata."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
@@ -78,6 +79,7 @@ DEPENDENT_SNAPSHOT_PATHS = {
 
 
 def utc_timestamp(value):
+    """Serialize a stored UTC timestamp for response metadata."""
     return value.isoformat(timespec="seconds") + "Z" if value else None
 
 
@@ -91,6 +93,7 @@ class SnapshotStore:
     """Event-loop-owned store; no awaits during checks/mutations prevents races."""
 
     def __init__(self):
+        """Initialize bounded in-memory snapshots and optional persistence state."""
         self.database_path = None
         self._writer = None
         self._user_deletions = {}
@@ -148,12 +151,14 @@ class SnapshotStore:
         )
 
     def _persist(self, key, entry=None):
+        """Queue an ordered disk update without blocking the event loop."""
         if self._writer is None:
             return
         future = self._writer.submit(self._write_snapshot, key, entry)
         future.add_done_callback(self._write_completed)
 
     def _write_completed(self, future):
+        """Log background failures without retaining unrelated write exceptions."""
         error = future.exception()
         if error:
             logging.getLogger(__name__).warning("Outage snapshot persistence failed")
@@ -169,6 +174,7 @@ class SnapshotStore:
             await asyncio.wrap_future(self._writer.submit(lambda: None))
 
     def _delete_persisted_user(self, user_id):
+        """Delete all persisted rows for one user in the writer thread."""
         with sqlite3.connect(self.database_path) as db:
             db.execute(
                 "DELETE FROM outage_snapshots WHERE "
@@ -177,6 +183,7 @@ class SnapshotStore:
             )
 
     async def close(self):
+        """Drain pending deletions and writes before shutting down the writer."""
         try:
             for user_id in list(self._user_deletions):
                 await self.flush(user_id)
@@ -187,6 +194,7 @@ class SnapshotStore:
                 self._writer = None
 
     def _write_snapshot(self, key, entry=None):
+        """Encrypt and commit one snapshot update or deletion in the worker."""
         if not self.database_path:
             return
         from .auth_db import _encrypt_password
@@ -207,6 +215,7 @@ class SnapshotStore:
                 )
 
     def _remove(self, key):
+        """Queue deletion of a snapshot and update memory accounting."""
         self._persist(key)
         entry = self.entries.pop(key)
         self.total_bytes -= len(entry.body)
@@ -214,10 +223,12 @@ class SnapshotStore:
     def purge(self):
         # Keep the last successful response through outages of any duration.
         # Size bounds and account deletion still remove private data.
+        """Retain snapshots across long outages; size bounds govern eviction."""
         return
 
     @staticmethod
     def _version_path(path):
+        """Group dynamic detail routes for invalidation of related requests."""
         if path.startswith("/nachrichten/"):
             return "/nachrichten/*"
         if path.startswith("/meinunterricht/course/"):
@@ -227,6 +238,7 @@ class SnapshotStore:
         return path
 
     def version(self, user_id, path):
+        """Return user and endpoint generations used to reject obsolete writes."""
         version_path = self._version_path(path)
         if user_id not in self.user_versions:
             self._generation += 1
@@ -245,6 +257,7 @@ class SnapshotStore:
         # Keep every user generation in the same monotonically increasing
         # sequence. Deletion removes the per-user key, so its next allocation
         # must never reuse the just-invalidated value.
+        """Revoke a user generation and queue deletion of all owned snapshots."""
         self._generation += 1
         self.user_versions[user_id] = self._generation
         for key in list(self.entries):
@@ -298,6 +311,7 @@ class SnapshotStore:
                 self._remove(key)
 
     def put(self, key, body, fetched_at, version):
+        """Store a successful snapshot only if its request generation is current."""
         self.purge()
         if self.version(key[0], key[1]) != version or len(body) > MAX_BODY_BYTES:
             return
@@ -315,12 +329,14 @@ class SnapshotStore:
             self._remove(next(iter(self.entries)))
 
     def get(self, key, version):
+        """Return a snapshot only for the currently authorized request generation."""
         self.purge()
         if self.version(key[0], key[1]) != version:
             return None
         return self.entries.get(key)
 
     def status(self, user_id):
+        """Describe available snapshots and their latest successful fetch time."""
         self.purge()
         timestamps = [
             entry.fetched_at for key, entry in self.entries.items() if key[0] == user_id
@@ -360,6 +376,7 @@ snapshots = SnapshotStore()
 
 
 def set_headers(response, fetched_at, cache_status):
+    """Label private cache responses with their origin and original fetch time."""
     response.headers["X-LANIS-Cache"] = cache_status
     response.headers["X-LANIS-Fetched-At"] = utc_timestamp(fetched_at)
     response.headers["Cache-Control"] = "private, no-store"
@@ -367,12 +384,14 @@ def set_headers(response, fetched_at, cache_status):
 
 class OutageCacheRoute(APIRoute):
     def get_route_handler(self):
+        """Wrap allowlisted reads with authenticated outage snapshot handling."""
         original = super().get_route_handler()
         if self.path not in READ_ROUTES or self.methods != {"GET"}:
             return original
 
         async def handler(request):
             # Import lazily: the application owns identity and session validation.
+            """Observe upstream failures and serve a private snapshot when permitted."""
             from .api import local_auth_dependency
 
             token = request.headers.get("X-Session-Token")

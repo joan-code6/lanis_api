@@ -7,6 +7,7 @@ from api import daily_cache, outage_cache
 
 
 def test_next_run_uses_berlin_wall_clock_across_dst():
+    """Verify next run uses berlin wall clock across dst."""
     for day in (
         datetime(2026, 3, 28, 4, tzinfo=daily_cache.ZONE),
         datetime(2026, 10, 24, 4, tzinfo=daily_cache.ZONE),
@@ -18,15 +19,18 @@ def test_next_run_uses_berlin_wall_clock_across_dst():
 
 
 def test_outage_or_unknown_status_skips_all_users(monkeypatch):
+    """Verify outage or unknown status skips all users."""
     from api import uptime
 
     async def users():
+        """Provide test session identities without accessing real credentials."""
         raise AssertionError("Must not fetch users during an outage")
 
     monkeypatch.setattr(daily_cache.auth_db, "get_cache_warmup_users", users)
     for status in ("down", "degraded", "not_configured", "unknown"):
 
         async def check(status=status):
+            """Provide a controlled synthetic portal status."""
             return {"status": status}
 
         monkeypatch.setattr(uptime, "run_uptime_check", check)
@@ -34,6 +38,7 @@ def test_outage_or_unknown_status_skips_all_users(monkeypatch):
 
 
 def test_encrypted_snapshots_survive_restart_and_delete(tmp_path, monkeypatch):
+    """Verify encrypted snapshots survive restart and delete."""
     monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
     path = str(tmp_path / "auth.db")
     key = ("school:user", "/kalender", (("category", "private"),))
@@ -58,6 +63,7 @@ def test_encrypted_snapshots_survive_restart_and_delete(tmp_path, monkeypatch):
 
 
 def test_preserved_snapshot_rejects_inflight_pre_refresh_write():
+    """Verify preserved snapshot rejects inflight pre refresh write."""
     store = outage_cache.SnapshotStore()
     key = ("user", "/kalender", ())
     version = store.version(*key[:2])
@@ -70,6 +76,7 @@ def test_preserved_snapshot_rejects_inflight_pre_refresh_write():
 
 @pytest.mark.parametrize("failed", [False, True])
 def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, failed):
+    """Verify warmup discovers unvisited details and replays variants."""
     from types import SimpleNamespace
 
     from fastapi import FastAPI, Request
@@ -82,6 +89,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
 
     @app.get("/{path:path}")
     async def read(path: str, request: Request):
+        """Serve deterministic read responses for cache warming integration tests."""
         requested.append((request.url.path, request.url.query))
         if path == "benutzer" and failed:
             return {"success": False, "error": "upstream unavailable"}
@@ -92,9 +100,11 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
         return {"success": True}
 
     async def check():
+        """Provide a controlled synthetic portal status."""
         return {"status": "up"}
 
     async def users():
+        """Provide test session identities without accessing real credentials."""
         return [
             {
                 "user_id": "user",
@@ -105,6 +115,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
         ]
 
     async def no_delay(_):
+        """Skip pacing delays while exercising the warm-up requests."""
         pass
 
     monkeypatch.setattr(uptime, "run_uptime_check", check)
@@ -137,6 +148,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
 
 
 def test_failed_persistent_replacement_keeps_previous_snapshot(monkeypatch):
+    """Verify failed persistent replacement keeps previous snapshot."""
     import pytest
 
     store = outage_cache.SnapshotStore()
@@ -145,6 +157,7 @@ def test_failed_persistent_replacement_keeps_previous_snapshot(monkeypatch):
     store.put(key, b"previous", outage_cache._utcnow(), version)
 
     def fail(*args):
+        """Simulate a failure to verify recovery behavior."""
         raise OSError("disk full")
 
     monkeypatch.setattr(store, "_persist", fail)
@@ -156,9 +169,11 @@ def test_failed_persistent_replacement_keeps_previous_snapshot(monkeypatch):
 
 
 def test_warmup_bypasses_live_cache_without_deleting_it():
+    """Verify warmup bypasses live cache without deleting it."""
     from api import api as api_module
 
     async def scenario():
+        """Exercise the asynchronous lifecycle within a single event loop."""
         manager = api_module.AuthManager()
         await manager.set_cache("user", "/kalender", {"success": True})
         reset = daily_cache.warming.set(True)
@@ -176,11 +191,13 @@ def test_warmup_bypasses_live_cache_without_deleting_it():
 
 
 def test_snapshot_writer_allows_auth_transaction_to_release(tmp_path, monkeypatch):
+    """Verify snapshot writer allows auth transaction to release."""
     import aiosqlite
 
     monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
 
     async def scenario():
+        """Exercise the asynchronous lifecycle within a single event loop."""
         path = str(tmp_path / "auth.db")
         store = outage_cache.SnapshotStore()
         store.enable_persistence(path)
@@ -202,11 +219,13 @@ def test_snapshot_writer_allows_auth_transaction_to_release(tmp_path, monkeypatc
 def test_homework_change_invalidates_live_course_views_and_preserves_snapshots(
     monkeypatch,
 ):
+    """Verify homework change invalidates live course views and preserves snapshots."""
     from types import SimpleNamespace
 
     from api import api as api_module
 
     async def scenario():
+        """Exercise the asynchronous lifecycle within a single event loop."""
         manager = api_module.AuthManager()
         store = outage_cache.SnapshotStore()
         monkeypatch.setattr(api_module, "sessions", manager)
@@ -237,6 +256,7 @@ def test_homework_change_invalidates_live_course_views_and_preserves_snapshots(
 
 
 def test_restore_skips_and_removes_unreadable_rows(tmp_path, monkeypatch):
+    """Verify restore skips and removes unreadable rows."""
     import json
     import sqlite3
 
@@ -269,14 +289,17 @@ def test_restore_skips_and_removes_unreadable_rows(tmp_path, monkeypatch):
 def test_flush_ignores_other_users_put_failure_but_reports_own_deletion(
     tmp_path, monkeypatch
 ):
+    """Verify flush ignores other users put failure but reports own deletion."""
     monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
 
     async def scenario():
+        """Exercise the asynchronous lifecycle within a single event loop."""
         store = outage_cache.SnapshotStore()
         store.enable_persistence(str(tmp_path / "auth.db"))
         original = store._write_snapshot
 
         def fail_put(key, entry=None):
+            """Simulate an unrelated failed snapshot write while allowing deletions."""
             if entry is not None:
                 raise OSError("failed unrelated put")
             return original(key, entry)
@@ -289,6 +312,7 @@ def test_flush_ignores_other_users_put_failure_but_reports_own_deletion(
         await store.flush()
 
         def fail_delete(user_id):
+            """Simulate failure of the requested persisted user deletion."""
             raise OSError("failed requested deletion")
 
         monkeypatch.setattr(store, "_delete_persisted_user", fail_delete)
@@ -304,11 +328,13 @@ def test_flush_ignores_other_users_put_failure_but_reports_own_deletion(
 
 
 def test_logout_closes_client_and_clears_live_cache_even_if_deletion_fails(monkeypatch):
+    """Verify logout closes client and clears live cache even if deletion fails."""
     from types import SimpleNamespace
 
     from api import api as api_module
 
     async def scenario():
+        """Exercise the asynchronous lifecycle within a single event loop."""
         manager = api_module.AuthManager()
         store = outage_cache.SnapshotStore()
         monkeypatch.setattr(api_module, "snapshots", store)
@@ -320,6 +346,7 @@ def test_logout_closes_client_and_clears_live_cache_even_if_deletion_fails(monke
         old_version = await manager.get_cache_version("school:user", "/kalender")
 
         async def fail_flush(user_id=None):
+            """Simulate failed persistence after local client and cache cleanup."""
             raise OSError("deletion failed")
 
         monkeypatch.setattr(store, "flush", fail_flush)
@@ -336,6 +363,7 @@ def test_logout_closes_client_and_clears_live_cache_even_if_deletion_fails(monke
 
 
 def test_expiry_deletes_snapshots_only_after_last_session(tmp_path, monkeypatch):
+    """Verify expiry deletes snapshots only after last session."""
     import aiosqlite
 
     from api import auth_db
@@ -343,6 +371,7 @@ def test_expiry_deletes_snapshots_only_after_last_session(tmp_path, monkeypatch)
     monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
 
     async def scenario():
+        """Exercise the asynchronous lifecycle within a single event loop."""
         path = str(tmp_path / "auth.db")
         monkeypatch.setattr(auth_db, "DB_PATH", path)
         monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
@@ -385,14 +414,17 @@ def test_expiry_deletes_snapshots_only_after_last_session(tmp_path, monkeypatch)
 
 
 def test_retry_budget_returns_to_next_daily_run(monkeypatch):
+    """Verify retry budget returns to next daily run."""
     attempts = []
     sleeps = []
 
     async def fail():
+        """Simulate a failure to verify recovery behavior."""
         attempts.append(True)
         return False
 
     async def sleep(seconds):
+        """Record scheduler waits and stop after the next daily scheduling point."""
         sleeps.append(seconds)
         if len(sleeps) == 3:
             raise asyncio.CancelledError

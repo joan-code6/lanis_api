@@ -35,6 +35,7 @@ BASE_PATHS = (
 
 
 def next_run(now):
+    """Return the next 03:00 Berlin wall-clock run, including DST changes."""
     target = datetime.combine(now.date(), time(3), ZONE)
     if target <= now:
         target = datetime.combine(now.date() + timedelta(days=1), time(3), ZONE)
@@ -42,6 +43,7 @@ def next_run(now):
 
 
 async def warm_users():
+    """Refresh authenticated read views without discarding successful snapshots."""
     from .api import app, sessions
     from .outage_cache import snapshots
     from .uptime import run_uptime_check
@@ -124,6 +126,7 @@ async def warm_users():
 
 
 async def run_daily_cache():
+    """Schedule daily warming with a bounded budget of outage retries."""
     while True:
         now = datetime.now(ZONE)
         await asyncio.sleep(next_run(now).timestamp() - now.timestamp())
