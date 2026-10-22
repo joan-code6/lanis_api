@@ -55,6 +55,14 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
         else "unknown",
         "features": [],
     }
+    evidence = row.get("monitoring")
+    if isinstance(evidence, dict):
+        if evidence.get("observed_status") in {"up", "down", "degraded", "unknown"}:
+            result["observed_status"] = evidence["observed_status"]
+        if evidence.get("confidence") in {"confirmed", "limited", "inconclusive"}:
+            result["confidence"] = evidence["confidence"]
+        if evidence.get("scope") in {"account", "school", "multiple_schools", "sampled_accounts", "unknown"}:
+            result["scope"] = evidence["scope"]
     if row.get("latency_ms") is not None:
         result["latency_ms"] = row["latency_ms"]
     if row.get("sample_interval_seconds") is not None:
@@ -68,7 +76,7 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
         ), None)
         feature = {
             "name": name,
-            "status": item.get("status") if item and item.get("status") in {"up", "down"} else "unknown",
+            "status": item.get("status") if item and item.get("status") in {"up", "down", "degraded"} else "unknown",
         }
         if item and item.get("latency_ms") is not None:
             feature["latency_ms"] = item["latency_ms"]
@@ -254,6 +262,8 @@ async def _build_public_status() -> dict[str, Any]:
     )
     if stale or not uptime.uptime_is_configured():
         current["status"] = "unknown"
+        current["confidence"] = "inconclusive"
+        current["scope"] = "unknown"
         current["features"] = [
             {"name": name, "status": "unknown"} for name in ("login", "modules")
         ]
@@ -360,11 +370,11 @@ async def _build_public_status() -> dict[str, Any]:
         )[-uptime.UPTIME_INCIDENT_LIMIT :][::-1],
         "measurement": {
             "interval_seconds": interval,
-            "incident_interval_seconds": uptime.INCIDENT_UPTIME_INTERVAL_SECONDS,
+            "incident_interval_seconds": uptime.get_uptime_interval_seconds(),
             "stale_after_seconds": stale_after,
             "period_start": _iso(start),
             "period_end": _iso(now),
-            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit zwei zufällig ausgewählten Monitor-Konten. Die Verfügbarkeit wird zeitgewichtet aus bestätigten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Bei einem Fehler werden beide Konten und bis zu zwei weitere Konten parallel geprüft. Einzelne Kontofehler und unvollständige Prüfungen bleiben unbekannt; mehrere bestätigte Kontofehler gelten als Beeinträchtigung. Eine Wiederherstellung benötigt zwei vollständig erfolgreiche reguläre Prüfrunden. Störungen fassen aufeinanderfolgende bestätigte Ausfälle zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
+            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit zwei zufällig ausgewählten Monitor-Konten. Die Verfügbarkeit wird zeitgewichtet aus beobachteten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Bei einem Fehler werden beide Konten und bis zu zwei weitere Konten parallel geprüft. Auch Fehler eines einzelnen Kontos zählen als teilweise Beeinträchtigung und fließen in die Verfügbarkeitsmessung ein. Aussagekraft und beobachteter Umfang werden getrennt ausgewiesen; ein einzelnes betroffenes Konto bestätigt keinen allgemeinen Ausfall. Unvollständige Prüfungen ohne beobachteten Funktionsfehler bleiben unbekannt. Eine Wiederherstellung benötigt zwei vollständig erfolgreiche reguläre Prüfrunden. Störungen fassen aufeinanderfolgende beobachtete Beeinträchtigungen zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
         },
     }
 

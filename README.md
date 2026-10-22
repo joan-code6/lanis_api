@@ -335,10 +335,24 @@ The legacy environment credential set is readable but **one account alone is
 insufficient coverage**, so deployments must provision at least two accounts
 before upgrading. Four or more enable the full confirmation flow.
 
-Two or more failing accounts in confirmation indicate degraded service; all
-accounts failing login indicate down. One failing account is isolated evidence
-and produces unknown service status, as do incomplete results and insufficient
-coverage. These results do not trigger outage or recovery alerts. All-pass
+Any functional failure in confirmation indicates partially impaired service
+(`degraded`), including a single failing account. All sampled accounts failing
+login indicate `down`. **Availability and confidence are independent:** a
+single-account failure has limited confidence and account scope, but it still
+counts as impairment in uptime calculations and opens a scoped incident. Two or
+more failures with complete expected coverage have confirmed confidence; missing
+or reduced confirmation coverage limits confidence. No functional failures plus
+incomplete evidence remains `unknown`, and does not open or resolve incidents.
+
+The stored evidence includes observed status, confidence, scope (account, one
+sampled school, multiple sampled schools, or sampled accounts), completed versus
+expected probes, and the number of accounts failing in both rounds. Public
+status allowlists only aggregate confidence/scope/status values; Discord includes
+human-readable confidence and scope without identifiers. An isolated generic
+login failure may still be an account credential problem: limited confidence
+makes that uncertainty explicit instead of deleting it from the measurement.
+
+All-pass
 confirmation records a transient failure without opening an incident. Recovery
 from an existing incident requires two consecutive healthy scheduled cycles;
 manual checks cannot advance recovery. One aggregate observation per cycle feeds

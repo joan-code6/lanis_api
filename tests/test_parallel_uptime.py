@@ -62,11 +62,11 @@ def test_selection_is_distinct_and_prefers_school_diversity():
     "states,expected",
     [
         (["up"] * 4, ("up", "healthy")),
-        (["up", "up", "up", "down"], ("unknown", "isolated")),
+        (["up", "up", "up", "down"], ("degraded", "isolated")),
         (["down", "down", "up", "up"], ("degraded", "confirmed")),
         (["down"] * 4, ("down", "confirmed")),
         (["degraded"] * 4, ("degraded", "confirmed")),
-        (["up", "up", "unknown", "down"], ("unknown", "inconclusive")),
+        (["up", "up", "unknown", "down"], ("degraded", "isolated")),
     ],
 )
 def test_classification(states, expected):
@@ -300,3 +300,166 @@ def test_encrypted_provisioning_command_does_not_overwrite(monkeypatch, tmp_path
     with pytest.raises(SystemExit):
         uptime_accounts.main()
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "states,schools,expected,confidence,scope",
+    [
+        (["down", "up", "up", "up"], [1, 2, 1, 2], 4, "limited", "account"),
+        (["down", "unknown", "up", "up"], [1, 2, 1, 2], 4, "limited", "account"),
+        (["down", "down", "up", "up"], [1, 1, 2, 2], 4, "confirmed", "school"),
+        (
+            ["down", "down", "up", "up"],
+            [1, 2, 1, 2],
+            4,
+            "confirmed",
+            "multiple_schools",
+        ),
+        (
+            ["down", "down", "unknown", "up"],
+            [1, 2, 1, 2],
+            4,
+            "limited",
+            "multiple_schools",
+        ),
+        (["down", "up"], [1, 2], 4, "limited", "account"),
+        (["up", "up"], [1, 2], 2, "confirmed", "sampled_accounts"),
+        (["up", "unknown"], [1, 2], 2, "inconclusive", "unknown"),
+    ],
+)
+def test_confidence_and_scope_are_separate_from_availability(
+    states, schools, expected, confidence, scope
+):
+    results = [
+        {"account": f"Account {i}", "school_group": school, **result(state)}
+        for i, (state, school) in enumerate(zip(states, schools))
+    ]
+    evidence = uptime._round_evidence(results, results[:1], expected)
+    assert evidence["confidence"] == confidence
+    assert evidence["scope"] == scope
+    assert evidence["expected_accounts"] == expected
+    assert evidence["sampled_accounts"] == len(states)
+    assert evidence["completed_accounts"] == sum(s != "unknown" for s in states)
+    assert evidence["repeated_failures"] == int(states[0] == "down")
+
+
+def test_isolated_failure_counts_towards_uptime_and_scoped_incident(
+    monkeypatch, tmp_path
+):
+    from datetime import timedelta
+
+    from api import public_status
+
+    async def scenario():
+        database = UserMetricsDB(tmp_path / "metrics.db")
+        monkeypatch.setattr(uptime, "user_metrics_db", database)
+        monkeypatch.setattr(uptime, "_monitor_accounts", lambda: accounts(4))
+        monkeypatch.setattr(uptime, "get_uptime_interval_seconds", lambda: 300)
+        clock = [uptime._utcnow().replace(microsecond=0) - timedelta(seconds=600)]
+        monkeypatch.setattr(uptime, "_utcnow", lambda: clock[0])
+        alerts = []
+        monkeypatch.setattr(uptime, "_schedule_discord_notification", alerts.append)
+        state = "up"
+        first_account = []
+
+        async def fake_round(selected, labels):
+            if not first_account:
+                first_account.append(selected[0])
+            observations = []
+            for account in selected:
+                observation = result(state if account == first_account[0] else "up")
+                if observation["status"] == "down":
+                    observation["features"][1]["status"] = "skipped"
+                observations.append(
+                    {
+                        "account": labels[account[:2]],
+                        "school_group": 1 if account[0] == "0" else 2,
+                        **observation,
+                    }
+                )
+            return observations
+
+        # Make the initial pair stable so the same account is tested twice.
+        monkeypatch.setattr(
+            uptime, "_choose_accounts", lambda pool, count: pool[:count]
+        )
+
+        async def no_wait(seconds):
+            pass
+
+        monkeypatch.setattr(uptime, "_probe_round", fake_round)
+        monkeypatch.setattr(uptime.asyncio, "sleep", no_wait)
+        await uptime._run_uptime_cycle(True)
+        clock[0] += timedelta(seconds=300)
+        state = "down"
+        check = await uptime._run_uptime_cycle(True)
+        assert check["status"] == "degraded"
+        assert check["is_available"] is False
+        assert check["monitoring"]["confidence"] == "limited"
+        assert check["monitoring"]["scope"] == "account"
+        assert check["monitoring"]["repeated_failures"] == 1
+        assert check["features"][0]["status"] == "degraded"
+        assert alerts[-1]["status"] == "degraded"
+        clock[0] += timedelta(seconds=300)
+        public = await public_status._build_public_status()
+        assert public["summary"]["available_checks"] == 1
+        assert public["summary"]["failed_checks"] == 1
+        assert public["summary"]["uptime_percent"] == 50.0
+        assert public["current"]["confidence"] == "limited"
+        assert public["current"]["scope"] == "account"
+        assert public["current"]["features"][0]["status"] == "degraded"
+        assert public["incidents"][0]["affected_features"] == ["login"]
+        assert public["incidents"][0]["scope"] == "account"
+        assert public["incidents"][0]["confidence"] == "limited"
+        assert "Account 1" not in json.dumps(public)
+        assert "monitor-" not in json.dumps(public)
+
+    asyncio.run(scenario())
+
+
+def test_public_evidence_projection_rejects_private_or_invalid_values():
+    from api import public_status
+
+    projected = public_status._check(
+        {
+            "status": "degraded",
+            "monitoring": {
+                "confidence": "private-name",
+                "scope": "private-school",
+                "rounds": [{"account": "private-account"}],
+            },
+        },
+        datetime.fromisoformat("2026-10-22"),
+    )
+    assert "confidence" not in projected
+    assert "scope" not in projected
+    assert "private" not in json.dumps(projected)
+
+
+def test_scoped_discord_alert_explains_limited_confidence(monkeypatch):
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+    def post(url, **kwargs):
+        calls.append(kwargs["json"]["content"])
+        return Response()
+
+    monkeypatch.setattr(uptime.requests, "post", post)
+    uptime._send_discord_alert(
+        "https://discord.example/test",
+        {
+            "status": "degraded",
+            "monitoring": {
+                "confidence": "limited",
+                "scope": "account",
+                "rounds": [{"account": "private-account"}],
+            },
+        },
+        False,
+    )
+    assert "begrenzte Aussagekraft" in calls[0]
+    assert "einzelnes Testkonto" in calls[0]
+    assert "private-account" not in calls[0]

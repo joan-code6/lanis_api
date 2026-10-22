@@ -307,6 +307,21 @@ def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool
             f"\nErkannt: {check.get('checked_at', 'unbekannt')}"
             f"\nStatus-Seite: {_status_page_url()}"
         )
+    evidence = check.get("monitoring") or {}
+    confidence = {
+        "confirmed": "bestätigt",
+        "limited": "begrenzte Aussagekraft",
+        "inconclusive": "unbestätigt",
+    }.get(evidence.get("confidence"))
+    scope = {
+        "account": "einzelnes Testkonto",
+        "school": "eine getestete Schule",
+        "multiple_schools": "mehrere getestete Schulen",
+        "sampled_accounts": "getestete Konten",
+        "unknown": "unbekannt",
+    }.get(evidence.get("scope"))
+    if confidence and scope:
+        content += f"\nBewertung: {confidence} · Umfang: {scope}"
     response = requests.post(
         webhook_url,
         json={"content": content, "allowed_mentions": {"parse": []}},
@@ -493,7 +508,7 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
 
 
 def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = None) -> list[dict[str, Any]]:
-    """Collapse consecutive confirmed failures into incidents with recovery times."""
+    """Collapse consecutive observed impairments into incidents with recovery times."""
     now = now or _utcnow()
     ordered = sorted(checks, key=lambda item: str(item.get("checked_at") or ""))
     incidents: list[dict[str, Any]] = []
@@ -504,7 +519,7 @@ def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = 
             failed_features = [
                 str(feature.get("name"))
                 for feature in check.get("features") or []
-                if isinstance(feature, dict) and feature.get("status") == "down"
+                if isinstance(feature, dict) and feature.get("status") in {"down", "degraded"}
             ]
             if active is None:
                 active = {
@@ -518,6 +533,12 @@ def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = 
                     "last_checked_at": checked_at,
                     "error": check.get("error"),
                 }
+            evidence = check.get("monitoring") or check
+            if isinstance(evidence, dict) and evidence.get("observed_status") != "up":
+                if evidence.get("confidence") in {"confirmed", "limited", "inconclusive"}:
+                    active["confidence"] = evidence["confidence"]
+                if evidence.get("scope") in {"account", "school", "multiple_schools", "sampled_accounts", "unknown"}:
+                    active["scope"] = evidence["scope"]
             active["checks"] += 1
             active["last_checked_at"] = checked_at
             active["checked_at"] = checked_at
@@ -862,23 +883,67 @@ async def _probe_round(
 
 
 def _classify_round(results: list[dict[str, Any]]) -> tuple[str, str]:
+    """Classify observed availability independently of confidence or breadth."""
     if len(results) < 2:
         return "unknown", "inconclusive"
     failures = sum(result["status"] in {"down", "degraded"} for result in results)
-    incomplete = any(
-        result["status"] not in {"up", "down", "degraded"} for result in results
+    if failures:
+        if failures == 1:
+            return "degraded", "isolated"
+        if all(result["status"] == "down" for result in results):
+            return "down", "confirmed"
+        return "degraded", "confirmed"
+    if any(result["status"] != "up" for result in results):
+        return "unknown", "inconclusive"
+    return "up", "healthy"
+
+
+def _round_evidence(
+    results: list[dict[str, Any]],
+    initial: list[dict[str, Any]],
+    expected_count: int,
+) -> dict[str, Any]:
+    """Measure confidence and observed scope without claiming global coverage."""
+    failed = [r for r in results if r["status"] in {"down", "degraded"}]
+    complete = sum(r["status"] in {"up", "down", "degraded"} for r in results)
+    initial_failures = {
+        r.get("account") for r in initial if r["status"] in {"down", "degraded"}
+    }
+    repeated = sum(r.get("account") in initial_failures for r in failed)
+    status, _ = _classify_round(results)
+    confidence = (
+        "inconclusive"
+        if status == "unknown"
+        else "limited"
+        if len(failed) == 1 or complete < expected_count
+        else "confirmed"
     )
-    if incomplete:
-        return (
-            ("degraded", "confirmed") if failures >= 2 else ("unknown", "inconclusive")
-        )
-    if not failures:
-        return "up", "healthy"
-    if failures == 1:
-        return "unknown", "isolated"
-    if all(result["status"] == "down" for result in results):
-        return "down", "confirmed"
-    return "degraded", "confirmed"
+    failed_schools = {
+        r["school_group"] for r in failed if r.get("school_group") is not None
+    }
+    scope = (
+        "unknown"
+        if status == "unknown"
+        else "account"
+        if len(failed) == 1
+        else "school"
+        if failed
+        and len(failed_schools) == 1
+        and all(r.get("school_group") is not None for r in failed)
+        else "multiple_schools"
+        if len(failed_schools) > 1
+        else "sampled_accounts"
+    )
+    return {
+        "observed_status": status,
+        "confidence": confidence,
+        "scope": scope,
+        "sampled_accounts": len(results),
+        "completed_accounts": complete,
+        "expected_accounts": expected_count,
+        "failed_accounts": len(failed),
+        "repeated_failures": repeated,
+    }
 
 
 async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
@@ -903,6 +968,9 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
         "rounds": [],
         "recovery_streak": 0,
         "scheduled": scheduled,
+        "confidence": "inconclusive",
+        "scope": "unknown",
+        "observed_status": "unknown",
     }
     check["monitoring"] = details
     if len(accounts) >= 2:
@@ -925,6 +993,11 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
         if classification == "healthy" and len(details["rounds"]) == 2:
             classification = "transient"
         details["classification"] = classification
+        details.update(_round_evidence(
+            results,
+            initial if len(details["rounds"]) == 2 else [],
+            4 if len(details["rounds"]) == 2 else 2,
+        ))
         check["status"] = status
         check["error"] = None if status == "up" else classification
         for name in ("login", "modules"):
@@ -943,7 +1016,9 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
                 "up"
                 if all(state == "up" for state in states)
                 else "down"
-                if states.count("down") >= 2
+                if all(state == "down" for state in states)
+                else "degraded"
+                if "down" in states
                 else "unknown"
             )
             latencies = [
@@ -960,7 +1035,7 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
                     "is_available": True
                     if feature_status == "up"
                     else False
-                    if feature_status == "down"
+                    if feature_status in {"down", "degraded"}
                     else None,
                     "latency_ms": round(statistics.median(latencies))
                     if latencies
