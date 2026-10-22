@@ -127,6 +127,57 @@ def test_live_read_does_not_acknowledge_headers_observed_during_fetch(state):
     asyncio.run(scenario())
 
 
+def test_old_cached_headers_cannot_restore_unread_or_replace_activity(state):
+    async def scenario():
+        def headers(activity):
+            return {
+                "success": True,
+                "conversations": [{"id": "c", "date": activity, "unread": 1}],
+            }
+
+        old = headers("nightly")
+        latest = headers("new message")
+        await message_read_state.overlay_headers("a", old, preserve=True)
+        await message_read_state.overlay_headers("a", latest)
+        activity = await message_read_state.current_activity("a", "c")
+        await message_read_state.mark_opened("a", "c", expected_activity=activity)
+        for _ in range(2):
+            cached = await message_read_state.overlay_headers("a", old, fresh=False)
+            assert cached["conversations"][0]["unread"] == 0
+            assert await message_read_state.current_activity("a", "c") == activity
+        assert (await message_read_state.overlay_headers("a", latest))["conversations"][
+            0
+        ]["unread"] == 0
+        newer = headers("next message")
+        assert (await message_read_state.overlay_headers("a", newer))["conversations"][
+            0
+        ]["unread"] == 1
+        # An older read header must not hide a newly observed unread message either.
+        old["conversations"][0]["unread"] = 0
+        assert (await message_read_state.overlay_headers("a", old, fresh=False))[
+            "conversations"
+        ][0]["unread"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_successful_sync_recovers_despite_lifetime_evictions(state, monkeypatch):
+    store = outage_cache.SnapshotStore()
+    store.user_evictions["a"] = 3
+    monkeypatch.setattr(api_module, "snapshots", store)
+
+    async def scenario():
+        auth = SimpleNamespace(user_id="a")
+        await auth_db.save_cache_sync_state("a", 10, 0, 1)
+        assert not (await api_module.cache_status(auth))["sync"]["complete"]
+        await auth_db.save_cache_sync_state("a", 10, 0, 0)
+        result = await api_module.cache_status(auth)
+        assert result["sync"]["complete"] is True
+        assert result["quota_evictions"] == 3
+
+    asyncio.run(scenario())
+
+
 def test_binary_files_are_content_deduplicated_but_privately_authorized(state):
     app = FastAPI()
     app.router.route_class = outage_cache.OutageCacheRoute
@@ -325,12 +376,8 @@ def test_message_warmup_body_read_preserves_flags_until_user_opens(state, monkey
         assert (await message_read_state.overlay_headers("a", current))[
             "conversations"
         ][0]["unread"] == 1
-        await api_module.sessions.set_cache(
-            "a",
-            "/nachrichten/headers",
-            current,
-            api_module._make_param_key({"get_type": "All", "last": 0}),
-        )
+        # Leave the original nightly headers in the live cache to exercise
+        # rendering older unread metadata after acknowledging newer activity.
         online = True
         content = "new message body"
         fresh = await asgi_request(

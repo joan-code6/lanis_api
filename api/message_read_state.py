@@ -37,7 +37,7 @@ def is_unread(row):
     return str(value).lower() in {"true", "1", "yes"}
 
 
-async def overlay_headers(user_id, result, *, preserve=False):
+async def overlay_headers(user_id, result, *, preserve=False, fresh=True):
     """Preserve unread messages before sync and merge state into all header reads."""
     if not isinstance(result, dict) or not result.get("success"):
         return result
@@ -57,14 +57,14 @@ async def overlay_headers(user_id, result, *, preserve=False):
             activity = signature(row)
             unread = is_unread(row)
             previous = saved.get(identifier)
-            if previous and (previous[1] or previous[0] == activity):
+            if previous and (not fresh or previous[1] or previous[0] == activity):
                 unread = previous[1]
             row["unread"] = int(unread)
             row["read"] = not unread
             # Keep the override tied to the latest activity shown to the user.
             # Otherwise opening a newer body clears only the old signature and
             # cached headers immediately make that conversation unread again.
-            if previous or (preserve and unread):
+            if fresh and (previous or (preserve and unread)):
                 await db.execute(
                     "INSERT OR REPLACE INTO message_read_overrides VALUES (?, ?, ?, ?)",
                     (user_id, identifier, activity, int(unread)),

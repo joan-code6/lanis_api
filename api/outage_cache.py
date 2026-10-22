@@ -602,7 +602,7 @@ class OutageCacheRoute(APIRoute):
                         if self.path == "/nachrichten/headers":
                             body = json.dumps(
                                 await overlay_headers(
-                                    identity.user_id, json.loads(body)
+                                    identity.user_id, json.loads(body), fresh=False
                                 )
                             ).encode()
                     result = Response(body, media_type="application/json")

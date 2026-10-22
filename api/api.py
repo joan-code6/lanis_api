@@ -1269,8 +1269,6 @@ async def cache_status(auth: AuthSession = Depends(local_auth_dependency)):
 
     result = snapshots.status(auth.user_id)
     result['sync'] = await get_cache_sync_state(auth.user_id)
-    if result['sync'] and result['quota_evictions']:
-        result['sync']['complete'] = False
     return result
 
 
@@ -2888,7 +2886,7 @@ async def get_message_headers(
         )
         await task_queue.add_task(task)
     if cached is not None:
-        return await overlay_headers(auth.user_id, cached)
+        return await overlay_headers(auth.user_id, cached, fresh=False)
     result = await run_in_threadpool(
         auth.client.nachrichten_get_headers, get_type, last
     )
