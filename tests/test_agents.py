@@ -733,3 +733,158 @@ def test_file_download_is_bounded_and_closes_stream():
         "mime_type": "text/plain",
         "text": "homework",
     }
+
+
+def test_custom_backend_metadata_consent_and_refresh_are_issuer_bound(
+    environment, monkeypatch
+):
+    monkeypatch.setenv("LANIS_AGENT_ISSUER", "https://school-api.example")
+    monkeypatch.setenv("LANIS_AGENT_UI_ORIGIN", "https://school-ui.example")
+
+    async def scenario():
+        async with client() as c:
+            metadata = (await c.get("/.well-known/oauth-authorization-server")).json()
+            assert metadata["issuer"] == "https://school-api.example"
+            assert (
+                metadata["token_endpoint"] == "https://school-api.example/oauth/token"
+            )
+            resource = (await c.get("/.well-known/oauth-protected-resource/mcp")).json()
+            assert resource["resource"] == "https://school-api.example/mcp"
+            cid = (
+                await c.post("/oauth/register", json={"redirect_uris": [CALLBACK]})
+            ).json()["client_id"]
+            response = await c.get(
+                "/oauth/authorize",
+                params={
+                    "client_id": cid,
+                    "redirect_uri": CALLBACK,
+                    "state": "custom-state",
+                    "code_challenge": CHALLENGE,
+                    "resource": "https://school-api.example/mcp",
+                },
+            )
+            target = urlsplit(response.headers["location"])
+            assert target.scheme == "https" and target.netloc == "school-ui.example"
+            query = parse_qs(target.query)
+            assert query["issuer"] == ["https://school-api.example"]
+            rid = query["request"][0]
+            approval = await c.post(
+                "/agents/authorization/" + rid,
+                headers=HEAD,
+                json={"approve": True, "mode": "restricted"},
+            )
+            code = parse_qs(urlsplit(approval.json()["redirect_url"]).query)["code"][0]
+            wrong = await exchange(
+                c, cid, code, resource="https://different-api.example/mcp"
+            )
+            assert (
+                wrong.status_code == 400 and wrong.json()["error"] == "invalid_target"
+            )
+            tokens = await exchange(
+                c, cid, code, resource="https://school-api.example/mcp"
+            )
+            assert tokens.status_code == 200, tokens.text
+            overview = (await c.get("/agents", headers=HEAD)).json()
+            assert overview["mcp_url"] == "https://school-api.example/mcp"
+            assert len(overview["connections"]) == 1
+
+    asyncio.run(scenario())
+
+
+def test_custom_frontend_cors_and_mcp_discovery_use_operator_origins():
+    import os
+    import subprocess
+    import sys
+
+    code = """
+from fastapi.testclient import TestClient
+from api.api import app
+from api.agent_mcp import mcp
+client=TestClient(app,base_url="https://school-api.example")
+response=client.options("/agents/authorization/request",headers={"Origin":"https://school-ui.example","Access-Control-Request-Method":"POST","Access-Control-Request-Headers":"X-Session-Token,Content-Type"})
+assert response.status_code==200,response.text
+assert response.headers["access-control-allow-origin"]=="https://school-ui.example"
+assert str(mcp.settings.auth.issuer_url).rstrip("/")=="https://school-api.example"
+assert str(mcp.settings.auth.resource_server_url)=="https://school-api.example/mcp"
+response=client.post("/mcp",json={"jsonrpc":"2.0","id":1,"method":"tools/list"})
+assert response.status_code==401,response.text
+assert "https://school-api.example/.well-known/oauth-protected-resource/mcp" in response.headers["www-authenticate"]
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={
+            **os.environ,
+            "LANIS_AGENT_ISSUER": "https://school-api.example",
+            "LANIS_AGENT_UI_ORIGIN": "https://school-ui.example",
+        },
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_agent_lesson_patch_preserves_details_and_timetable_reads_overrides(
+    environment, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from api import agent_mcp
+
+    async def scenario():
+        async def identity(scope=None):
+            return {
+                "id": "lesson-test",
+                "user_id": "5201:alice",
+                "scopes": ["timetable:read", "timetable:write"],
+            }
+
+        async def session(_user):
+            return SimpleNamespace(
+                client=SimpleNamespace(stundenplan_get_plan=lambda: {"success": True})
+            )
+
+        monkeypatch.setattr(agent_mcp, "identity", identity)
+        monkeypatch.setattr(
+            api_module.sessions, "_get_or_create_schulportal_client", session
+        )
+        await auth_db.save_custom_lesson(
+            "5201:alice",
+            {
+                "date": "2026-10-19",
+                "period": "1",
+                "subject": "Math",
+                "teacher": "Teacher",
+                "room": "Old",
+                "info": "Keep notes",
+                "class_name": "Class",
+                "start_time": "08:00",
+                "end_time": "09:30",
+                "duration": 2,
+                "week_type": "A",
+                "course_id": "42",
+                "removed": False,
+            },
+        )
+        edit = mcp._tool_manager.get_tool("lanis_update_lesson")
+        result = await edit.fn(date="2026-10-19", period="1", room="New")
+        lesson = result["lesson"]
+        assert lesson["room"] == "New"
+        for key, expected in {
+            "subject": "Math",
+            "info": "Keep notes",
+            "duration": 2,
+            "course_id": "42",
+            "start_time": "08:00",
+            "end_time": "09:30",
+        }.items():
+            assert lesson[key] == expected
+        read = await agent_mcp.lanis_timetable()
+        assert read["custom_lessons"][0]["room"] == "New"
+        await edit.fn(date="2026-10-19", period="1", removed=True)
+        assert (await agent_mcp.lanis_timetable())["custom_lessons"][0][
+            "removed"
+        ] is True
+
+    asyncio.run(scenario())

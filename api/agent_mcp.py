@@ -2,7 +2,7 @@
 
 import time
 from typing import Annotated
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import HTTPException
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -164,7 +164,9 @@ async def lanis_connection() -> dict:
         "scopes": grant["scopes"],
         "current_time": datetime.now(ZoneInfo("Europe/Berlin")).isoformat(),
         "timezone": "Europe/Berlin",
-        "settings_url": ui_url() + "/settings/agents",
+        "settings_url": ui_url()
+        + "/settings/agents?"
+        + urlencode({"issuer": api_url()}),
         "capabilities": "read-write"
         if any(
             s.endswith(":write") or s == "messages:mark-read" for s in grant["scopes"]
@@ -273,10 +275,14 @@ async def lanis_timetable() -> dict:
 
     # The enriched UI timetable contains homework. A timetable-only grant must
     # read the underlying plan without pulling in course content.
-    return await run(
-        "timetable:read",
-        lambda auth: run_in_threadpool(auth.client.stundenplan_get_plan),
-    )
+    from .auth_db import get_custom_lessons
+    from .user_overrides import apply_custom_lessons
+
+    async def read(auth):
+        plan = await run_in_threadpool(auth.client.stundenplan_get_plan)
+        return apply_custom_lessons(plan, await get_custom_lessons(auth.user_id))
+
+    return await run("timetable:read", read)
 
 
 @tool("timetable:read", title="Check substitutions")

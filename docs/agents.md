@@ -39,6 +39,15 @@ These examples are configuration placeholders, not real endpoints. The issuer
 must be an origin without a path, credentials, query, or fragment. Use HTTPS
 outside local development. Local defaults are `http://localhost:8000` and
 `http://localhost:5173`. The UI's existing `VITE_API_URL` must point at the same API.
+The approval URL includes the originating issuer. When the browser is configured
+for a different backend, the UI blocks consent requests and offers the existing
+backend-selection flow. It does not silently change backends or send existing
+credentials to the issuer in the URL. The switch health-checks the chosen server,
+clears the previous login and returns to the same request for a fresh sign-in.
+Backend changes in another tab reload approval; stale agent API clients reject
+requests until reload. A backend URL in a query parameter is never trusted as an
+API destination without the explicit selection step.
+
 Use the same persistent `JWT_SECRET` / credential encryption configuration as the
 existing API. Install `requirements.txt` (including the official MCP Python SDK).
 

@@ -361,23 +361,46 @@ def register_tools(tool, run):
     async def lanis_update_lesson(
         date: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")],
         period: Identifier,
-        subject: Annotated[str, Field(max_length=200)] = "",
-        teacher: Annotated[str, Field(max_length=200)] = "",
-        room: Annotated[str, Field(max_length=100)] = "",
-        removed: bool = False,
+        subject: Annotated[str | None, Field(max_length=200)] = None,
+        teacher: Annotated[str | None, Field(max_length=200)] = None,
+        room: Annotated[str | None, Field(max_length=100)] = None,
+        removed: bool | None = None,
     ) -> dict:
-        """Create/edit a personal lesson override for a specific date and period; removed=true hides it. This changes the LANIS overlay, not the school's official timetable."""
-        from .api import CustomLessonRequest, update_custom_timetable_lesson
+        """Create/edit a personal lesson override for a specific date and period; removed=true hides it. Omitted fields keep their saved values. This changes the LANIS overlay, not the school's official timetable."""
+        import re
 
-        payload = CustomLessonRequest(
-            date=date,
-            period=period,
-            subject=subject,
-            teacher=teacher,
-            room=room,
-            removed=removed,
-        )
-        return await run(
-            "timetable:write",
-            lambda auth: update_custom_timetable_lesson(payload=payload, auth=auth),
-        )
+        from .api import CustomLessonRequest, update_custom_timetable_lesson
+        from .auth_db import get_custom_lessons
+
+        async def update(auth):
+            # Match the storage key after normalizing period ranges.
+            match = re.fullmatch(r"(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?", period.strip())
+            key = period.strip()
+            if match:
+                start = int(match.group(1))
+                end = int(match.group(2) or start)
+                key = str(start) if start == end else f"{start}–{end}"
+            existing = next(
+                (
+                    lesson
+                    for lesson in await get_custom_lessons(auth.user_id)
+                    if lesson["date"] == date and lesson["period"] == key
+                ),
+                {},
+            )
+            changes = {
+                name: value
+                for name, value in {
+                    "subject": subject,
+                    "teacher": teacher,
+                    "room": room,
+                    "removed": removed,
+                }.items()
+                if value is not None
+            }
+            payload = CustomLessonRequest(
+                **{**existing, "date": date, "period": period, **changes}
+            )
+            return await update_custom_timetable_lesson(payload=payload, auth=auth)
+
+        return await run("timetable:write", update)

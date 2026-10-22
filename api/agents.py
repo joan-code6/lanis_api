@@ -341,7 +341,9 @@ async def authorize(
         )
     # Only an opaque request ID reaches the browser. No callbacks or tokens in UI query parameters.
     return RedirectResponse(
-        ui_url() + "/agents/authorize?" + urlencode({"request": request_id}),
+        ui_url()
+        + "/agents/authorize?"
+        + urlencode({"request": request_id, "issuer": api_url()}),
         status_code=303,
         headers=HEADERS,
     )
