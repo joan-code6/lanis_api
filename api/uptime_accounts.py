@@ -13,6 +13,16 @@ from pathlib import Path
 from .auth_db import _encrypt_password
 
 
+def normalize_monitor_identity(value: object) -> str:
+    """Accept textual/integer identifiers, never stringify missing or compound data."""
+    if type(value) not in (str, int):
+        raise ValueError("Invalid monitor identity")
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError("Missing monitor identity")
+    return normalized
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Usage: python -m api.uptime_accounts OUTPUT < INPUT")
@@ -23,8 +33,8 @@ def main() -> None:
         accounts = []
         identities = set()
         for entry in entries:
-            school = str(entry["school_id"]).strip()
-            username = str(entry["username"]).strip()
+            school = normalize_monitor_identity(entry["school_id"])
+            username = normalize_monitor_identity(entry["username"])
             password = entry["password"]
             identity = (school, username.casefold())
             if (

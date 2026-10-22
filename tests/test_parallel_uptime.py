@@ -76,7 +76,7 @@ def test_classification(states, expected):
 def test_round_really_runs_concurrently(monkeypatch):
     barrier = threading.Barrier(2, timeout=3)
 
-    def fake_probe(account):
+    def fake_probe(account, stopped=None):
         barrier.wait()
         return result("up")
 
@@ -463,3 +463,181 @@ def test_scoped_discord_alert_explains_limited_confidence(monkeypatch):
     assert "begrenzte Aussagekraft" in calls[0]
     assert "einzelnes Testkonto" in calls[0]
     assert "private-account" not in calls[0]
+
+
+@pytest.mark.parametrize("field", ["school_id", "username"])
+@pytest.mark.parametrize("invalid", [None, True, False, [], {}, 1.5, "", "   "])
+def test_provisioning_rejects_malformed_identities_without_writing(
+    monkeypatch, tmp_path, capsys, field, invalid
+):
+    import io
+    import sys
+
+    from api import uptime_accounts
+
+    output = tmp_path / "pool.json"
+    entries = [
+        {"school_id": s, "username": u, "password": p} for s, u, p in accounts(2)
+    ]
+    entries[1][field] = invalid
+    monkeypatch.setattr(sys, "argv", ["uptime_accounts", str(output)])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(entries)))
+    with pytest.raises(SystemExit, match="Could not provision monitor pool"):
+        uptime_accounts.main()
+    assert not output.exists()
+    assert "private-password" not in str(capsys.readouterr())
+
+
+@pytest.mark.parametrize("field", ["school_id", "username"])
+@pytest.mark.parametrize("invalid", [None, True, [], {}, 1.5])
+def test_pool_loader_rejects_malformed_identities(
+    monkeypatch, tmp_path, field, invalid
+):
+    path = tmp_path / "pool.json"
+    entries = [
+        {"school_id": s, "username": u, "password": _encrypt_password(p)}
+        for s, u, p in accounts(2)
+    ]
+    entries[1][field] = invalid
+    path.write_text(json.dumps(entries))
+    path.chmod(0o600)
+    monkeypatch.setenv("LANIS_UPTIME_ACCOUNTS_FILE", str(path))
+    assert uptime._monitor_accounts() == []
+
+
+def test_provisioning_accepts_integer_school_ids_and_normalizes(monkeypatch, tmp_path):
+    import io
+    import sys
+
+    from api import uptime_accounts
+
+    path = tmp_path / "pool.json"
+    entries = [
+        {
+            "school_id": 5201,
+            "username": f" monitor-{i} ",
+            "password": "private-password",
+        }
+        for i in range(2)
+    ]
+    monkeypatch.setattr(sys, "argv", ["uptime_accounts", str(path)])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(entries)))
+    uptime_accounts.main()
+    monkeypatch.setenv("LANIS_UPTIME_ACCOUNTS_FILE", str(path))
+    assert uptime._monitor_accounts() == [
+        ("5201", f"monitor-{i}", "private-password") for i in range(2)
+    ]
+
+
+def test_shutdown_stops_shared_cycle_and_reaps_active_workers(monkeypatch):
+    async def scenario():
+        pool = accounts(2)
+        baseline = {p.pid for p in multiprocessing.active_children()}
+        after_probe = []
+        monkeypatch.setattr(uptime, "_uptime_stopping", False)
+        monkeypatch.setattr(uptime, "_uptime_cycle_task", None)
+        monkeypatch.setattr(uptime, "_probe_child", _child_hangs)
+        monkeypatch.setenv("LANIS_UPTIME_PROBE_DEADLINE_SECONDS", "60")
+
+        async def cycle(scheduled):
+            await uptime._probe_round(pool, {a[:2]: str(i) for i, a in enumerate(pool)})
+            after_probe.append("late notification")
+
+        monkeypatch.setattr(uptime, "_run_uptime_cycle", cycle)
+        waiter = asyncio.create_task(uptime.run_uptime_check())
+
+        async def wait_for_children():
+            while (
+                len({p.pid for p in multiprocessing.active_children()} - baseline) < 2
+            ):
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(wait_for_children(), timeout=5)
+        await asyncio.wait_for(
+            asyncio.gather(uptime.stop_uptime_cycle(), uptime.stop_uptime_cycle()),
+            timeout=5,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert {p.pid for p in multiprocessing.active_children()} == baseline
+        assert not after_probe
+        assert uptime._uptime_cycle_task is None
+        with pytest.raises(RuntimeError, match="shutting down"):
+            await uptime.run_uptime_check()
+        await uptime.stop_uptime_cycle()  # Idempotent after cleanup.
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_cancels_confirmation_delay_without_persisting_or_alerting(
+    monkeypatch,
+):
+    async def scenario():
+        monkeypatch.setattr(uptime, "_uptime_cycle_phase", "initial")
+
+        async def forbid_write(*args, **kwargs):
+            raise AssertionError("Cancelled cycle must not persist")
+
+        def forbid_alert(*args, **kwargs):
+            raise AssertionError("Cancelled cycle must not schedule a notification")
+
+        monkeypatch.setattr(uptime.user_metrics_db, "record_uptime_check", forbid_write)
+        monkeypatch.setattr(uptime, "_schedule_discord_notification", forbid_alert)
+        monkeypatch.setattr(uptime, "_uptime_stopping", False)
+        monkeypatch.setattr(uptime, "_uptime_cycle_task", None)
+        monkeypatch.setattr(uptime, "_monitor_accounts", lambda: accounts(4))
+
+        async def failed_round(selected, labels):
+            return [{"account": labels[a[:2]], **result("down")} for a in selected]
+
+        monkeypatch.setattr(uptime, "_probe_round", failed_round)
+        waiter = asyncio.create_task(uptime.run_uptime_check())
+
+        async def wait_for_retry_delay():
+            while uptime._uptime_cycle_phase != "waiting":
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(wait_for_retry_delay(), timeout=2)
+        await uptime.stop_uptime_cycle()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+    asyncio.run(scenario())
+
+
+def test_application_shutdown_stops_cycle_before_draining_notifications(monkeypatch):
+    from api import api as application
+
+    async def scenario():
+        events = []
+        for name in (
+            "_dsb_scheduler_task",
+            "_message_notification_task",
+            "_uptime_scheduler_task",
+            "_whatsapp_history_cleanup_task",
+            "_file_cache_cleanup_task",
+        ):
+            monkeypatch.setattr(application, name, None)
+        monkeypatch.setattr(application, "_whatsapp_unlink_confirmation_tasks", set())
+
+        async def stop_cycle():
+            events.append("stop cycle")
+
+        async def drain_notifications():
+            assert events == ["stop cycle"]
+            events.append("drain notifications")
+
+        async def no_op(*args, **kwargs):
+            pass
+
+        monkeypatch.setattr(application, "stop_uptime_cycle", stop_cycle)
+        monkeypatch.setattr(
+            application, "drain_uptime_notification_tasks", drain_notifications
+        )
+        monkeypatch.setattr(application.task_queue, "stop", no_op)
+        monkeypatch.setattr(application.whatsapp_task_queue, "stop", no_op)
+        monkeypatch.setattr(application.sessions, "shutdown", no_op)
+        await application._cleanup_sessions()
+        assert events == ["stop cycle", "drain notifications"]
+
+    asyncio.run(scenario())

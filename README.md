@@ -331,6 +331,8 @@ and remove it after provisioning. Set `LANIS_UPTIME_ACCOUNTS_FILE` to the absolu
 output path. The backend must use the same encryption key. To disable an account,
 set `enabled: false` in the encrypted pool; replace the file atomically when editing.
 Malformed, unreadable, insecurely permissioned, or undecryptable pools fail closed.
+Provisioning and loading share identity validation: only nonempty strings or
+integers are accepted; nulls, booleans, compound values, and floats are rejected.
 The legacy environment credential set is readable but **one account alone is
 insufficient coverage**, so deployments must provision at least two accounts
 before upgrading. Four or more enable the full confirmation flow.
@@ -368,6 +370,9 @@ instead of starting another one. The admin endpoint waits up to five seconds and
 then returns current status plus `active_cycle.phase`; the shared cycle continues
 in the background, and the portal refreshes every ten seconds while on Uptime. Isolation/coalescing applies within one backend
 process: run the scheduler in a single worker, as in the current deployment.
+Server shutdown explicitly stops the shared cycle and reaps its probe processes
+before draining Discord deliveries. HTTP waiter cancellation still leaves the
+shared cycle running; shutdown prevents new cycles until scheduler startup.
 Credential failures remain operator-reviewed because the SDK's generic login
 failure cannot reliably distinguish bad credentials from upstream failure;
 accounts are not automatically disabled on that ambiguous signal.

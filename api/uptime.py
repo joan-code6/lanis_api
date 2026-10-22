@@ -12,6 +12,7 @@ import multiprocessing
 import os
 import random
 import statistics
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +41,7 @@ DISCORD_WEBHOOK_ENV = "LANIS_UPTIME_DISCORD_WEBHOOK_URL"
 
 _uptime_cycle_task: asyncio.Task | None = None
 _uptime_cycle_phase = "initial"
+_uptime_stopping = False
 _uptime_alert_lock = asyncio.Lock()
 _uptime_notification_tasks: set[asyncio.Task[None]] = set()
 
@@ -65,6 +67,19 @@ def _schedule_discord_notification(check: dict[str, Any]) -> None:
             )
 
     task.add_done_callback(_finish)
+
+
+async def stop_uptime_cycle() -> None:
+    """Stop shared work and reap its probes before draining notification deliveries."""
+    global _uptime_stopping, _uptime_cycle_task
+    already_stopping = _uptime_stopping
+    _uptime_stopping = True
+    task = _uptime_cycle_task
+    if task is not None:
+        if not task.done() and not already_stopping:
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        _uptime_cycle_task = None
 
 
 async def drain_uptime_notification_tasks(timeout_seconds: float = 65.0) -> None:
@@ -782,6 +797,7 @@ def _monitor_accounts() -> list[tuple[str, str, str]]:
         return [legacy] if legacy else []
     try:
         from .auth_db import _decrypt_password
+        from .uptime_accounts import normalize_monitor_identity
 
         path = Path(filename)
         if path.stat().st_mode & 0o077:
@@ -795,8 +811,8 @@ def _monitor_accounts() -> list[tuple[str, str, str]]:
                 return []
             if entry.get("enabled", True) is not True:
                 continue
-            school = str(entry.get("school_id") or "").strip()
-            username = str(entry.get("username") or "").strip()
+            school = normalize_monitor_identity(entry.get("school_id"))
+            username = normalize_monitor_identity(entry.get("username"))
             encrypted = entry.get("password")
             if (
                 not school
@@ -841,7 +857,9 @@ def _probe_child(connection, credentials) -> None:
         connection.close()
 
 
-def _isolated_probe(credentials: tuple[str, str, str]) -> dict[str, Any]:
+def _isolated_probe(
+    credentials: tuple[str, str, str], stopped: threading.Event | None = None
+) -> dict[str, Any]:
     """Bound the entire SDK flow, including redirects and module enumeration."""
     context = multiprocessing.get_context("spawn")
     receive, send = context.Pipe(duplex=False)
@@ -849,12 +867,20 @@ def _isolated_probe(credentials: tuple[str, str, str]) -> dict[str, Any]:
         target=_probe_child, args=(send, credentials), daemon=True
     )
     try:
+        if stopped is not None and stopped.is_set():
+            return {"status": "unknown", "error": "probe_cancelled", "features": []}
         process.start()
         send.close()
-        deadline = _positive_env("LANIS_UPTIME_PROBE_DEADLINE_SECONDS", 90, 5, 180)
-        if receive.poll(deadline):
-            return receive.recv()
-        return {"status": "unknown", "error": "probe_deadline", "features": []}
+        deadline = time.monotonic() + _positive_env(
+            "LANIS_UPTIME_PROBE_DEADLINE_SECONDS", 90, 5, 180
+        )
+        while stopped is None or not stopped.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"status": "unknown", "error": "probe_deadline", "features": []}
+            if receive.poll(min(remaining, 0.1)):
+                return receive.recv()
+        return {"status": "unknown", "error": "probe_cancelled", "features": []}
     except Exception:  # noqa: BLE001 - classify worker crashes without exposing payloads
         return {"status": "unknown", "error": "probe_failed", "features": []}
     finally:
@@ -874,12 +900,20 @@ async def _probe_round(
     accounts: list[tuple[str, str, str]], labels: dict[tuple[str, str], str]
 ) -> list[dict[str, Any]]:
     schools = list(dict.fromkeys(account[0] for account in accounts))
+    stopped = threading.Event()
 
     async def probe(account):
-        result = await run_in_threadpool(_isolated_probe, account)
+        result = await run_in_threadpool(_isolated_probe, account, stopped)
         return {"account": labels[account[:2]], "school_group": schools.index(account[0]) + 1, **result}
 
-    return await asyncio.gather(*(probe(account) for account in accounts))
+    workers = [asyncio.create_task(probe(account)) for account in accounts]
+    try:
+        # Let explicit shutdown signal the threads and wait for process cleanup.
+        # Cancelling the async wrappers alone could abandon live child processes.
+        return await asyncio.shield(asyncio.gather(*workers))
+    finally:
+        stopped.set()
+        await asyncio.gather(*workers, return_exceptions=True)
 
 
 def _classify_round(results: list[dict[str, Any]]) -> tuple[str, str]:
@@ -1100,6 +1134,8 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
 async def run_uptime_check(*, scheduled: bool = False) -> dict[str, Any]:
     """Join the current cycle; cancellation of one HTTP waiter cannot cancel it."""
     global _uptime_cycle_task
+    if _uptime_stopping:
+        raise RuntimeError("Uptime monitor is shutting down")
     if _uptime_cycle_task is None or _uptime_cycle_task.done():
         _uptime_cycle_task = asyncio.create_task(_run_uptime_cycle(scheduled))
 
@@ -1289,6 +1325,9 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
 
 async def run_uptime_scheduler() -> asyncio.Task:
     """Start the recurring authenticated synthetic monitor task."""
+    global _uptime_stopping
+    _uptime_stopping = False
+
     async def _loop() -> None:
         while True:
             try:
