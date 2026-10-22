@@ -116,7 +116,6 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
 
     async def no_delay(_):
         """Skip pacing delays while exercising the warm-up requests."""
-        pass
 
     monkeypatch.setattr(uptime, "run_uptime_check", check)
     monkeypatch.setattr(daily_cache.auth_db, "get_cache_warmup_users", users)
