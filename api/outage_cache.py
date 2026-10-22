@@ -93,7 +93,7 @@ class SnapshotStore:
     def __init__(self):
         self.database_path = None
         self._writer = None
-        self._write_errors = []
+        self._user_deletions = {}
         self.entries = OrderedDict()
         self.user_versions = {}
         self.path_versions = {}
@@ -111,25 +111,36 @@ class SnapshotStore:
             rows = db.execute(
                 "SELECT key, body, fetched_at FROM outage_snapshots"
             ).fetchall()
+        parsed_keys = {}
         for raw_key, body, fetched_at in rows:
-            user_id, path, params = json.loads(raw_key)
-            key = (user_id, path, tuple(tuple(pair) for pair in params))
-            self.put(
-                key,
-                _decrypt_password(body).encode(),
-                datetime.fromisoformat(fetched_at),
-                self.version(user_id, path),
-            )
+            try:
+                user_id, path, params = json.loads(raw_key)
+                if not isinstance(user_id, str) or not isinstance(path, str):
+                    raise TypeError("Invalid snapshot identity")
+                if not isinstance(params, list) or any(
+                    not isinstance(pair, list)
+                    or len(pair) != 2
+                    or any(not isinstance(value, str) for value in pair)
+                    for pair in params
+                ):
+                    raise ValueError("Invalid snapshot parameters")
+                key = (user_id, path, tuple(tuple(pair) for pair in params))
+                plaintext = _decrypt_password(body).encode()
+                json.loads(plaintext)
+                timestamp = datetime.fromisoformat(fetched_at)
+                if timestamp.tzinfo:
+                    timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+                self.put(key, plaintext, timestamp, self.version(user_id, path))
+                parsed_keys[raw_key] = key
+            except (RuntimeError, ValueError, TypeError, AttributeError):
+                logging.getLogger(__name__).warning(
+                    "Dropping unreadable outage snapshot"
+                )
         self.database_path = database_path
-        # Drop entries evicted by the size bounds while restoring.
+        # Reuse validated keys; corrupt rows must not break the cleanup pass.
         with sqlite3.connect(database_path) as db:
             for raw_key, _, _ in rows:
-                user_id, path, params = json.loads(raw_key)
-                if (
-                    user_id,
-                    path,
-                    tuple(tuple(pair) for pair in params),
-                ) not in self.entries:
+                if parsed_keys.get(raw_key) not in self.entries:
                     db.execute("DELETE FROM outage_snapshots WHERE key = ?", (raw_key,))
 
         self._writer = ThreadPoolExecutor(
@@ -145,19 +156,30 @@ class SnapshotStore:
     def _write_completed(self, future):
         error = future.exception()
         if error:
-            self._write_errors.append(error)
             logging.getLogger(__name__).warning("Outage snapshot persistence failed")
 
-    async def flush(self):
-        """Wait for ordered writes without blocking auth transactions on the loop."""
+    async def flush(self, user_id=None):
+        """Wait for writes; report only the requested user's deletion failure."""
+        deletion = self._user_deletions.get(user_id)
+        if deletion is not None:
+            await asyncio.wrap_future(deletion)
+            if self._user_deletions.get(user_id) is deletion:
+                self._user_deletions.pop(user_id, None)
         if self._writer is not None:
             await asyncio.wrap_future(self._writer.submit(lambda: None))
-        if self._write_errors:
-            error = self._write_errors.pop(0)
-            raise error
+
+    def _delete_persisted_user(self, user_id):
+        with sqlite3.connect(self.database_path) as db:
+            db.execute(
+                "DELETE FROM outage_snapshots WHERE "
+                "CASE WHEN json_valid(key) THEN json_extract(key, '$[0]') END = ?",
+                (user_id,),
+            )
 
     async def close(self):
         try:
+            for user_id in list(self._user_deletions):
+                await self.flush(user_id)
             await self.flush()
         finally:
             if self._writer is not None:
@@ -228,6 +250,11 @@ class SnapshotStore:
         for key in list(self.entries):
             if key[0] == user_id:
                 self._remove(key)
+        if self._writer is not None:
+            # One final user-scoped operation also deletes rows left by older failed writes.
+            deletion = self._writer.submit(self._delete_persisted_user, user_id)
+            deletion.add_done_callback(self._write_completed)
+            self._user_deletions[user_id] = deletion
 
     def delete_user_data(self, user_id):
         """Remove user-owned snapshots and version keys without reopening races."""

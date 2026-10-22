@@ -13,6 +13,7 @@ from . import auth_db
 
 logger = logging.getLogger(__name__)
 warming = ContextVar("daily_cache_warming", default=False)
+MAX_BATCH_ATTEMPTS = 24  # Bound repeated full batches after permanent failures.
 ZONE = ZoneInfo("Europe/Berlin")
 BASE_PATHS = (
     "/apps",
@@ -46,7 +47,9 @@ async def warm_users():
     from .uptime import run_uptime_check
 
     # Unknown/degraded is not evidence that it is safe to refresh.
-    if (await run_uptime_check()).get("status") != "up":
+    status = (await run_uptime_check()).get("status")
+    if status != "up":
+        logger.info("Daily cache warm-up deferred: portal status %s", status)
         return False
     users = await auth_db.get_cache_warmup_users()
     completed = True
@@ -124,11 +127,14 @@ async def run_daily_cache():
     while True:
         now = datetime.now(ZONE)
         await asyncio.sleep(next_run(now).timestamp() - now.timestamp())
-        # Retry an outage without discarding yesterday's snapshots.
-        while True:
+        # Permanent account/module failures must not prevent tomorrow's scheduled run.
+        for attempt in range(MAX_BATCH_ATTEMPTS):
             try:
                 if await warm_users():
                     break
             except Exception:
                 logger.warning("Daily cache warm-up failed", exc_info=True)
-            await asyncio.sleep(15 * 60)
+            if attempt + 1 < MAX_BATCH_ATTEMPTS:
+                await asyncio.sleep(15 * 60)
+        else:
+            logger.warning("Daily cache retry budget exhausted; resuming at next 03:00")

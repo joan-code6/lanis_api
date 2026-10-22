@@ -1281,6 +1281,14 @@ async def _revoke_expired_sessions() -> None:
                 )
             await db.commit()
 
+        # Keep the auth lock through snapshot deletion so a new login cannot race
+        # cleanup of the user's last expired session. The SQL transaction is closed.
+        from .outage_cache import snapshots
+
+        for user_id in users_to_revoke:
+            snapshots.delete_user_data(user_id)
+            await snapshots.flush(user_id)
+
 
 async def get_refresh_token(token: str) -> Optional[dict]:
     """

@@ -81,6 +81,7 @@ from .homepage import router as homepage_router
 from .school_pages import router as school_pages_router
 from .admin import AdminLifecycleRoute, AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
+    _revoke_expired_sessions,
     DEFAULT_SIDEBAR_ORDER,
     allow_whatsapp_message,
     purge_expired_whatsapp_rate_limits,
@@ -692,7 +693,7 @@ class AuthManager:
             for key in [key for key in self._cache_versions if key[0] == user_id]:
                 self._cache_versions.pop(key, None)
         snapshots.delete_user_data(user_id)
-        await snapshots.flush()
+        await snapshots.flush(user_id)
         return {"cache_entries": cache_count, "snapshot_entries": snapshot_count}
 
     # -- Schulportal client cache ------------------------------------
@@ -847,10 +848,10 @@ class AuthManager:
         user_id = canonicalize_user_id(user_id)
         async with self._lock:
             data = self._schulportal_clients.pop(user_id, None)
-        await self.invalidate_user_cache(user_id)
         if data:
             # Logout is a local revocation even when Schulportal is unreachable.
             data.client.close()
+        await self.invalidate_user_cache(user_id)
 
     async def shutdown(self) -> None:
         async with self._lock:
@@ -1015,7 +1016,6 @@ class AuthManager:
 
     async def invalidate_user_cache(self, user_id: str) -> None:
         snapshots.invalidate(user_id)
-        await snapshots.flush()
         async with self._lock:
             version_keys = [
                 key for key in self._cache_versions if key[0] == user_id
@@ -1028,6 +1028,7 @@ class AuthManager:
             ]
             for key in expired:
                 self._cache.pop(key)
+        await snapshots.flush(user_id)
 
 
 sessions = AuthManager()
@@ -1054,6 +1055,7 @@ async def clear_account_export_state(user_id: str) -> None:
 async def _run_whatsapp_history_cleanup() -> None:
     while True:
         try:
+            await _revoke_expired_sessions()
             await purge_expired_whatsapp_ai_history()
             await purge_expired_whatsapp_rate_limits()
             await purge_expired_account_deletion_markers()
