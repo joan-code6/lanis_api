@@ -8,6 +8,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import get_args, get_origin
 
 from fastapi import HTTPException
 from fastapi.responses import Response
@@ -18,9 +19,13 @@ from schulportal_hessen.tools.transport import TransportObservation, observation
 RETENTION_SECONDS = 0  # Last successful snapshots have no time-based expiry.
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_USER_BYTES = 8 * 1024 * 1024
-MAX_USER_ENTRIES = 100
+MAX_USER_ENTRIES = 1000
 READ_ROUTES = {
     "/apps",
+    "/settings/class-links",
+    "/dashboard/notifications",
+    "/notifications/vertretungsplan/options",
+    "/dsb/school-plan",
     "/modules",
     "/benutzer",
     "/kalender",
@@ -105,6 +110,7 @@ class SnapshotStore:
         self.entries = OrderedDict()
         self.user_entries = {}
         self.user_bytes = {}
+        self.user_evictions = {}
         self.user_versions = {}
         self.path_versions = {}
         self.total_bytes = 0
@@ -353,6 +359,7 @@ class SnapshotStore:
         self.user_versions.pop(user_id, None)
         for key in [key for key in self.path_versions if key[0] == user_id]:
             self.path_versions.pop(key, None)
+        self.user_evictions.pop(user_id, None)
         return count
 
     def invalidate_endpoint(self, user_id, endpoint, *, preserve=False):
@@ -409,7 +416,9 @@ class SnapshotStore:
         while (
             len(owned) > MAX_USER_ENTRIES or self.user_bytes[user_id] > MAX_USER_BYTES
         ):
+            self.user_evictions[user_id] = self.user_evictions.get(user_id, 0) + 1
             self._remove(next(iter(owned)))
+        return key in self.entries
 
     def get(self, key, version):
         """Return a snapshot only for the currently authorized request generation."""
@@ -434,6 +443,7 @@ class SnapshotStore:
             "body_bytes": self.user_bytes.get(user_id, 0),
             "max_body_bytes": MAX_USER_BYTES,
             "max_snapshot_count": MAX_USER_ENTRIES,
+            "quota_evictions": self.user_evictions.get(user_id, 0),
         }
 
     def export_user_data(self, user_id):
@@ -468,10 +478,64 @@ def set_headers(response, fetched_at, cache_status):
     response.headers["Cache-Control"] = "private, no-store"
 
 
+def normalized_query_params(fields, query):
+    """Use effective scalar values and defaults across Pydantic v1/v2 fields."""
+    declared = {
+        field.alias: field
+        for field in fields
+        if field.alias not in {"refresh", "force_refresh"}
+    }
+    defaults = {}
+    scalar_names = set()
+
+    def sequence(annotation):
+        return get_origin(annotation) in {list, tuple, set, frozenset} or any(
+            sequence(arg) for arg in get_args(annotation)
+        )
+
+    for name, field in declared.items():
+        required = getattr(field, "required", None)
+        if required is None:
+            required = field.field_info.is_required()
+        if not required:
+            defaults[name] = field.default
+        annotation = getattr(field, "outer_type_", None)
+        if annotation is None:
+            annotation = getattr(field.field_info, "annotation", None)
+        if getattr(field, "shape", 1) == 1 and not sequence(annotation):
+            scalar_names.add(name)
+    pairs = []
+    for name, value in query.multi_items():
+        if name in {"refresh", "force_refresh"}:
+            continue
+        if name in scalar_names:
+            continue
+        pairs.append((name, value))
+    pairs.extend((name, query[name]) for name in scalar_names if name in query)
+    normalized = []
+    for name, value in pairs:
+        default = defaults.get(name)
+        if isinstance(default, bool):
+            if value.lower() in {"true", "1", "on", "yes"}:
+                value = "true"
+            elif value.lower() in {"false", "0", "off", "no"}:
+                value = "false"
+            if value == str(default).lower():
+                continue
+        elif name in defaults and default is not None and value == str(default):
+            continue
+        normalized.append((name, value))
+    return tuple(sorted(normalized))
+
+
 class OutageCacheRoute(APIRoute):
     def get_route_handler(self):
         """Wrap allowlisted reads with authenticated outage snapshot handling."""
         original = super().get_route_handler()
+        from .download_cache import DOWNLOAD_ROUTES, wrap_download
+
+        if self.path in DOWNLOAD_ROUTES and self.methods == {"GET"}:
+            return wrap_download(original, self.dependant.query_params)
         if self.path not in READ_ROUTES or self.methods != {"GET"}:
             return original
 
@@ -485,27 +549,13 @@ class OutageCacheRoute(APIRoute):
                 return await original(request)
             identity = await local_auth_dependency(token)
             request.state.lanis_auth = identity
-            defaults = {
-                field.alias: field.default
-                for field in self.dependant.query_params
-                if not field.field_info.is_required()
-            }
-            normalized_params = []
-            for name, value in request.query_params.multi_items():
-                if name in {"refresh", "force_refresh"}:
-                    continue
-                default = defaults.get(name)
-                if isinstance(default, bool):
-                    if value.lower() in {"true", "1", "on", "yes"}:
-                        value = "true"
-                    elif value.lower() in {"false", "0", "off", "no"}:
-                        value = "false"
-                    if value == str(default).lower():
-                        continue
-                elif name in defaults and default is not None and value == str(default):
-                    continue
-                normalized_params.append((name, value))
-            key = (identity.user_id, request.url.path, tuple(sorted(normalized_params)))
+            key = (
+                identity.user_id,
+                request.url.path,
+                normalized_query_params(
+                    self.dependant.query_params, request.query_params
+                ),
+            )
             if self.path in {
                 "/meinunterricht/submissions",
                 "/meinunterricht/submissions/{detail_ref}",
@@ -545,7 +595,25 @@ class OutageCacheRoute(APIRoute):
                     request.state.lanis_auth = await local_auth_dependency(token)
                     entry = snapshots.get(key, version)
                 if entry:
-                    result = Response(entry.body, media_type="application/json")
+                    body = entry.body
+                    if self.path.startswith("/nachrichten/"):
+                        from .daily_cache import warming
+                        from .message_read_state import mark_opened, overlay_headers
+
+                        if self.path == "/nachrichten/headers":
+                            body = json.dumps(
+                                await overlay_headers(
+                                    identity.user_id, json.loads(body)
+                                )
+                            ).encode()
+                        elif (
+                            self.path == "/nachrichten/{conversation_id}"
+                            and not warming.get()
+                        ):
+                            await mark_opened(
+                                identity.user_id, request.path_params["conversation_id"]
+                            )
+                    result = Response(body, media_type="application/json")
                     set_headers(result, entry.fetched_at, "stale")
                     return result
             if failure:
@@ -567,12 +635,12 @@ class OutageCacheRoute(APIRoute):
                             if current.cached_timestamps
                             else _utcnow()
                         )
-                        snapshots.put(key, body, fetched_at, version)
-                        set_headers(
-                            response,
-                            fetched_at,
-                            "hit" if current.cached_timestamps else "fresh",
-                        )
+                        if snapshots.put(key, body, fetched_at, version):
+                            set_headers(
+                                response,
+                                fetched_at,
+                                "hit" if current.cached_timestamps else "fresh",
+                            )
             return response
 
         return handler

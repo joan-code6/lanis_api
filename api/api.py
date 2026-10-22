@@ -129,6 +129,7 @@ from .auth_db import (
     whatsapp_link_matches_sync,
 )
 from .daily_cache import run_daily_cache, warming
+from .message_read_state import mark_opened, overlay_headers
 from .outage_cache import OutageCacheRoute, snapshots
 from .account_data import (
     AccountDeletionCleanupError,
@@ -150,6 +151,7 @@ from .file_cache import (
     get_meta,
     get_content_path,
     purge_expired_files,
+    purge_staged_files,
 )
 from .timetable_enrichment import enrich_timetable
 from .timetable_substitutions import (
@@ -887,7 +889,7 @@ class AuthManager:
     async def get_cached(
         self, user_id: str, endpoint: str, params: str = ""
     ) -> Optional[Any]:
-        if warming.get():
+        if warming.get() and not user_id.startswith('dsb-school:'):
             return None
         await self._purge_expired_cache()
         cache_key = self._make_cache_key(user_id, endpoint, params)
@@ -1067,7 +1069,15 @@ async def _run_whatsapp_history_cleanup() -> None:
 async def _run_file_cache_cleanup() -> None:
     while True:
         try:
-            await run_in_threadpool(purge_expired_files)
+            from .auth_db import active_file_references
+            from .uptime import run_uptime_check
+
+            if (await run_uptime_check()).get('status') == 'up':
+                from .auth_db import _lock as auth_store_lock
+
+                async with auth_store_lock:
+                    protected = await active_file_references()
+                    await run_in_threadpool(purge_expired_files, protected)
         except Exception:
             logger.warning("File cache cleanup failed", exc_info=True)
         await asyncio.sleep(3600)
@@ -1205,7 +1215,7 @@ async def serialize_account_requests(request: Request, call_next):
 
     body_iterator = getattr(response, "body_iterator", None)
     if (request.url.path.startswith("/dateispeicher/file/")
-        or request.url.path == "/dateiverteilung/file"):
+        or request.url.path == "/dateiverteilung/file") and response.headers.get("X-LANIS-Cache") not in {"hit", "fresh"}:
         # The upstream stream is fully detached to a temporary file before the
         # route returns, so a slow client no longer needs this lock.
         lifecycle_lock.release()
@@ -1255,7 +1265,13 @@ async def local_auth_dependency(
 
 @app.get("/cache/status")
 async def cache_status(auth: AuthSession = Depends(local_auth_dependency)):
-    return snapshots.status(auth.user_id)
+    from .auth_db import get_cache_sync_state
+
+    result = snapshots.status(auth.user_id)
+    result['sync'] = await get_cache_sync_state(auth.user_id)
+    if result['sync'] and result['quota_evictions']:
+        result['sync']['complete'] = False
+    return result
 
 
 async def client_dependency(
@@ -1410,7 +1426,7 @@ async def _startup() -> None:
     """Initialize stores and start the API's background schedulers."""
     global _daily_cache_task, _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
     await auth_db_initialize()
-    await run_in_threadpool(purge_expired_files)
+    await run_in_threadpool(purge_staged_files)
     from .auth_db import DB_PATH
     await run_in_threadpool(snapshots.enable_persistence, DB_PATH)
     await purge_expired_whatsapp_ai_history()
@@ -2434,7 +2450,7 @@ async def update_account_preferences(
 
 @app.get("/settings/timetable/lessons")
 async def get_custom_timetable_lessons(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     return {
         "success": True,
@@ -2687,7 +2703,7 @@ async def get_lerngruppen(
 
 @app.get("/notifications/config")
 async def get_notification_config(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     """Return the public Web Push configuration for the signed-in user."""
     del auth
@@ -2701,7 +2717,7 @@ async def get_notification_config(
 
 @app.get("/notifications/preferences")
 async def get_user_notification_preferences(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     preferences = await get_notification_preferences(auth.user_id)
     preferences.pop("user_id", None)
@@ -2831,6 +2847,8 @@ async def _update_message_cache_task(
                 '/nachrichten/conversation': 'nachrichten_get_conversation',
             }[endpoint]
             fresh_data = await run_in_threadpool(getattr(session_data.client, method), **params)
+            if endpoint == '/nachrichten/headers':
+                fresh_data = await overlay_headers(user_id, fresh_data)
             cached_data = await sessions.get_cached(user_id, endpoint, cache_params)
             if cached_data is not None and not _responses_equal(cached_data, fresh_data):
                 await sessions.set_cache_if_current_version(
@@ -2851,28 +2869,30 @@ async def get_message_headers(
     cache_params = _make_param_key(params)
     cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
-    task = Task(
-        name=f"update_message_cache:{endpoint}",
-        retain_completed=False,
-        func=_update_message_cache_task,
-        args=(
-            auth.user_id,
-            endpoint,
-            auth.session_id,
-            params,
-            cache_params,
-            cache_version,
-        ),
-        user_id=auth.user_id,
-        priority=TaskPriority.LOW,
-        max_retries=2,
-    )
-    await task_queue.add_task(task)
+    if not warming.get():
+        task = Task(
+            name=f"update_message_cache:{endpoint}",
+            retain_completed=False,
+            func=_update_message_cache_task,
+            args=(
+                auth.user_id,
+                endpoint,
+                auth.session_id,
+                params,
+                cache_params,
+                cache_version,
+            ),
+            user_id=auth.user_id,
+            priority=TaskPriority.LOW,
+            max_retries=2,
+        )
+        await task_queue.add_task(task)
     if cached is not None:
-        return cached
+        return await overlay_headers(auth.user_id, cached)
     result = await run_in_threadpool(
         auth.client.nachrichten_get_headers, get_type, last
     )
+    result = await overlay_headers(auth.user_id, result, preserve=warming.get())
     await sessions.set_cache_if_current_version(
         auth.user_id, endpoint, result, cache_params, cache_version
     )
@@ -3109,28 +3129,33 @@ async def get_conversation(
     cache_params = _make_param_key(params)
     cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
-    task = Task(
-        name=f"update_message_cache:{endpoint}",
-        retain_completed=False,
-        func=_update_message_cache_task,
-        args=(
-            auth.user_id,
-            endpoint,
-            auth.session_id,
-            params,
-            cache_params,
-            cache_version,
-        ),
-        user_id=auth.user_id,
-        priority=TaskPriority.LOW,
-        max_retries=2,
-    )
-    await task_queue.add_task(task)
+    if not warming.get():
+        task = Task(
+            name=f"update_message_cache:{endpoint}",
+            retain_completed=False,
+            func=_update_message_cache_task,
+            args=(
+                auth.user_id,
+                endpoint,
+                auth.session_id,
+                params,
+                cache_params,
+                cache_version,
+            ),
+            user_id=auth.user_id,
+            priority=TaskPriority.LOW,
+            max_retries=2,
+        )
+        await task_queue.add_task(task)
     if cached is not None:
+        if not warming.get():
+            await mark_opened(auth.user_id, conversation_id)
         return cached
     result = await run_in_threadpool(
         auth.client.nachrichten_get_conversation, conversation_id, last
     )
+    if result.get('success') and not warming.get():
+        await mark_opened(auth.user_id, conversation_id)
     await sessions.set_cache_if_current_version(
         auth.user_id, endpoint, result, cache_params, cache_version
     )
@@ -3175,9 +3200,12 @@ async def mark_read(
     conversation_id: str = Body(..., description="Conversation uniqid to mark read"),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    return await run_in_threadpool(
+    result = await run_in_threadpool(
         auth.client.nachrichten_mark_read, conversation_id
     )
+    if result.get('success'):
+        await mark_opened(auth.user_id, conversation_id)
+    return result
 
 
 # --- Mein Unterricht ---
@@ -3479,7 +3507,6 @@ async def meinunterricht_course(
                     warming.get()
                     and original_url
                     and "/meinunterricht/file/" not in original_url
-                    and not is_file_cached(file_hash)
                 ):
                     # Preserve the upstream target for a later authenticated click,
                     # without scheduling a file transfer during synthetic warming.
@@ -3544,7 +3571,7 @@ async def meinunterricht_file(
     meta = get_meta(file_hash)
     content_path = get_content_path(file_hash)
 
-    if content_path.exists() and meta and meta.get("content_type"):
+    if content_path.exists() and meta and meta.get("content_type") and not warming.get():
         return FileResponse(
             content_path,
             media_type=meta.get("content_type", "application/octet-stream"),
@@ -3562,6 +3589,8 @@ async def meinunterricht_file(
             client.meinunterricht_download_file, meta["download_url"]
         )
         if result.get("success"):
+            if len(result.get('content', b'')) > MAX_DATEISPEICHER_DOWNLOAD_BYTES:
+                raise HTTPException(413, 'File exceeds the 256 MiB download limit')
             from .account_data import account_deletion_is_recent
 
             # Authenticated requests already hold the lifecycle lock in
@@ -5119,7 +5148,7 @@ async def _confirm_whatsapp_action(
 
 @app.get("/whatsapp/status")
 async def whatsapp_status(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     config = _whatsapp_config()
     link = await get_whatsapp_link_for_user(auth.user_id)

@@ -28,6 +28,8 @@ from .auth_db import (
     save_vertretungsplan_notification_state,
 )
 
+from .message_read_state import overlay_headers
+
 logger = logging.getLogger("message_notifications")
 
 SCHEDULER_TICK_SECONDS = 60
@@ -588,6 +590,7 @@ async def check_user_messages(
         session_data = await get_client(user_id)
         client = getattr(session_data, "client", session_data)
         result = await run_in_threadpool(client.nachrichten_get_headers, "All", 0)
+        result = await overlay_headers(user_id, result)
     except Exception as error:
         logger.warning("Message notification poll failed for %s: %s", user_id, error)
         await _record_failed_poll(user_id, previous_state, local_now)

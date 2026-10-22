@@ -415,6 +415,11 @@ def test_default_query_parameters_share_proactively_warmed_snapshot(setup):
         assert stale.headers["x-lanis-cache"] == "stale"
         assert stale.json() == fresh.json()
         assert len(store.entries) == 1
+        # FastAPI uses the last scalar value; dropping defaults must happen after that.
+        duplicate = await asgi_request(
+            app, "GET", "/kalender/events?year=1&year=0", headers
+        )
+        assert duplicate.headers["x-lanis-cache"] == "stale"
         other = await asgi_request(app, "GET", "/kalender/events?year=1", headers)
         assert "x-lanis-cache" not in other.headers
         invalid = await asgi_request(
@@ -423,3 +428,43 @@ def test_default_query_parameters_share_proactively_warmed_snapshot(setup):
         assert invalid.status_code == 422
 
     asyncio.run(scenario())
+
+
+def test_query_normalization_accepts_pydantic_v1_fields():
+    from starlette.datastructures import QueryParams
+
+    field = SimpleNamespace(
+        alias="year", required=False, default=0, outer_type_=int, shape=1
+    )
+    assert (
+        outage_cache.normalized_query_params([field], QueryParams("year=1&year=0"))
+        == ()
+    )
+    assert outage_cache.normalized_query_params(
+        [field], QueryParams("year=0&year=1")
+    ) == (("year", "1"),)
+
+
+def test_query_normalization_with_real_legacy_model_fields():
+    """Exercise the Pydantic v1 compatibility model bundled with Pydantic v2."""
+    from starlette.datastructures import QueryParams
+
+    try:
+        from pydantic.v1 import BaseModel
+    except ImportError:
+        from pydantic import BaseModel
+
+    class LegacyParameters(BaseModel):
+        year: int = 0
+        refresh: bool = False
+
+    fields = list(LegacyParameters.__fields__.values())
+    assert (
+        outage_cache.normalized_query_params(
+            fields, QueryParams("year=1&year=0&refresh=true")
+        )
+        == ()
+    )
+    assert outage_cache.normalized_query_params(
+        fields, QueryParams("year=0&year=1")
+    ) == (("year", "1"),)

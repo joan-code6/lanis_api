@@ -185,7 +185,7 @@ Authentication, TLS, and permission failures are never hidden by a snapshot.
 
 Fallback responses include `X-LANIS-Cache: stale` and the original UTC fetch
 time in `X-LANIS-Fetched-At`. Live responses use `fresh` or `hit`. The cache is
-bounded to 100 entries and 8 MiB of response bodies per account, with a 2 MiB
+bounded to 1,000 entries and 8 MiB of response bodies per account, with a 2 MiB
 per-response limit. Accounts never evict each other’s snapshots. It is
 cleared on logout, account deletion, and expiry of the last valid session.
 Endpoint refreshes retain the previous successful snapshot, and backend restarts
@@ -210,9 +210,24 @@ calendar lists, course details, and calendar event details are discovered from
 overviews;
 previously requested parameter variants are refreshed too. Snapshot keys normalize
 explicit route defaults, allowing a default UI request to use a view warmed
-without redundant query parameters. Message bodies are
-not proactively opened because Schulportal uses a read action for those requests.
-Files and arbitrary search results are not bulk downloaded.
+without redundant query parameters.
+
+Conversation bodies are proactively fetched. This marks them read in Schulportal;
+LANIS persists the pre-sync unread flags separately and overlays them on message
+headers and notification polling until the user opens the conversation in LANIS.
+
+Files advertised by file-storage trees, file distributions, course entries, and
+submission details are downloaded sequentially through authenticated API routes.
+Course files reuse the existing URL-hash cache; the other binary routes use
+content-addressed blobs in that same cache directory, deduplicating identical
+bytes across source URLs. Access still requires a per-user file reference and a
+valid session. Binary files are stored on disk outside the 8 MiB JSON budget,
+with the existing 256 MiB per-download bound; no aggregate binary quota is added.
+Nightly reads refresh existing files while ordinary reads can serve local bytes
+without contacting Schulportal. Active users' referenced files are protected
+from age cleanup, and cleanup runs only after a positive portal health check.
+Arbitrary search results, external websites and live conference join URLs are not
+bulk mirrored. Settings stored entirely in LANIS can be read with local auth.
 
 A fresh authenticated uptime check must report `up` before the batch starts.
 Configure `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME` and
@@ -225,12 +240,17 @@ Refreshes replace outage snapshots only after a successful response. Expiring or
 invalidating a live response does not delete its last successful outage snapshot.
 Snapshots have no age expiry (`/cache/status` reports `retention_seconds: 0`)
 and are encrypted in the auth SQLite database so backend restarts preserve them. Existing limits still apply: 2 MiB per response,
-100 snapshots and 8 MiB of response bodies per user. The oldest snapshots of
+1,000 snapshots and 8 MiB of response bodies per user. The oldest snapshots of
 that same user are evicted at capacity; no shared byte quota evicts other accounts.
 At 300 users the retained response-body budget is 2.34 GiB, plus Python object
 overhead, pending disk writes, and the separate live-response cache in memory;
 encryption and SQLite add overhead on disk. `GET /cache/status` exposes
 `body_bytes`, `max_body_bytes`, and `max_snapshot_count` for the current user.
+The `sync` object reports attempted and failed reads, quota evictions and the
+attempt finish time. `sync.complete` is false when any read fails or a quota
+prevents retention; successful HTTP reads rejected by snapshot limits count as
+incomplete too. This reports coverage of discovered supported routes, not arbitrary
+SPH apps or all possible search/filter queries.
 This is bounded coverage, not a complete offline mirror of all Schulportal data.
 Final-session revocation records a durable timestamp cutoff in the auth
 transaction, so pre-revocation snapshots cannot return after a failed disk

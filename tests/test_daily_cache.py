@@ -79,7 +79,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     """Verify warmup discovers unvisited details and replays variants."""
     from types import SimpleNamespace
 
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI, Request, Response
     from fastapi.responses import JSONResponse
 
     from api import api as api_module
@@ -89,8 +89,9 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     requested = []
 
     @app.get("/{path:path}")
-    async def read(path: str, request: Request):
+    async def read(path: str, request: Request, response: Response):
         """Serve deterministic read responses for cache warming integration tests."""
+        response.headers["X-LANIS-Cache"] = "fresh"
         requested.append((request.url.path, request.url.query))
         if path == "benutzer" and failed is not None:
             if failed == "body":
@@ -148,6 +149,10 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     async def no_delay(_):
         """Skip pacing delays while exercising the warm-up requests."""
 
+    async def save_state(*_):
+        """Isolate coverage persistence in the in-process route integration test."""
+
+    monkeypatch.setattr(daily_cache.auth_db, "save_cache_sync_state", save_state)
     monkeypatch.setattr(uptime, "run_uptime_check", check)
     monkeypatch.setattr(daily_cache.auth_db, "get_cache_warmup_users", users)
     monkeypatch.setattr(api_module, "app", app)
@@ -180,10 +185,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     assert ("/kalender/event/new-event", "") in requested
     assert ("/kalender/event/new-event", "view_id=second") in requested
     assert ("/kalender/events", "category=special&view_id=second") in requested
-    assert not any(
-        path in {"/nachrichten/private", "/kalender/event/other"}
-        for path, _ in requested
-    )
+    assert not any(path in {"/kalender/event/other"} for path, _ in requested)
     assert daily_cache.warming.get() is False
 
 

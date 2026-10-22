@@ -343,6 +343,21 @@ async def initialize() -> None:
             """
         )
         await db.execute(
+            "CREATE TABLE IF NOT EXISTS cache_sync_state ("
+            "user_id TEXT PRIMARY KEY, attempted INTEGER NOT NULL, failed INTEGER NOT NULL, "
+            "evicted INTEGER NOT NULL, finished_at TEXT NOT NULL)"
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS cached_downloads ("
+            "user_id TEXT NOT NULL, request_key TEXT NOT NULL, file_hash TEXT NOT NULL, "
+            "filename TEXT NOT NULL, content_type TEXT NOT NULL, PRIMARY KEY (user_id, request_key))"
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS message_read_overrides ("
+            "user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, signature TEXT NOT NULL, "
+            "unread INTEGER NOT NULL, PRIMARY KEY (user_id, conversation_id))"
+        )
+        await db.execute(
             "CREATE TABLE IF NOT EXISTS outage_snapshot_revocations ("
             "user_id TEXT PRIMARY KEY, revoked_at TEXT NOT NULL)"
         )
@@ -1603,6 +1618,16 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     vertretungsplan_state = await get_vertretungsplan_notification_state(user_id)
     dashboard_notifications = await get_dashboard_notifications(user_id)
     cached_file_references = await get_cached_file_references(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        unread_overrides = [dict(row) for row in await (await db.execute(
+            "SELECT conversation_id, unread FROM message_read_overrides WHERE user_id = ?",
+            (user_id,),
+        )).fetchall()]
+        downloads = [dict(row) for row in await (await db.execute(
+            "SELECT file_hash, filename, content_type FROM cached_downloads WHERE user_id = ?",
+            (user_id,),
+        )).fetchall()]
     return {
         "account": {
             "school_id": credential["school_id"] if credential else None,
@@ -1630,6 +1655,9 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
             "dashboard_notifications": dashboard_notifications,
         },
         "cached_file_references": cached_file_references,
+        "message_read_overrides": unread_overrides,
+        "cached_downloads": downloads,
+        "cache_sync": await get_cache_sync_state(user_id),
     }
 
 
@@ -1719,6 +1747,9 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     user_id = _canonical_user_id(user_id)
     tables = (
         "refresh_tokens",
+        "cache_sync_state",
+        "cached_downloads",
+        "message_read_overrides",
         "outage_snapshot_revocations",
         "admin_sessions",
         "notification_preferences",
@@ -2689,3 +2720,34 @@ async def get_cache_warmup_users() -> list[dict]:
             (datetime.utcnow(),),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
+
+
+async def save_cache_sync_state(user_id, attempted, failed, evicted):
+    """Persist coverage counters instead of treating an incomplete sync as complete."""
+    async with _lock, aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO cache_sync_state VALUES (?, ?, ?, ?, ?)",
+                         (user_id, attempted, failed, evicted, datetime.utcnow().isoformat()))
+        await db.commit()
+
+
+async def get_cache_sync_state(user_id):
+    """Return the last sync attempt's coverage, independent of portal availability."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute("SELECT attempted, failed, evicted, finished_at FROM cache_sync_state WHERE user_id = ?", (user_id,))).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result['complete'] = not result['failed'] and not result['evicted']
+    return result
+
+
+async def active_file_references():
+    """Protect files referenced by any currently authorized account from age cleanup."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        rows = await (await db.execute(
+            "SELECT DISTINCT r.file_hash FROM cached_file_references r "
+            "JOIN refresh_tokens t ON t.user_id = r.user_id WHERE t.expires_at > ?",
+            (datetime.utcnow(),),
+        )).fetchall()
+    return {row[0] for row in rows}

@@ -11,6 +11,15 @@ from api import auth_db
 from api import message_notifications as notifications
 
 
+@pytest.fixture(autouse=True)
+def isolate_unread_overlay(monkeypatch):
+    """Keep notification unit tests independent of the separately tested unread database."""
+    async def overlay(user_id, result, **_):
+        return result
+
+    monkeypatch.setattr(notifications, 'overlay_headers', overlay)
+
+
 def test_push_delivery_uses_a_finite_timeout(monkeypatch):
     calls = {}
     pywebpush = ModuleType("pywebpush")

@@ -4,7 +4,7 @@ import asyncio
 import logging
 from contextvars import ContextVar
 from datetime import datetime, time, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -31,6 +31,9 @@ BASE_PATHS = (
     "/meinunterricht/weekly",
     "/meinunterricht/submissions",
     "/nachrichten/headers",
+    "/settings/class-links",
+    "/dashboard/notifications",
+    "/notifications/vertretungsplan/options",
 )
 
 
@@ -57,6 +60,13 @@ def discover_metadata(path, params, data):
             for method in module.get("usage", []):
                 if method in routes:
                     targets.add((routes[method], ()))
+    if path == "/nachrichten/headers":
+        from .message_read_state import conversation_id
+
+        for row in data.get("conversations", []):
+            identifier = conversation_id(row)
+            if identifier:
+                targets.add(("/nachrichten/" + quote(identifier, safe=""), ()))
     if path == "/wahlen":
         for election in data.get("elections", []):
             if election.get("id"):
@@ -118,9 +128,61 @@ def discover_metadata(path, params, data):
     return targets
 
 
+def binary_path(path):
+    """Identify only supported authenticated file endpoints, not arbitrary links."""
+    return path == "/dateiverteilung/file" or path.startswith(
+        (
+            "/dateispeicher/file/",
+            "/meinunterricht/file/",
+            "/meinunterricht/submissions/file/",
+        )
+    )
+
+
+def discover_files(path, data):
+    """Find downloadable files advertised in successful authenticated metadata."""
+    targets = set()
+    if data.get("success") is not True:
+        return targets
+    if path == "/dateispeicher":
+        for item in data.get("files", []):
+            if item.get("id") is not None:
+                targets.add(
+                    ("/dateispeicher/file/" + quote(str(item["id"]), safe=""), ())
+                )
+    if path == "/dateiverteilung":
+        for distribution in data.get("distributions", []):
+            for item in distribution.get("files", []):
+                if item.get("download_url"):
+                    targets.add(
+                        ("/dateiverteilung/file", (("url", item["download_url"]),))
+                    )
+    if path.startswith("/meinunterricht/course/"):
+        for entry in data.get("entries", []):
+            for item in entry.get("files", []):
+                target = urlsplit(item.get("download_url", "")).path
+                if target.startswith("/meinunterricht/file/"):
+                    targets.add((target, ()))
+    if path.startswith("/meinunterricht/submissions/") and not binary_path(path):
+        submission = data.get("submission", {})
+        for item in [
+            *submission.get("own_files", []),
+            *submission.get("public_files", []),
+        ]:
+            if item.get("download_ref"):
+                targets.add(
+                    (
+                        "/meinunterricht/submissions/file/"
+                        + quote(str(item["download_ref"]), safe=""),
+                        (),
+                    )
+                )
+    return targets
+
+
 async def warm_users():
     """Refresh authenticated read views without discarding successful snapshots."""
-    from .api import app, sessions
+    from .api import _school_dsb_credentials, app, sessions
     from .outage_cache import snapshots
     from .uptime import run_uptime_check
 
@@ -139,10 +201,16 @@ async def warm_users():
         for user in users:
             token = sessions.create_access_token(**user)
             targets = {(path, ()) for path in BASE_PATHS}
+            if _school_dsb_credentials(user["school_id"]) is not None:
+                targets.add(("/dsb/school-plan", ()))
             targets.update(
                 (key[1], key[2])
                 for key in list(snapshots.entries)
-                if key[0] == user["user_id"] and not key[1].startswith("/nachrichten/")
+                if key[0] == user["user_id"]
+            )
+            attempted = failed = 0
+            evictions_before = getattr(snapshots, "user_evictions", {}).get(
+                user["user_id"], 0
             )
             reset = warming.set(True)
             try:
@@ -153,6 +221,8 @@ async def warm_users():
                     if (path, params) in seen:
                         continue
                     seen.add((path, params))
+                    attempted += 1
+                    read_failed = False
                     try:
                         response = await asyncio.wait_for(
                             client.get(
@@ -166,20 +236,33 @@ async def warm_users():
                             response.status_code != 200
                             or response.headers.get("X-LANIS-Cache") == "stale"
                         ):
-                            completed = False
-                        if response.status_code == 200:
+                            read_failed = True
+                        if response.status_code == 200 and not binary_path(path):
                             data = response.json()
-                            if data.get("success") is False:
-                                completed = False
+                            if data.get(
+                                "success"
+                            ) is not True or not response.headers.get("X-LANIS-Cache"):
+                                read_failed = True
                             pending.extend(
                                 sorted(discover_metadata(path, params, data))
                             )
                     except Exception:  # noqa: BLE001 - isolate per-user endpoint failures
-                        completed = False
+                        read_failed = True
                         logger.warning("Daily cache read failed for %s", path)
+                    if read_failed:
+                        failed += 1
                     await asyncio.sleep(0.2)
             finally:
                 warming.reset(reset)
+            evicted = (
+                getattr(snapshots, "user_evictions", {}).get(user["user_id"], 0)
+                - evictions_before
+            )
+            await auth_db.save_cache_sync_state(
+                user["user_id"], attempted, failed, max(0, evicted)
+            )
+            if failed or evicted:
+                completed = False
     return completed
 
 
