@@ -634,3 +634,83 @@ def test_per_user_byte_limits_survive_persistence_restore(tmp_path, monkeypatch)
     assert restored.total_bytes == 12
     assert set(restored.entries) == {("b", "/kalender", ()), ("a", "/stundenplan", ())}
     asyncio.run(restored.close())
+
+
+@pytest.mark.parametrize("logout", [False, True])
+def test_revocation_survives_one_snapshot_deletion_failure(
+    tmp_path, monkeypatch, logout
+):
+    """A failed disk cleanup cannot block logout or another expired account's cleanup."""
+    import aiosqlite
+
+    from api import auth_db
+
+    async def scenario():
+        """Fail the first deletion after clearing memory, then process the next user."""
+        path = str(tmp_path / "auth.db")
+        monkeypatch.setattr(auth_db, "DB_PATH", path)
+        monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
+        await auth_db.initialize()
+        store = outage_cache.SnapshotStore()
+        monkeypatch.setattr(outage_cache, "snapshots", store)
+        tokens = []
+        for user in ("a", "b"):
+            token = await auth_db.store_refresh_token(
+                f"school:{user}", "school", user, "password"
+            )
+            tokens.append(await auth_db.get_refresh_token(token))
+            key = (f"school:{user}", "/kalender", ())
+            store.put(key, b"{}", outage_cache._utcnow(), store.version(*key[:2]))
+        flushed = []
+
+        async def flush(user_id=None):
+            """Fail one user's persisted deletion while allowing subsequent users."""
+            flushed.append(user_id)
+            if len(flushed) == 1:
+                raise OSError("disk unavailable")
+
+        monkeypatch.setattr(store, "flush", flush)
+        if logout:
+            for token in tokens:
+                await auth_db.delete_refresh_token_by_session_id(token["session_id"])
+        else:
+            async with aiosqlite.connect(path) as db:
+                await db.execute("UPDATE refresh_tokens SET expires_at = '2000-01-01'")
+                await db.commit()
+            await auth_db._revoke_expired_sessions()
+        assert set(flushed) == {"school:a", "school:b"}
+        assert not store.entries
+        async with aiosqlite.connect(path) as db:
+            assert (
+                await (
+                    await db.execute("SELECT COUNT(*) FROM refresh_tokens")
+                ).fetchone()
+            )[0] == 0
+
+    asyncio.run(scenario())
+
+
+def test_startup_removes_snapshots_without_active_sessions(tmp_path, monkeypatch):
+    """Orphaned persisted snapshots must not be resurrected after failed deletion."""
+    import sqlite3
+
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
+    path = str(tmp_path / "auth.db")
+    store = outage_cache.SnapshotStore()
+    store.enable_persistence(path)
+    for user in ("active", "expired", "logged-out"):
+        key = (user, "/kalender", ())
+        store.put(key, b"{}", outage_cache._utcnow(), store.version(*key[:2]))
+    asyncio.run(store.close())
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE refresh_tokens (user_id TEXT, expires_at TEXT)")
+        db.executemany(
+            "INSERT INTO refresh_tokens VALUES (?, ?)",
+            [("active", "2999-01-01"), ("expired", "2000-01-01")],
+        )
+    restored = outage_cache.SnapshotStore()
+    restored.enable_persistence(path)
+    assert list(restored.entries) == [("active", "/kalender", ())]
+    asyncio.run(restored.close())
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT COUNT(*) FROM outage_snapshots").fetchone()[0] == 1

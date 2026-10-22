@@ -1238,6 +1238,17 @@ async def store_refresh_token(
     return token
 
 
+async def _delete_revoked_snapshots(user_id: str) -> None:
+    """Isolate optional snapshot persistence failures from session revocation."""
+    from .outage_cache import snapshots
+
+    try:
+        snapshots.delete_user_data(user_id)
+        await snapshots.flush(user_id)
+    except Exception:  # noqa: BLE001 - one disk failure must not block other users
+        logger.warning("Outage snapshot deletion failed after session revocation")
+
+
 async def _revoke_expired_sessions() -> None:
     """Remove expired sessions and their browser subscriptions together."""
     now = datetime.utcnow()
@@ -1283,11 +1294,8 @@ async def _revoke_expired_sessions() -> None:
 
         # Keep the auth lock through snapshot deletion so a new login cannot race
         # cleanup of the user's last expired session. The SQL transaction is closed.
-        from .outage_cache import snapshots
-
         for user_id in users_to_revoke:
-            snapshots.delete_user_data(user_id)
-            await snapshots.flush(user_id)
+            await _delete_revoked_snapshots(user_id)
 
 
 async def get_refresh_token(token: str) -> Optional[dict]:
@@ -1436,10 +1444,7 @@ async def delete_refresh_token_by_session_id(session_id: str) -> None:
             await db.commit()
 
         if final_user_id is not None:
-            from .outage_cache import snapshots
-
-            snapshots.delete_user_data(final_user_id)
-            await snapshots.flush(final_user_id)
+            await _delete_revoked_snapshots(final_user_id)
 
 
 async def delete_user_tokens(user_id: str) -> None:

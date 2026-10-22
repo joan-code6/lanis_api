@@ -116,12 +116,30 @@ class SnapshotStore:
             rows = db.execute(
                 "SELECT key, body, fetched_at FROM outage_snapshots"
             ).fetchall()
+            # Production uses the initialized auth database. Standalone stores
+            # without a session table can still be used by library callers.
+            has_sessions = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'refresh_tokens'"
+            ).fetchone()
+            active_users = (
+                {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT DISTINCT user_id FROM refresh_tokens WHERE expires_at > ?",
+                        (_utcnow(),),
+                    )
+                }
+                if has_sessions
+                else None
+            )
         parsed_keys = {}
         for raw_key, body, fetched_at in rows:
             try:
                 user_id, path, params = json.loads(raw_key)
                 if not isinstance(user_id, str) or not isinstance(path, str):
                     raise TypeError("Invalid snapshot identity")
+                if active_users is not None and user_id not in active_users:
+                    continue
                 if not isinstance(params, list) or any(
                     not isinstance(pair, list)
                     or len(pair) != 2
