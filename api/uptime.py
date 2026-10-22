@@ -473,9 +473,7 @@ def _probe_portal() -> dict[str, Any]:
         maintenance_response = None
         try:
             maintenance_response = client.session.get(PORTAL_START_URL)
-            maintenance = _is_maintenance_page(
-                getattr(maintenance_response, "text", "")
-            )
+            maintenance = _is_maintenance_page(maintenance_response.text)
         except requests.RequestException:
             maintenance = False
         finally:

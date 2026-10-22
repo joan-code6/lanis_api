@@ -15,6 +15,7 @@ _cached_status: dict[str, Any] | None = None
 _cache_deadline = 0.0
 _cache_configuration: tuple | None = None
 _PUBLIC_ERROR_CODES = {
+    "maintenance",
     "timeout",
     "connection_error",
     "request_error",

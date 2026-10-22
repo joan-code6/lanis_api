@@ -81,6 +81,35 @@ def test_public_projection_excludes_private_fields_and_preserves_partial_failure
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("recovered", [False, True])
+def test_maintenance_reason_survives_storage_and_public_projection(monitor, recovered):
+    db, now = monitor
+
+    async def scenario():
+        await record(
+            db, now - timedelta(seconds=10), "down", error="maintenance",
+            features=[
+                {"name": "login", "status": "down", "error": "maintenance"},
+                {"name": "modules", "status": "skipped", "error": "maintenance"},
+            ],
+        )
+        if recovered:
+            await record(db, now, "up")
+        result = await public_status.get_public_status()
+        maintenance = next(row for row in result["history"] if row["status"] == "down")
+        assert maintenance["error"] == "maintenance"
+        assert result["incidents"][0]["error"] == "maintenance"
+        assert (result["incidents"][0]["resolved_at"] is not None) == recovered
+        if recovered:
+            assert result["current"]["status"] == "up"
+            assert "error" not in result["current"]
+        else:
+            assert result["current"]["status"] == "down"
+            assert result["current"]["error"] == "maintenance"
+
+    asyncio.run(scenario())
+
+
 def test_equal_timestamps_choose_highest_internal_id(monitor, monkeypatch):
     _db, now = monitor
 

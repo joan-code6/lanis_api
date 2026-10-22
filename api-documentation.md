@@ -1431,6 +1431,12 @@ during an incident, less when a current result is about to become stale).
   `login`/`modules` names, status, and component latency. Results older than twice the configured check
   interval, absent checks, and a disabled/unconfigured monitor show `unknown`.
   `stale` specifically describes the age or absence of the latest observation.
+  During detected Schulportal maintenance, `status` remains `down` and the
+  allowlisted `error` is `maintenance`. This also appears in history and grouped
+  incidents. The monitor recognizes the start page's maintenance heading/title
+  even with HTTP 200 and skips authenticated requests until that page disappears.
+  Recovery still requires a successful authenticated check. Announced maintenance
+  end times are not yet extracted or used to schedule checks.
 - `summary`: rolling `period_days: 90`, `checks`, `available_checks`,
   `failed_checks` (including degraded results), `unknown_checks`,
   `uptime_percent` (nullable), and `coverage_percent`.

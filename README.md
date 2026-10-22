@@ -104,7 +104,14 @@ failure followed by a successful retry is stored as a healthy observation, not
 as an incident. If a confirmed incident is active, the successful retry is
 stored as the recovery observation.
 While an incident remains active, checks run every 15 seconds. The monitor logs in with the monitor account, loads the available
-modules, and opens each module entry without exposing credentials. Configure
+modules, and opens each module entry without exposing credentials.
+Before logging in, it checks the start page for the Schulportal maintenance
+heading/title, including maintenance pages returned with HTTP 200. Confirmed
+maintenance is recorded as `down` with error code `maintenance`; login and module
+requests are skipped. The next check still fetches the page, and normal
+authenticated checks resume when the maintenance page disappears. A failed
+start-page request falls back to the authenticated checks. The announced end time
+is not yet extracted or treated as proof of recovery. Configure
 the account with `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME`, and
 `LANIS_UPTIME_PASSWORD`; existing local deployments may use the corresponding
 `LANIS_API_*` variables as a fallback. Results are retained for the 90-day
