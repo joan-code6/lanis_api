@@ -581,3 +581,56 @@ def test_only_real_requests_record_activity(monkeypatch, synthetic):
         assert activity == ([] if synthetic else [("school", "user")])
 
     asyncio.run(scenario())
+
+
+def test_snapshot_byte_quota_is_isolated_across_300_users(monkeypatch):
+    """Adding 300 accounts and overflowing one must preserve every other account."""
+    monkeypatch.setattr(outage_cache, "MAX_USER_BYTES", 8)
+    store = outage_cache.SnapshotStore()
+    now = outage_cache._utcnow()
+    for user in range(300):
+        key = (f"user-{user}", "/kalender", ())
+        store.put(key, b"12345678", now, store.version(*key[:2]))
+    assert store.total_bytes == 300 * 8
+    assert len(store.entries) == 300
+    new = ("user-0", "/stundenplan", ())
+    store.put(new, b"new-data", now, store.version(*new[:2]))
+    assert ("user-0", "/kalender", ()) not in store.entries
+    for user in range(1, 300):
+        key = (f"user-{user}", "/kalender", ())
+        assert store.get(key, store.version(*key[:2])).body == b"12345678"
+    assert len(store.entries) == 300
+    assert store.status("user-0")["body_bytes"] == 8
+    assert store.status("user-0")["max_body_bytes"] == 8
+    store.put(new, b"small", now, store.version(*new[:2]))
+    assert store.user_bytes["user-0"] == 5
+    assert store.total_bytes == 299 * 8 + 5
+    # Reject an entry that cannot fit, without destroying the previous good value.
+    store.put(new, b"oversized", now, store.version(*new[:2]))
+    assert store.get(new, store.version(*new[:2])).body == b"small"
+    store.delete_user_data("user-0")
+    assert "user-0" not in store.user_bytes
+    assert "user-0" not in store.user_entries
+    assert store.total_bytes == 299 * 8
+
+
+def test_per_user_byte_limits_survive_persistence_restore(tmp_path, monkeypatch):
+    """Disk restoration applies quotas independently and retains unaffected users."""
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
+    monkeypatch.setattr(outage_cache, "MAX_USER_BYTES", 8)
+    path = str(tmp_path / "auth.db")
+    store = outage_cache.SnapshotStore()
+    store.enable_persistence(path)
+    now = outage_cache._utcnow()
+    for user_id in ("a", "b"):
+        key = (user_id, "/kalender", ())
+        store.put(key, b"12345678", now, store.version(*key[:2]))
+    key = ("a", "/stundenplan", ())
+    store.put(key, b"1234", now, store.version(*key[:2]))
+    asyncio.run(store.close())
+    restored = outage_cache.SnapshotStore()
+    restored.enable_persistence(path)
+    assert restored.user_bytes == {"b": 8, "a": 4}
+    assert restored.total_bytes == 12
+    assert set(restored.entries) == {("b", "/kalender", ()), ("a", "/stundenplan", ())}
+    asyncio.run(restored.close())

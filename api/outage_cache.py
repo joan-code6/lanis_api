@@ -17,7 +17,7 @@ from schulportal_hessen.tools.transport import TransportObservation, observation
 
 RETENTION_SECONDS = 0  # Last successful snapshots have no time-based expiry.
 MAX_BODY_BYTES = 2 * 1024 * 1024
-MAX_TOTAL_BYTES = 64 * 1024 * 1024
+MAX_USER_BYTES = 8 * 1024 * 1024
 MAX_USER_ENTRIES = 100
 READ_ROUTES = {
     "/apps",
@@ -98,6 +98,8 @@ class SnapshotStore:
         self._writer = None
         self._user_deletions = {}
         self.entries = OrderedDict()
+        self.user_entries = {}
+        self.user_bytes = {}
         self.user_versions = {}
         self.path_versions = {}
         self.total_bytes = 0
@@ -214,11 +216,22 @@ class SnapshotStore:
                     ),
                 )
 
+    def _discard_memory(self, key):
+        """Remove one entry and keep global and per-user accounting consistent."""
+        entry = self.entries.pop(key)
+        user_id = key[0]
+        self.total_bytes -= len(entry.body)
+        self.user_bytes[user_id] -= len(entry.body)
+        owned = self.user_entries[user_id]
+        owned.pop(key)
+        if not owned:
+            self.user_entries.pop(user_id)
+            self.user_bytes.pop(user_id)
+
     def _remove(self, key):
         """Queue deletion of a snapshot and update memory accounting."""
         self._persist(key)
-        entry = self.entries.pop(key)
-        self.total_bytes -= len(entry.body)
+        self._discard_memory(key)
 
     def purge(self):
         # Keep the last successful response through outages of any duration.
@@ -313,20 +326,26 @@ class SnapshotStore:
     def put(self, key, body, fetched_at, version):
         """Store a successful snapshot only if its request generation is current."""
         self.purge()
-        if self.version(key[0], key[1]) != version or len(body) > MAX_BODY_BYTES:
+        if self.version(key[0], key[1]) != version or len(body) > min(
+            MAX_BODY_BYTES, MAX_USER_BYTES
+        ):
             return
         entry = Snapshot(body, fetched_at)
         # Queue replacements in order; a failed SQL transaction retains the disk copy.
         self._persist(key, entry)
         if key in self.entries:
-            self.total_bytes -= len(self.entries.pop(key).body)
+            self._discard_memory(key)
         self.entries[key] = entry
         self.total_bytes += len(body)
-        owned = [candidate for candidate in self.entries if candidate[0] == key[0]]
-        for candidate in owned[:-MAX_USER_ENTRIES]:
-            self._remove(candidate)
-        while self.total_bytes > MAX_TOTAL_BYTES:
-            self._remove(next(iter(self.entries)))
+        user_id = key[0]
+        self.user_bytes[user_id] = self.user_bytes.get(user_id, 0) + len(body)
+        owned = self.user_entries.setdefault(user_id, OrderedDict())
+        owned[key] = None
+        # A user's writes can evict only that user's oldest successful snapshots.
+        while (
+            len(owned) > MAX_USER_ENTRIES or self.user_bytes[user_id] > MAX_USER_BYTES
+        ):
+            self._remove(next(iter(owned)))
 
     def get(self, key, version):
         """Return a snapshot only for the currently authorized request generation."""
@@ -348,6 +367,9 @@ class SnapshotStore:
             ),
             "snapshot_count": len(timestamps),
             "retention_seconds": RETENTION_SECONDS,
+            "body_bytes": self.user_bytes.get(user_id, 0),
+            "max_body_bytes": MAX_USER_BYTES,
+            "max_snapshot_count": MAX_USER_ENTRIES,
         }
 
     def export_user_data(self, user_id):

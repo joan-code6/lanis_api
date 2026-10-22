@@ -185,7 +185,8 @@ Authentication, TLS, and permission failures are never hidden by a snapshot.
 
 Fallback responses include `X-LANIS-Cache: stale` and the original UTC fetch
 time in `X-LANIS-Fetched-At`. Live responses use `fresh` or `hit`. The cache is
-bounded to 100 entries per account, 2 MiB per response, and 64 MiB total. It is
+bounded to 100 entries and 8 MiB of response bodies per account, with a 2 MiB
+per-response limit. Accounts never evict each other’s snapshots. It is
 cleared on logout, account deletion, and expiry of the last valid session.
 Endpoint refreshes retain the previous successful snapshot, and backend restarts
 restore persisted snapshots.
@@ -217,7 +218,12 @@ Refreshes replace outage snapshots only after a successful response. Expiring or
 invalidating a live response does not delete its last successful outage snapshot.
 Snapshots have no age expiry (`/cache/status` reports `retention_seconds: 0`)
 and are encrypted in the auth SQLite database so backend restarts preserve them. Existing limits still apply: 2 MiB per response,
-100 snapshots per user and 64 MiB overall, with oldest entries evicted at capacity.
+100 snapshots and 8 MiB of response bodies per user. The oldest snapshots of
+that same user are evicted at capacity; no shared byte quota evicts other accounts.
+At 300 users the retained response-body budget is 2.34 GiB, plus Python object
+overhead, pending disk writes, and the separate live-response cache in memory;
+encryption and SQLite add overhead on disk. `GET /cache/status` exposes
+`body_bytes`, `max_body_bytes`, and `max_snapshot_count` for the current user.
 This is bounded coverage, not a complete offline mirror of all Schulportal data.
 Session revocation and account deletion continue to remove private snapshots;
 serving them always requires a valid LANIS session. Cached responses retain their

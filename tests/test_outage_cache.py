@@ -277,7 +277,7 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     store.put(key, b"{}", now, version)
     assert store.get(key, store.version("a", "/kalender")) is None
     monkeypatch.setattr(outage_cache, "MAX_USER_ENTRIES", 2)
-    monkeypatch.setattr(outage_cache, "MAX_TOTAL_BYTES", 6)
+    monkeypatch.setattr(outage_cache, "MAX_USER_BYTES", 6)
     monkeypatch.setattr(outage_cache, "MAX_BODY_BYTES", 3)
     version = store.version("a", "/kalender")
     for index in range(4):
@@ -286,7 +286,7 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     assert len(store.entries) == 2
     store.put(("b", "/x", ()), b"{}", now, store.version("b", "/x"))
     store.put(("c", "/x", ()), b"{}", now, store.version("c", "/x"))
-    assert store.total_bytes == 6
+    assert store.total_bytes == 8
     store.put(key, b"large", now, version)
     assert store.get(key, version) is None
 
