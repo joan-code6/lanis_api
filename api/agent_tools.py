@@ -369,8 +369,8 @@ def register_tools(tool, run):
         """Create/edit a personal lesson override for a specific date and period; removed=true hides it. Omitted fields keep their saved values. This changes the LANIS overlay, not the school's official timetable."""
         import re
 
-        from .api import CustomLessonRequest, update_custom_timetable_lesson
-        from .auth_db import get_custom_lessons
+        from .api import CustomLessonRequest, _validate_custom_lesson, sessions
+        from .auth_db import save_custom_lesson
 
         async def update(auth):
             # Match the storage key after normalizing period ranges.
@@ -380,14 +380,6 @@ def register_tools(tool, run):
                 start = int(match.group(1))
                 end = int(match.group(2) or start)
                 key = str(start) if start == end else f"{start}–{end}"
-            existing = next(
-                (
-                    lesson
-                    for lesson in await get_custom_lessons(auth.user_id)
-                    if lesson["date"] == date and lesson["period"] == key
-                ),
-                {},
-            )
             changes = {
                 name: value
                 for name, value in {
@@ -398,9 +390,14 @@ def register_tools(tool, run):
                 }.items()
                 if value is not None
             }
-            payload = CustomLessonRequest(
-                **{**existing, "date": date, "period": period, **changes}
+            saved = await save_custom_lesson(
+                auth.user_id,
+                {"date": date, "period": key, **changes},
+                merge_and_validate=lambda values: _validate_custom_lesson(
+                    CustomLessonRequest(**values)
+                ),
             )
-            return await update_custom_timetable_lesson(payload=payload, auth=auth)
+            await sessions.invalidate_endpoint_cache(auth.user_id, "/stundenplan")
+            return {"success": True, "lesson": saved}
 
         return await run("timetable:write", update)

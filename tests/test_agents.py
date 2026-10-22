@@ -880,8 +880,17 @@ def test_agent_lesson_patch_preserves_details_and_timetable_reads_overrides(
             "end_time": "09:30",
         }.items():
             assert lesson[key] == expected
+        # Force overlapping edits; neither may restore the other's old field.
+        await asyncio.gather(
+            edit.fn(date="2026-10-19", period="1", room="Parallel room"),
+            edit.fn(date="2026-10-19", period="1", teacher="Parallel teacher"),
+        )
+        saved = (await auth_db.get_custom_lessons("5201:alice"))[0]
+        assert saved["room"] == "Parallel room"
+        assert saved["teacher"] == "Parallel teacher"
+        assert saved["info"] == "Keep notes"
         read = await agent_mcp.lanis_timetable()
-        assert read["custom_lessons"][0]["room"] == "New"
+        assert read["custom_lessons"][0]["room"] == "Parallel room"
         await edit.fn(date="2026-10-19", period="1", removed=True)
         assert (await agent_mcp.lanis_timetable())["custom_lessons"][0][
             "removed"

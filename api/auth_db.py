@@ -2063,27 +2063,41 @@ async def get_custom_lessons(user_id: str) -> List[Dict[str, Any]]:
 
 
 async def save_custom_lesson(
-    user_id: str, lesson: Dict[str, Any]
+    user_id: str, lesson: Dict[str, Any], *, merge_and_validate=None
 ) -> Dict[str, Any]:
-    """Insert or replace one date/period lesson override."""
+    """Save an override; an optional synchronous validator merges a patch atomically.
+
+    BEGIN IMMEDIATE keeps the snapshot current across API worker processes.
+    Validation failures roll back without changing the saved lesson.
+    """
     user_id = _canonical_user_id(user_id)
-    values = {
-        "date": str(lesson.get("date") or ""),
-        "period": str(lesson.get("period") or ""),
-        "subject": str(lesson.get("subject") or ""),
-        "teacher": str(lesson.get("teacher") or "") or None,
-        "room": str(lesson.get("room") or "") or None,
-        "class_name": str(lesson.get("class_name") or "") or None,
-        "info": str(lesson.get("info") or "") or None,
-        "start_time": str(lesson.get("start_time") or "") or None,
-        "end_time": str(lesson.get("end_time") or "") or None,
-        "duration": int(lesson.get("duration") or 1),
-        "week_type": str(lesson.get("week_type") or "") or None,
-        "course_id": str(lesson.get("course_id") or "") or None,
-        "removed": int(bool(lesson.get("removed"))),
-    }
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if merge_and_validate is not None:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT * FROM custom_lessons WHERE user_id = ? AND lesson_date = ? AND period = ?",
+                    (user_id, lesson["date"], lesson["period"]),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                existing = _custom_lesson_from_row(row) if row else {}
+                lesson = merge_and_validate({**existing, **lesson})
+            values = {
+                "date": str(lesson.get("date") or ""),
+                "period": str(lesson.get("period") or ""),
+                "subject": str(lesson.get("subject") or ""),
+                "teacher": str(lesson.get("teacher") or "") or None,
+                "room": str(lesson.get("room") or "") or None,
+                "class_name": str(lesson.get("class_name") or "") or None,
+                "info": str(lesson.get("info") or "") or None,
+                "start_time": str(lesson.get("start_time") or "") or None,
+                "end_time": str(lesson.get("end_time") or "") or None,
+                "duration": int(lesson.get("duration") or 1),
+                "week_type": str(lesson.get("week_type") or "") or None,
+                "course_id": str(lesson.get("course_id") or "") or None,
+                "removed": int(bool(lesson.get("removed"))),
+            }
             await db.execute(
                 """
                 INSERT INTO custom_lessons
