@@ -81,8 +81,13 @@ def _aggregate(
     start: datetime,
     end: datetime,
     interval: int,
+    *,
+    include_end: bool = True,
 ) -> dict[str, Any]:
-    in_window = [(timestamp, check) for timestamp, check in checks if start <= timestamp <= end]
+    in_window = [
+        (timestamp, check) for timestamp, check in checks
+        if start <= timestamp and (timestamp <= end if include_end else timestamp < end)
+    ]
     available = sum(check["status"] == "up" for _, check in in_window)
     failed = sum(check["status"] in {"down", "degraded"} for _, check in in_window)
     # Weight each result by the time it represents so 15-second incident checks
@@ -343,6 +348,44 @@ async def _build_public_status() -> dict[str, Any]:
                 item for item in period_checks if item[0] >= period_start
             ]),
         }
+    # Short-range strips use real rolling time buckets, never duplicated days.
+    history_windows = {}
+    for key, hours, count in (("24h", 24, 48), ("7d", 168, 28)):
+        window_start = now - timedelta(hours=hours)
+        width = timedelta(hours=hours / count)
+        buckets = []
+        cursor = 0
+        for index in range(count):
+            bucket_start = window_start + index * width
+            bucket_end = bucket_start + width
+            while cursor < len(ordered_checks) and ordered_checks[cursor][0] < bucket_start:
+                cursor += 1
+            end_cursor = cursor
+            while end_cursor < len(ordered_checks) and ordered_checks[end_cursor][0] < bucket_end:
+                end_cursor += 1
+            # Include the preceding reading and the next transition to preserve
+            # cadence limits and clip carried observations at bucket boundaries.
+            samples = ordered_checks[max(0, cursor - 1):min(len(ordered_checks), end_cursor + 1)]
+            aggregate = _aggregate(
+                samples, bucket_start, bucket_end, interval,
+                include_end=index == count - 1,
+            )
+            percent = aggregate["uptime_percent"]
+            bucket_status = (
+                "unknown" if percent is None else
+                "up" if percent == 100 else
+                "down" if percent == 0 and not any(
+                    check["status"] == "degraded"
+                    for timestamp, check in samples
+                    if timestamp < bucket_end or (index == count - 1 and timestamp == now)
+                ) else "degraded"
+            )
+            buckets.append({
+                "start": _iso(bucket_start), "end": _iso(bucket_end),
+                "status": bucket_status, **aggregate,
+            })
+            cursor = end_cursor
+        history_windows[key] = buckets
     return {
         "success": True,
         "service": uptime.UPTIME_SERVICE_NAME,
@@ -353,6 +396,7 @@ async def _build_public_status() -> dict[str, Any]:
             **_aggregate(checks, start, now, interval),
         },
         "summary_windows": windows,
+        "history_windows": history_windows,
         "daily": daily,
         "history": [check for _, check in checks[: uptime.UPTIME_HISTORY_LIMIT]],
         "incidents": uptime.group_uptime_incidents(
