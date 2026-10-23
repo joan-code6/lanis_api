@@ -18,6 +18,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi.concurrency import run_in_threadpool
 
+from .android_push import (
+    AndroidPushError,
+    android_push_configured,
+    is_android_subscription,
+    send_android_push,
+)
 from .auth_db import (
     delete_push_subscription,
     get_enabled_notification_users,
@@ -468,7 +474,7 @@ async def _send_push_payloads(
     statuses: Dict[str, str] = {}
     trusted_deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
     for endpoint, delivery in deliveries.items():
-        if not is_trusted_push_endpoint(endpoint):
+        if not is_android_subscription(delivery[0]) and not is_trusted_push_endpoint(endpoint):
             logger.warning("Dropping untrusted stored push endpoint for %s: %s", user_id, endpoint)
             await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
@@ -477,14 +483,20 @@ async def _send_push_payloads(
 
     if not trusted_deliveries:
         return statuses
-    if not push_configured():
-        logger.warning("Push notification skipped: VAPID configuration is incomplete")
-        statuses.update({endpoint: "retry" for endpoint in trusted_deliveries})
-        return statuses
+    ready = {}
+    for endpoint, delivery in trusted_deliveries.items():
+        configured = android_push_configured() if is_android_subscription(delivery[0]) else push_configured()
+        if configured:
+            ready[endpoint] = delivery
+        else:
+            statuses[endpoint] = "retry"
+    trusted_deliveries = ready
 
     results = await asyncio.gather(
         *(
-            run_in_threadpool(_send_push_sync, subscription, payload)
+            run_in_threadpool(
+                send_android_push if is_android_subscription(subscription) else _send_push_sync,
+                subscription, payload)
             for subscription, payload in trusted_deliveries.values()
         ),
         return_exceptions=True,
@@ -496,7 +508,8 @@ async def _send_push_payloads(
             statuses[endpoint] = "delivered"
             continue
 
-        if _is_permanent_push_failure(result):
+        if ((isinstance(result, AndroidPushError) and result.permanent)
+                or (not is_android_subscription(_subscription) and _is_permanent_push_failure(result))):
             await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
             continue
