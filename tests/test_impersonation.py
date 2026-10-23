@@ -63,6 +63,9 @@ def test_launch_replay_revocation_and_parent_isolation(tmp_path, monkeypatch):
                 ("GET", "/account/export"),
                 ("GET", "/meinunterricht/file/secret"),
                 ("POST", "/notifications/subscription"),
+                ("POST", "/mcp"),
+                ("GET", "/agents"),
+                ("POST", "/agents/authorization/test"),
                 ("GET", "/dashboard/notifications"),
                 ("GET", "/wahlen/42"),
             ]:
