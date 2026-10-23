@@ -381,19 +381,42 @@ async def pending(db, request_id):
     return json.loads(row["data"])
 
 
+def consent_identity(data):
+    """Only operator-pinned client IDs and exact callbacks establish identity.
+
+    Dynamic registration (including a familiar name or callback hostname) is
+    never itself verification. Invalid configuration fails closed.
+    """
+    try:
+        trusted = json.loads(os.environ.get("LANIS_AGENT_TRUSTED_CLIENTS", "{}"))
+        entry = trusted.get(data["client_id"], {})
+        name = entry.get("name")
+        if (
+            isinstance(name, str)
+            and name.strip()
+            and data["redirect_uri"] in entry.get("redirect_uris", [])
+            and isinstance(entry.get("redirect_uris"), list)
+        ):
+            return name.strip(), True
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return data["client_name"], False
+
+
 @router.get("/agents/authorization/{request_id}")
 async def authorization_details(request_id: str, auth: Annotated[Any, Depends(owner)]):
     async with store.database() as db:
         data = await pending(db, request_id)
+    client_name, verified = consent_identity(data)
     return JSONResponse(
         {
-            "client_name": data["client_name"],
+            "client_name": client_name,
             "client_id": data["client_id"],
             "redirect_origin": urlsplit(data["redirect_uri"]).netloc,
             "scopes": [{"id": s, **SCOPES[s]} for s in data["scopes"]],
             "username": auth.username,
             "school_id": auth.school_id,
-            "verified": False,
+            "verified": verified,
             "presets": access_presets(data["scopes"]),
         },
         headers=HEADERS,

@@ -112,3 +112,39 @@ Official references:
 - https://developers.openai.com/plugins/deploy/submission
 - https://developers.openai.com/plugins/deploy/submission-errors
 - https://developers.openai.com/plugins/deploy/app-review
+
+## Connector identity and account capabilities
+
+The MCP server advertises the canonical cyan LANIS icon from `/agent-icon.png`,
+with a same-origin `/favicon.ico` fallback and the configured LANIS UI website.
+The package uses the same icon. A connector client may cache favicons or ignore
+MCP icons; publishing the metadata does not certify a provider or force a client
+UI refresh. Reconnect/recreate a cached connector when checking new branding.
+
+OAuth dynamic registration supplies a display name; it does not verify ownership
+of that name. Consent always shows the actual callback host. Operators may
+explicitly pin independently verified client identities with
+`LANIS_AGENT_TRUSTED_CLIENTS`, a JSON object keyed by registered client ID:
+
+```json
+{"independently-verified-client-id":{"name":"Claude","redirect_uris":["https://claude.ai/the-exact-registered-callback"]}}
+```
+
+Use the real registered callback, not the illustrative URL above. Verify the
+provider and client ID independently before configuring it. Exact client ID and
+full callback URI must both match; a familiar name or hostname alone never
+establishes verification. Unconfigured clients remain usable without a false
+verification claim. Custom backend operators control their own trust pins.
+
+MCP discovery intersects OAuth scopes with a fresh account app manifest. Each
+portal tool declares its specific module dependency, including different modules
+sharing a scope (e.g. timetable/substitutions and courses/Lerngruppen). Calls
+check the same dependency again under the account lifecycle lease, so cached
+client tool lists cannot bypass access checks. Module discovery failures hide
+portal tools and report unavailable data, rather than implying empty results.
+The manifest is read without opening external apps or following SSO redirects.
+
+`lanis_exams` is the first-choice source for personal Klausuren, Klassenarbeiten
+and Lernkontrollen. It reads the structured Lerngruppen exam list, labels its
+source and sorts by date. The general calendar is not a complete exam schedule;
+missing dates and incomplete coverage must not be replaced with guesses.

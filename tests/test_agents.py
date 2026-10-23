@@ -31,6 +31,26 @@ def environment(tmp_path, monkeypatch):
             client=None, user_id=user, school_id="5201", username=user
         )
 
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+    from api.agent_mcp import TOOL_MODULES
+
+    monkeypatch.setattr(
+        api_module.sessions,
+        "_get_or_create_schulportal_client",
+        AsyncMock(return_value=SimpleNamespace(client=None)),
+    )
+    monkeypatch.setattr(
+        agent_mcp,
+        "fetch_module_access",
+        lambda _: {
+            "success": True,
+            "modules": [{"usage": sorted({m for m in TOOL_MODULES.values() if m})}],
+        },
+    )
+
     api_module.app.dependency_overrides[agents.owner] = owner
     asyncio.run(auth_db.initialize())
     asyncio.run(
@@ -304,6 +324,7 @@ def test_real_mcp_transport_scoped_discovery_and_revocation(environment):
                 "lanis_courses",
                 "lanis_course",
                 "lanis_study_groups",
+                "lanis_exams",
             }
             response = await c.post(
                 "/mcp",
@@ -704,7 +725,7 @@ def test_restricted_message_read_never_fetches_or_marks_conversation(
     async def scenario():
         async def identity(scope=None):
             assert scope == "messages:read"
-            return {"user_id": "5201:alice", "scopes": ["messages:read"]}
+            return {"id": "test", "user_id": "5201:alice", "scopes": ["messages:read"]}
 
         async def cache(*_args):
             return None
@@ -1523,5 +1544,279 @@ def test_concurrent_credential_redemption_has_single_winner(environment, refresh
             assert sorted(r.status_code for r in responses) == [200, 400]
             winner = next(r for r in responses if r.status_code == 200)
             assert await agents.authenticate(winner.json()["access_token"]) is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "methods, expected",
+    [
+        (["stundenplan_get_plan"], {"lanis_timetable", "lanis_update_lesson"}),
+        (["vertretungsplan_get_plan"], {"lanis_substitutions"}),
+        (["lerngruppen_get_overview"], {"lanis_study_groups", "lanis_exams"}),
+        ([], set()),
+    ],
+)
+def test_module_discovery_is_independent_of_shared_scopes(
+    environment, monkeypatch, methods, expected
+):
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": list(agents.SCOPES),
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            agent_mcp,
+            "fetch_module_access",
+            lambda _: {"success": True, "modules": [{"usage": methods}]},
+        )
+        tools = {t.name for t in await agent_mcp.permitted_tools()}
+        assert tools == expected | {
+            "lanis_connection",
+            "lanis_profile",
+            "lanis_preferences",
+            "lanis_update_preferences",
+        }
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "name, arguments",
+    [
+        ("lanis_substitutions", {}),
+        ("lanis_message", {"conversation_id": "42"}),
+        ("lanis_set_homework", {"course_id": "42", "entry_id": "1", "done": True}),
+    ],
+)
+def test_hidden_module_cannot_be_called_directly(
+    environment, monkeypatch, name, arguments
+):
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": list(agents.SCOPES),
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            agent_mcp, "fetch_module_access", lambda _: {"success": True, "modules": []}
+        )
+        operation = AsyncMock(
+            side_effect=AssertionError("Unavailable module must not execute")
+        )
+        monkeypatch.setattr(api_module, "get_vertretungsplan", operation)
+        monkeypatch.setattr(api_module.sessions, "get_cached", operation)
+        monkeypatch.setattr(api_module, "meinunterricht_homework_done", operation)
+        registered = mcp._tool_manager.get_tool(name)
+        assert (await registered.fn(**arguments))["error"] == "MODULE_UNAVAILABLE"
+        operation.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_module_lookup_failure_fails_closed_before_write(environment, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": list(agents.SCOPES),
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            agent_mcp, "fetch_module_access", lambda _: {"success": False}
+        )
+        assert {t.name for t in await agent_mcp.permitted_tools()} == {
+            "lanis_connection",
+            "lanis_profile",
+            "lanis_preferences",
+            "lanis_update_preferences",
+        }
+        registered = mcp._tool_manager.get_tool("lanis_set_homework")
+        assert (await registered.fn(course_id="42", entry_id="1", done=True))[
+            "error"
+        ] == "SCHOOL_UNAVAILABLE"
+
+    asyncio.run(scenario())
+
+
+def test_exam_tool_uses_lerngruppen_not_calendar(environment, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": list(agents.SCOPES),
+                }
+            ),
+        )
+        source = AsyncMock(
+            return_value={
+                "success": True,
+                "exams": [
+                    {"date": "2026-11-10", "type": "Arbeit"},
+                    {"date": "2026-11-05", "type": "Lernkontrolle"},
+                ],
+                "grades": ["must not leak"],
+            }
+        )
+        monkeypatch.setattr(api_module, "get_lerngruppen", source)
+        calendar = AsyncMock(side_effect=AssertionError("Wrong exam source"))
+        monkeypatch.setattr(api_module, "get_calendar_events", calendar)
+        registered = mcp._tool_manager.get_tool("lanis_exams")
+        result = await registered.fn()
+        assert result["source"] == "lerngruppen"
+        assert [e["date"] for e in result["exams"]] == ["2026-11-05", "2026-11-10"]
+        assert "grades" not in result
+        calendar.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_connector_branding_is_served_locally(environment):
+    async def scenario():
+        async with client() as c:
+            response = await c.get("/agent-icon.png")
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "image/png"
+            from pathlib import Path
+
+            assert (
+                response.content
+                == (
+                    Path(__file__).parents[1] / "plugins/lanis/assets/icon.png"
+                ).read_bytes()
+            )
+            assert (await c.get("/favicon.ico")).content == response.content
+        assert mcp._mcp_server.icons[0].src.endswith("/agent-icon.png")
+        assert mcp._mcp_server.website_url == agents.ui_url()
+
+    asyncio.run(scenario())
+
+
+def test_consent_identity_requires_operator_pinned_id_and_callback(monkeypatch):
+    import json
+
+    data = {
+        "client_id": "known",
+        "client_name": "Claude",
+        "redirect_uri": "https://claude.ai/callback",
+    }
+    monkeypatch.delenv("LANIS_AGENT_TRUSTED_CLIENTS", raising=False)
+    assert agents.consent_identity(data) == ("Claude", False)
+    monkeypatch.setenv(
+        "LANIS_AGENT_TRUSTED_CLIENTS",
+        json.dumps(
+            {
+                "known": {
+                    "name": "Confirmed provider",
+                    "redirect_uris": [data["redirect_uri"]],
+                }
+            }
+        ),
+    )
+    assert agents.consent_identity(data) == ("Confirmed provider", True)
+    assert agents.consent_identity({**data, "client_id": "impostor"}) == (
+        "Claude",
+        False,
+    )
+    assert agents.consent_identity(
+        {**data, "redirect_uri": "https://claude.ai.evil.example/callback"}
+    ) == ("Claude", False)
+    monkeypatch.setenv("LANIS_AGENT_TRUSTED_CLIENTS", "[]")
+    assert agents.consent_identity(data) == ("Claude", False)
+
+
+def test_portal_manifest_access_uses_paths_not_names_or_external_links():
+    from types import SimpleNamespace
+
+    from api.agent_mcp import fetch_module_access, module_methods
+
+    client = SimpleNamespace(
+        BASE_START_URL="https://start.schulportal.hessen.de",
+        get_apps=lambda: {
+            "success": True,
+            "data": {
+                "entrys": [
+                    {
+                        "Name": "Vertretungsplan",
+                        "link": "https://external.example/vertretungsplan.php",
+                    },
+                    {"link": "other.php?redirect=vertretungsplan.php"},
+                    {"link": "stundenplan.php?a=view"},
+                    {"link": "https://start.schulportal.hessen.de/lerngruppen.php"},
+                ]
+            },
+        },
+    )
+    assert module_methods(fetch_module_access(client)) == {
+        "stundenplan_get_plan",
+        "lerngruppen_get_overview",
+    }
+
+
+def test_module_access_is_per_account_and_refreshed(monkeypatch):
+    from types import SimpleNamespace
+
+    from api import agent_mcp
+
+    async def scenario():
+        alice_apps = [{"link": "stundenplan.php"}]
+        alice = SimpleNamespace(
+            client=SimpleNamespace(
+                BASE_START_URL="https://start.schulportal.hessen.de",
+                get_apps=lambda: {"success": True, "data": {"entrys": alice_apps}},
+            )
+        )
+        bob = SimpleNamespace(
+            client=SimpleNamespace(
+                BASE_START_URL="https://start.schulportal.hessen.de",
+                get_apps=lambda: {
+                    "success": True,
+                    "data": {"entrys": [{"link": "lerngruppen.php"}]},
+                },
+            )
+        )
+        assert await agent_mcp.account_modules(alice) == {"stundenplan_get_plan"}
+        assert await agent_mcp.account_modules(bob) == {"lerngruppen_get_overview"}
+        alice_apps.clear()
+        assert await agent_mcp.account_modules(alice) == set()
+        assert await agent_mcp.account_modules(bob) == {"lerngruppen_get_overview"}
 
     asyncio.run(scenario())

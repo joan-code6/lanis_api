@@ -126,6 +126,26 @@ def register_tools(tool, run):
 
         return await run("schoolwork:read", lambda auth: get_lerngruppen(auth=auth))
 
+    @tool("schoolwork:read", title="Find upcoming exams (Lerngruppen)")
+    async def lanis_exams() -> dict:
+        """First choice for 'nächste Arbeit', Klausuren, Klassenarbeiten, Lernkontrollen and tests. Reads the dedicated personal exam list from Lerngruppen, not the general calendar. Returns all exams sorted by school date; use current Berlin time to select upcoming dates. Does not return grades. An empty list means no exams listed here, not that no exam exists."""
+        from .api import get_lerngruppen
+
+        async def read(auth):
+            result = await get_lerngruppen(auth=auth)
+            if not result.get("success"):
+                return result
+            return {
+                "success": True,
+                "source": "lerngruppen",
+                "exams": sorted(
+                    result.get("exams", []), key=lambda exam: exam.get("date") or "9999"
+                ),
+                "coverage": "Exams listed in Schulportal Lerngruppen; missing dates must not be guessed.",
+            }
+
+        return await run("schoolwork:read", read)
+
     @tool("grades:read", title="Read course grades")
     async def lanis_grades(course_id: Identifier) -> dict:
         """Sensitive: read marks for a book_id discovered with lanis_courses. Requires explicit grades permission."""
