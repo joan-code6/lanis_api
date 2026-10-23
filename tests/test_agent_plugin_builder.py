@@ -9,7 +9,23 @@ from zipfile import ZipFile
 import pytest
 
 
-@pytest.mark.parametrize("registration", ["valid", "missing", "foreign"])
+@pytest.mark.parametrize(
+    "registration",
+    [
+        "valid",
+        "missing",
+        "foreign",
+        "string-scopes",
+        "missing-scopes",
+        "null-scopes",
+        "empty-scope",
+        "number-scope",
+        "resource-list",
+        "metadata-list",
+        "null-servers",
+        "null-pkce",
+    ],
+)
 def test_source_archive_has_rooted_brand_assets_and_explains_installation(
     monkeypatch, tmp_path, capsys, registration
 ):
@@ -29,9 +45,27 @@ def test_source_archive_has_rooted_brand_assets_and_explains_installation(
     if registration != "missing":
         metadata["registration_endpoint"] = (
             issuer + "/oauth/register"
-            if registration == "valid"
+            if registration != "foreign"
             else "https://other.example/oauth/register"
         )
+    if registration == "string-scopes":
+        metadata["scopes_supported"] = "schoolwork:read"
+    elif registration == "missing-scopes":
+        del metadata["scopes_supported"]
+    elif registration == "null-scopes":
+        metadata["scopes_supported"] = None
+    elif registration == "empty-scope":
+        metadata["scopes_supported"] = [" "]
+    elif registration == "number-scope":
+        metadata["scopes_supported"] = [123]
+    elif registration == "resource-list":
+        resource = []
+    elif registration == "metadata-list":
+        metadata = []
+    elif registration == "null-servers":
+        resource["authorization_servers"] = None
+    elif registration == "null-pkce":
+        metadata["code_challenge_methods_supported"] = None
     calls = []
 
     def get(url, **kwargs):

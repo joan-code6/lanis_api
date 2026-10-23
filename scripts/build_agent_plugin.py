@@ -50,6 +50,10 @@ def main():
     )
     response.raise_for_status()
     resource = response.json()
+    if not isinstance(resource, dict):
+        parser.error("Deployed resource metadata must be a JSON object.")
+    if not isinstance(resource.get("authorization_servers"), list):
+        parser.error("Deployed resource metadata must list authorization servers.")
     if resource.get("resource") != issuer + "/mcp" or issuer not in resource.get(
         "authorization_servers", []
     ):
@@ -61,6 +65,19 @@ def main():
     )
     response.raise_for_status()
     metadata = response.json()
+    if not isinstance(metadata, dict):
+        parser.error("Deployed authorization metadata must be a JSON object.")
+    scopes = metadata.get("scopes_supported")
+    if (
+        not isinstance(scopes, list)
+        or not scopes
+        or any(not isinstance(scope, str) or not scope.strip() for scope in scopes)
+    ):
+        parser.error(
+            "Deployed authorization metadata must list non-empty scope strings."
+        )
+    if not isinstance(metadata.get("code_challenge_methods_supported"), list):
+        parser.error("Deployed authorization metadata must list PKCE methods.")
     if metadata.get("issuer") != issuer or "S256" not in metadata.get(
         "code_challenge_methods_supported", []
     ):
@@ -87,7 +104,7 @@ def main():
                         "auth": {
                             "type": "oauth",
                             "client": {"mode": "dcr"},
-                            "defaultScopes": metadata["scopes_supported"],
+                            "defaultScopes": scopes,
                         }
                     }
                 },
