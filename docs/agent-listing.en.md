@@ -10,7 +10,7 @@ Your school day in chat
 
 ## Description
 
-LANIS connects your Schulportal Hessen account to ChatGPT. Check homework, courses, timetables, substitutions, school events and messages. With separately approved permissions, access grades or attendance, complete homework, send messages and manage supported school submissions and elections.
+Lanis for Schulportal Hessen connects your school account to ChatGPT. Check homework, courses, timetables, substitutions, school events and messages. With separately approved permissions, access grades or attendance, complete homework, send messages and manage supported school submissions and elections.
 
 Choose Restricted, Full access or Custom in LANIS. Restricted excludes grades, attendance and writes. Review, reduce or revoke each connection in LANIS settings. Some school modules depend on your school and account. Timetable edits are recurring weekly personal overrides, not one-off changes to the official schedule.
 

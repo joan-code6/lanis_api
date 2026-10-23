@@ -6,9 +6,9 @@
   "extensions": {
     "com.openai": {
       "interface": {
-        "displayName": "LANIS",
+        "displayName": "Lanis für Schulportal Hessen",
         "shortDescription": "Dein Schulportal im Chat",
-        "longDescription": "LANIS von Joan Code verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab.",
+        "longDescription": "Lanis für Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab.",
         "category": "Education & Research",
         "capabilities": [],
         "defaultPrompt": [
@@ -24,21 +24,21 @@
       },
       "review": {
         "prompts": [
-          "Auf welche Daten kannst du in meinem LANIS-Konto zugreifen?",
-          "Welche Hausaufgaben habe ich in LANIS auf?",
+          "Auf welche meiner Schuldaten kannst du zugreifen?",
+          "Welche Hausaufgaben habe ich auf?",
           "Plane meinen nächsten Schultag anhand meines Stundenplans und der Vertretungen."
         ],
         "test_cases": {
           "positive": [
             {
               "description": "Verbindung und Zeitzone. Vorbereitung: verbundenes Testkonto mit eingeschränktem Zugriff.",
-              "prompt": "Auf welche Daten kannst du in meinem LANIS-Konto zugreifen?",
+              "prompt": "Auf welche meiner Schuldaten kannst du zugreifen?",
               "tools_triggered": "lanis_connection",
               "expected_behavior": "Nur die von lanis_connection zurückgegebenen Berechtigungen und die Zeit in Europe/Berlin nennen. Keinen uneingeschränkten Zugriff behaupten."
             },
             {
               "description": "Hausaufgaben finden. Vorbereitung: separates Schultestkonto mit mindestens einem Kurs und einer Hausaufgabe; eingeschränkter Zugriff.",
-              "prompt": "Welche Hausaufgaben habe ich in LANIS auf?",
+              "prompt": "Welche Hausaufgaben habe ich auf?",
               "tools_triggered": "lanis_courses, lanis_course",
               "expected_behavior": "Kurs-IDs mit lanis_courses ermitteln und Kurse mit lanis_course lesen. Nur zurückgegebene Hausaufgaben und ihren Erledigungsstatus zusammenfassen; bei Bedarf weitere Seiten laden. Keine Änderungen vornehmen."
             },
@@ -50,7 +50,7 @@
             },
             {
               "description": "Nachrichtenübersicht ohne Lesestatusänderung. Vorbereitung: Testkonto mit Beispielnachrichten und messages:read.",
-              "prompt": "Zeig mir meine neuesten Nachrichten in LANIS, ohne sie als gelesen zu markieren.",
+              "prompt": "Zeig mir meine neuesten Nachrichten, ohne sie als gelesen zu markieren.",
               "tools_triggered": "lanis_messages",
               "expected_behavior": "Zurückgegebene Nachrichtenüberschriften auflisten und bei Bedarf weitere Seiten laden. Weder lanis_open_message noch Sende- oder Antwortfunktionen aufrufen. Den Lesestatus nicht verändern."
             },
@@ -87,7 +87,7 @@
         "translations": {
           "de-DE": {
             "subtitle": "Dein Schulportal im Chat",
-            "description": "LANIS von Joan Code verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab."
+            "description": "Lanis für Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab."
           }
         }
       }
