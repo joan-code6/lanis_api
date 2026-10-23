@@ -328,6 +328,8 @@ async def initialize() -> None:
     """Create the database and tables if they don't exist."""
     os.makedirs("data", exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
+        from .agent_store import SCHEMA
+        await db.executescript(SCHEMA)
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -1764,6 +1766,9 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
         "whatsapp_links",
         "whatsapp_ai_conversations",
         "whatsapp_pending_actions",
+        "agent_requests",
+        "agent_grants",
+        "agent_tokens",
     )
     counts: Dict[str, int] = {}
     orphaned_file_hashes: List[str] = []
@@ -2124,27 +2129,70 @@ async def get_custom_lessons(user_id: str) -> List[Dict[str, Any]]:
 
 
 async def save_custom_lesson(
-    user_id: str, lesson: Dict[str, Any]
+    user_id: str,
+    lesson: Dict[str, Any],
+    *,
+    merge_and_validate=None,
+    defaults=None,
 ) -> Dict[str, Any]:
-    """Insert or replace one date/period lesson override."""
+    """Save an override; an optional synchronous validator merges a patch atomically.
+
+    BEGIN IMMEDIATE keeps the snapshot current across API worker processes.
+    Validation failures roll back without changing the saved lesson.
+    """
     user_id = _canonical_user_id(user_id)
-    values = {
-        "date": str(lesson.get("date") or ""),
-        "period": str(lesson.get("period") or ""),
-        "subject": str(lesson.get("subject") or ""),
-        "teacher": str(lesson.get("teacher") or "") or None,
-        "room": str(lesson.get("room") or "") or None,
-        "class_name": str(lesson.get("class_name") or "") or None,
-        "info": str(lesson.get("info") or "") or None,
-        "start_time": str(lesson.get("start_time") or "") or None,
-        "end_time": str(lesson.get("end_time") or "") or None,
-        "duration": int(lesson.get("duration") or 1),
-        "week_type": str(lesson.get("week_type") or "") or None,
-        "course_id": str(lesson.get("course_id") or "") or None,
-        "removed": int(bool(lesson.get("removed"))),
-    }
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if merge_and_validate is not None:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT * FROM custom_lessons WHERE user_id = ? AND strftime('%w', lesson_date) = strftime('%w', ?) ORDER BY lesson_date DESC, period",
+                    (user_id, lesson["date"]),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                from .user_overrides import _same_period
+
+                row = next((row for row in rows if row["period"] == lesson["period"]), None)
+                if row is None:
+                    matches = [
+                        row for row in rows
+                        if _same_period({"stunde": row["period"]}, lesson["period"])
+                    ]
+                    if len(matches) > 1:
+                        from fastapi import HTTPException
+
+                        raise HTTPException(
+                            422, "Multiple saved lessons match this period. Edit this lesson in LANIS."
+                        )
+                    row = matches[0] if matches else None
+                existing = _custom_lesson_from_row(row) if row else (defaults or {})
+                # Agent edits target the recurring weekday/period identity. Keep
+                # its current anchor so another Monday does not add a new row.
+                anchor = existing.get("date", lesson["date"])
+                lesson = merge_and_validate(
+                    {
+                        **existing,
+                        **lesson,
+                        "date": anchor,
+                        "period": existing["period"] if row else lesson["period"],
+                    }
+                )
+            values = {
+                "date": str(lesson.get("date") or ""),
+                "period": str(lesson.get("period") or ""),
+                "subject": str(lesson.get("subject") or ""),
+                "teacher": str(lesson.get("teacher") or "") or None,
+                "room": str(lesson.get("room") or "") or None,
+                "class_name": str(lesson.get("class_name") or "") or None,
+                "info": str(lesson.get("info") or "") or None,
+                "start_time": str(lesson.get("start_time") or "") or None,
+                "end_time": str(lesson.get("end_time") or "") or None,
+                "duration": int(lesson.get("duration") or 1),
+                "week_type": str(lesson.get("week_type") or "") or None,
+                "course_id": str(lesson.get("course_id") or "") or None,
+                "removed": int(bool(lesson.get("removed"))),
+            }
             await db.execute(
                 """
                 INSERT INTO custom_lessons
