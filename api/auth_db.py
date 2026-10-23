@@ -2081,12 +2081,15 @@ async def save_custom_lesson(
             if merge_and_validate is not None:
                 db.row_factory = aiosqlite.Row
                 async with db.execute(
-                    "SELECT * FROM custom_lessons WHERE user_id = ? AND lesson_date = ? AND period = ?",
+                    "SELECT * FROM custom_lessons WHERE user_id = ? AND strftime('%w', lesson_date) = strftime('%w', ?) AND period = ? ORDER BY lesson_date DESC LIMIT 1",
                     (user_id, lesson["date"], lesson["period"]),
                 ) as cursor:
                     row = await cursor.fetchone()
                 existing = _custom_lesson_from_row(row) if row else (defaults or {})
-                lesson = merge_and_validate({**existing, **lesson})
+                # Agent edits target the recurring weekday/period identity. Keep
+                # its current anchor so another Monday does not add a new row.
+                anchor = existing.get("date", lesson["date"])
+                lesson = merge_and_validate({**existing, **lesson, "date": anchor})
             values = {
                 "date": str(lesson.get("date") or ""),
                 "period": str(lesson.get("period") or ""),

@@ -59,7 +59,7 @@ def portal_lesson_defaults(plan, lesson_date, period):
         "start_time": clock(lesson.get("start_time")),
         "end_time": clock(lesson.get("end_time")),
         "duration": lesson.get("duration") or 1,
-        "week_type": lesson.get("badge") or None,
+        "week_type": lesson.get("badge") if lesson.get("badge") in ("A", "B") else None,
         "course_id": lesson.get("course_id") or None,
         "removed": False,
     }
@@ -419,6 +419,7 @@ def register_tools(tool, run):
     ) -> dict:
         """Create/edit a recurring weekly personal lesson override. The date is a weekday anchor: this affects that weekday and period every week, not just that date. removed=true hides the recurring lesson. Only call when the user explicitly requests a recurring change; for a one-off request, explain the limitation and ask before making a recurring change. Omitted fields keep their saved values. Changes only the LANIS overlay, not the school's official timetable."""
         import re
+        from datetime import date as calendar_date
 
         from .api import CustomLessonRequest, _validate_custom_lesson, sessions
         from .auth_db import get_custom_lessons, save_custom_lesson
@@ -431,9 +432,14 @@ def register_tools(tool, run):
                 start = int(match.group(1))
                 end = int(match.group(2) or start)
                 key = str(start) if start == end else f"{start}–{end}"
+            try:
+                weekday = calendar_date.fromisoformat(date).weekday()
+            except ValueError as exc:
+                raise HTTPException(422, "Invalid lesson date") from exc
             defaults = {}
             if not any(
-                lesson["date"] == date and lesson["period"] == key
+                calendar_date.fromisoformat(lesson["date"]).weekday() == weekday
+                and lesson["period"] == key
                 for lesson in await get_custom_lessons(auth.user_id)
             ):
                 plan = await run_in_threadpool(auth.client.stundenplan_get_plan)

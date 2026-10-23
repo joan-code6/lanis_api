@@ -1154,7 +1154,10 @@ assert 'https://dotenv-api.example/.well-known/oauth-protected-resource/mcp' in 
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_first_agent_lesson_edit_preserves_portal_details(environment, monkeypatch):
+@pytest.mark.parametrize("badge", ["A", "Q1"])
+def test_first_agent_lesson_edit_preserves_portal_details(
+    environment, monkeypatch, badge
+):
     from types import SimpleNamespace
 
     from api import agent_mcp
@@ -1178,7 +1181,7 @@ def test_first_agent_lesson_edit_preserves_portal_details(environment, monkeypat
             "info": "Notes",
             "class_name": "9A",
             "course_id": "42",
-            "badge": "A",
+            "badge": badge,
         }
         plan = {"success": True, "plan_for_own": [[original]]}
 
@@ -1204,14 +1207,21 @@ def test_first_agent_lesson_edit_preserves_portal_details(environment, monkeypat
             "end_time": "09:30",
             "course_id": "42",
             "info": "Notes",
-            "week_type": "A",
+            "week_type": "A" if badge == "A" else None,
         }.items():
             assert saved[key] == expected
         assert original["room"] == "Old"
+        again = await edit.fn(date="2026-10-26", period="1", teacher="New teacher")
+        assert again["success"] is True
+        assert again["lesson"]["date"] == "2026-10-19"
+        assert again["lesson"]["room"] == "New"
+        assert again["lesson"]["teacher"] == "New teacher"
+        assert len(await auth_db.get_custom_lessons("5201:alice")) == 1
+
         # The same first-time edit is safe for another user; no overrides are shared.
         assert await auth_db.get_custom_lessons("5201:bob") == []
-        plan["plan_for_own"] = [[original, dict(original, name="Other")]]
-        ambiguous = await edit.fn(date="2026-10-26", period="1", teacher="Changed")
+        plan["plan_for_own"] = [[], [original, dict(original, name="Other")]]
+        ambiguous = await edit.fn(date="2026-10-20", period="1", teacher="Changed")
         assert ambiguous["error"] == "INVALID_REQUEST"
         assert len(await auth_db.get_custom_lessons("5201:alice")) == 1
 
