@@ -175,6 +175,7 @@ async def build_account_export(user_id: str) -> dict:
         "cached_data": cached_data,
         "cached_file_references": persisted["cached_file_references"],
         "message_read_overrides": persisted["message_read_overrides"],
+        "message_body_receipts": persisted["message_body_receipts"],
         "cached_downloads": persisted["cached_downloads"],
         "cache_sync": persisted["cache_sync"],
         "activity": activity,

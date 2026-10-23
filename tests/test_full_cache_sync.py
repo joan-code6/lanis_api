@@ -161,6 +161,46 @@ def test_old_cached_headers_cannot_restore_unread_or_replace_activity(state):
     asyncio.run(scenario())
 
 
+def test_reply_arriving_inside_body_fetch_is_preserved_without_header_change(state):
+    async def scenario():
+        headers = {"success": True, "conversations": [{"id": "c", "unread": 0}]}
+        old = {"success": True, "messages": [{"content": "opened"}]}
+        await message_read_state.record_body(
+            "a", "c", old, background=False, activity=None
+        )
+        await message_read_state.record_body(
+            "a", "c", old, background=True, activity=None
+        )
+        assert (await message_read_state.overlay_headers("a", headers))[
+            "conversations"
+        ][0]["unread"] == 0
+        # Headers still say read, but upstream includes a reply that arrived
+        # after those headers and marks it read while returning its content.
+        new = {
+            "success": True,
+            "messages": [{"content": "opened"}, {"content": "new reply"}],
+        }
+        await message_read_state.record_body(
+            "a", "c", new, background=True, activity=None
+        )
+        assert (await message_read_state.overlay_headers("a", headers))[
+            "conversations"
+        ][0]["unread"] == 1
+        activity = await message_read_state.current_activity("a", "c")
+        await message_read_state.record_body(
+            "a", "c", new, background=False, activity=activity
+        )
+        await message_read_state.mark_opened("a", "c", expected_activity=activity)
+        await message_read_state.record_body(
+            "a", "c", new, background=True, activity=activity
+        )
+        assert (await message_read_state.overlay_headers("a", headers))[
+            "conversations"
+        ][0]["unread"] == 0
+
+    asyncio.run(scenario())
+
+
 def test_successful_sync_recovers_despite_lifetime_evictions(state, monkeypatch):
     store = outage_cache.SnapshotStore()
     store.user_evictions["a"] = 3

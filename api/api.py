@@ -137,7 +137,7 @@ from .auth_db import (
     whatsapp_link_matches_sync,
 )
 from .daily_cache import run_daily_cache, warming
-from .message_read_state import current_activity, mark_opened, overlay_headers
+from .message_read_state import current_activity, mark_opened, overlay_headers, record_body
 from .outage_cache import OutageCacheRoute, snapshots
 from .account_data import (
     AccountDeletionCleanupError,
@@ -3216,6 +3216,9 @@ async def get_conversation(
     result = await run_in_threadpool(
         auth.client.nachrichten_get_conversation, conversation_id, last
     )
+    if result.get('success') and last == 0:
+        await record_body(auth.user_id, conversation_id, result,
+                          background=warming.get(), activity=activity)
     if result.get('success') and not warming.get() and last == 0:
         await mark_opened(auth.user_id, conversation_id, expected_activity=activity)
     await sessions.set_cache_if_current_version(

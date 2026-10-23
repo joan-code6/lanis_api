@@ -360,6 +360,11 @@ async def initialize() -> None:
             "unread INTEGER NOT NULL, PRIMARY KEY (user_id, conversation_id))"
         )
         await db.execute(
+            "CREATE TABLE IF NOT EXISTS message_body_receipts ("
+            "user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, body_hash TEXT NOT NULL, "
+            "PRIMARY KEY (user_id, conversation_id))"
+        )
+        await db.execute(
             "CREATE TABLE IF NOT EXISTS outage_snapshot_revocations ("
             "user_id TEXT PRIMARY KEY, revoked_at TEXT NOT NULL)"
         )
@@ -1630,6 +1635,10 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
             "SELECT file_hash, filename, content_type FROM cached_downloads WHERE user_id = ?",
             (user_id,),
         )).fetchall()]
+        body_receipts = [dict(row) for row in await (await db.execute(
+            "SELECT conversation_id, body_hash FROM message_body_receipts WHERE user_id = ?",
+            (user_id,),
+        )).fetchall()]
     return {
         "account": {
             "school_id": credential["school_id"] if credential else None,
@@ -1658,6 +1667,7 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
         },
         "cached_file_references": cached_file_references,
         "message_read_overrides": unread_overrides,
+        "message_body_receipts": body_receipts,
         "cached_downloads": downloads,
         "cache_sync": await get_cache_sync_state(user_id),
     }
@@ -1752,6 +1762,7 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
         "cache_sync_state",
         "cached_downloads",
         "message_read_overrides",
+        "message_body_receipts",
         "outage_snapshot_revocations",
         "admin_sessions",
         "notification_preferences",

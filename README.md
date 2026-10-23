@@ -221,6 +221,10 @@ LANIS persists the pre-sync unread flags separately and overlays them on message
 headers and notification polling until the user opens the conversation in LANIS
 and a fresh full body is fetched successfully. Older outage snapshots remain
 viewable but do not clear unread flags for potentially newer messages.
+Background-fetched bodies are compared with a persisted hash of the last body
+delivered interactively. Changed bodies remain unread even if a reply arrived
+between the header and body requests. On first synchronization, bodies without
+such a receipt are conservatively shown as unread until opened in LANIS.
 
 Files advertised by file-storage trees, file distributions, course entries, and
 submission details are downloaded sequentially through authenticated API routes.

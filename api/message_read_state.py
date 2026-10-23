@@ -85,6 +85,33 @@ async def current_activity(user_id, identifier):
     return row[0] if row else None
 
 
+async def record_body(user_id, identifier, result, *, background, activity):
+    """Keep background-fetched content unread until that body was delivered interactively."""
+    digest = hashlib.sha256(
+        json.dumps(result.get("messages", []), sort_keys=True, default=str).encode()
+    ).hexdigest()
+    async with auth_db._lock, aiosqlite.connect(auth_db.DB_PATH) as db:
+        if background:
+            row = await (
+                await db.execute(
+                    "SELECT body_hash FROM message_body_receipts WHERE user_id = ? AND conversation_id = ?",
+                    (user_id, identifier),
+                )
+            ).fetchone()
+            if not row or row[0] != digest:
+                await db.execute(
+                    "INSERT INTO message_read_overrides VALUES (?, ?, ?, 1) "
+                    "ON CONFLICT(user_id, conversation_id) DO UPDATE SET unread = 1",
+                    (user_id, identifier, activity or ""),
+                )
+        else:
+            await db.execute(
+                "INSERT OR REPLACE INTO message_body_receipts VALUES (?, ?, ?)",
+                (user_id, identifier, digest),
+            )
+        await db.commit()
+
+
 async def mark_opened(user_id, identifier, *, expected_activity=...):
     """Clear a preserved unread flag only for an interactive LANIS read."""
     async with auth_db._lock, aiosqlite.connect(auth_db.DB_PATH) as db:
