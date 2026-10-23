@@ -71,6 +71,12 @@ TOOL_SCOPES = {}
 TOOL_MODULES = {
     "lanis_connection": None,
     "lanis_profile": None,
+    "lanis_modules": None,
+    "lanis_video_rooms": "videokonferenz_get_rooms",
+    "lanis_dsb_substitutions": "dsb_school_plan",
+    "lanis_calendar_views": "kalender_get_events",
+    "lanis_calendar_event": "kalender_get_events",
+    "lanis_distributed_file": "dateiverteilung_get_overview",
     "lanis_preferences": None,
     "lanis_update_preferences": None,
     **dict.fromkeys(
@@ -125,6 +131,7 @@ def module_methods(result):
 
 
 PORTAL_MODULES = {
+    "videokonferenz.php": "videokonferenz_get_rooms",
     "meinunterricht.php": "meinunterricht_get_overview",
     "lerngruppen.php": "lerngruppen_get_overview",
     "stundenplan.php": "stundenplan_get_plan",
@@ -161,7 +168,12 @@ async def account_modules(auth):
     from fastapi.concurrency import run_in_threadpool
 
     # Do not authorize from the dashboard stale-while-revalidate cache.
-    return module_methods(await run_in_threadpool(fetch_module_access, auth.client))
+    methods = module_methods(await run_in_threadpool(fetch_module_access, auth.client))
+    from .api import _school_dsb_credentials
+
+    if _school_dsb_credentials(auth.school_id) is not None:
+        methods.add("dsb_school_plan")
+    return methods
 
 
 def tool(scope=None, *, write=False, destructive=False, **kwargs):
@@ -332,6 +344,9 @@ async def lanis_connection() -> dict:
         "next_steps": [
             instruction
             for name, instruction in {
+                "lanis_modules": "Use lanis_modules to see the account’s portal apps and whether a dedicated integration exists.",
+                "lanis_video_rooms": "Use lanis_video_rooms for available Videokonferenz rooms; never share personal join links with other people.",
+                "lanis_dsb_substitutions": "Use lanis_dsb_substitutions for the school-configured DSB plan; it is separate from the portal Vertretungsplan module.",
                 "lanis_exams": "Use lanis_exams first for upcoming exams, Klassenarbeiten and Lernkontrollen; its source is Lerngruppen.",
                 "lanis_courses": "Discover book_id values with lanis_courses, then read paginated homework with lanis_course.",
                 "lanis_timetable": "Read lanis_timetable; cross-check lanis_substitutions only if it is in available_tools.",

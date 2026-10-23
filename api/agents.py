@@ -21,6 +21,11 @@ from . import auth_db
 router = APIRouter(tags=["Agents"])
 # One source of truth for OAuth, presets, tool discovery and Custom controls.
 SCOPES = {
+    "meetings:read": {
+        "title": "Videokonferenzen lesen",
+        "description": "Räume und persönliche Beitrittslinks",
+        "group": "Videokonferenz",
+    },
     "schoolwork:read": {
         "title": "Unterricht lesen",
         "description": "Kurse und Hausaufgaben",

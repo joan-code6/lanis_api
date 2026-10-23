@@ -1585,6 +1585,7 @@ def test_module_discovery_is_independent_of_shared_scopes(
         assert tools == expected | {
             "lanis_connection",
             "lanis_profile",
+            "lanis_modules",
             "lanis_preferences",
             "lanis_update_preferences",
         }
@@ -1658,6 +1659,7 @@ def test_module_lookup_failure_fails_closed_before_write(environment, monkeypatc
         assert {t.name for t in await agent_mcp.permitted_tools()} == {
             "lanis_connection",
             "lanis_profile",
+            "lanis_modules",
             "lanis_preferences",
             "lanis_update_preferences",
         }
@@ -1807,24 +1809,247 @@ def test_module_access_is_per_account_and_refreshed(monkeypatch):
     async def scenario():
         alice_apps = [{"link": "stundenplan.php"}]
         alice = SimpleNamespace(
+            school_id="test-school",
             client=SimpleNamespace(
                 BASE_START_URL="https://start.schulportal.hessen.de",
                 get_apps=lambda: {"success": True, "data": {"entrys": alice_apps}},
-            )
+            ),
         )
         bob = SimpleNamespace(
+            school_id="test-school",
             client=SimpleNamespace(
                 BASE_START_URL="https://start.schulportal.hessen.de",
                 get_apps=lambda: {
                     "success": True,
                     "data": {"entrys": [{"link": "lerngruppen.php"}]},
                 },
-            )
+            ),
         )
         assert await agent_mcp.account_modules(alice) == {"stundenplan_get_plan"}
         assert await agent_mcp.account_modules(bob) == {"lerngruppen_get_overview"}
         alice_apps.clear()
         assert await agent_mcp.account_modules(alice) == set()
         assert await agent_mcp.account_modules(bob) == {"lerngruppen_get_overview"}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "method,names",
+    [
+        ("videokonferenz_get_rooms", {"lanis_video_rooms"}),
+        ("dsb_school_plan", {"lanis_dsb_substitutions"}),
+        (
+            "kalender_get_events",
+            {"lanis_calendar", "lanis_calendar_views", "lanis_calendar_event"},
+        ),
+        (
+            "dateiverteilung_get_overview",
+            {"lanis_distributions", "lanis_distributed_file"},
+        ),
+    ],
+)
+def test_new_module_tools_are_filtered_by_actual_access(
+    environment, monkeypatch, method, names
+):
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": list(agents.SCOPES),
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            agent_mcp,
+            "fetch_module_access",
+            lambda _: {"success": True, "modules": [{"usage": [method]}]},
+        )
+        discovered = {t.name for t in await agent_mcp.permitted_tools()}
+        assert discovered == names | {
+            "lanis_connection",
+            "lanis_profile",
+            "lanis_modules",
+            "lanis_preferences",
+            "lanis_update_preferences",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_dsb_discovery_is_limited_to_configured_school(monkeypatch):
+    from types import SimpleNamespace
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setenv("DSB_SCHOOL_ID", "5201")
+        monkeypatch.setenv("DSB_USERNAME", "test-only")
+        monkeypatch.setenv("DSB_PASSWORD", "test-only")
+        client = SimpleNamespace(
+            get_apps=lambda: {"success": True, "data": {"entrys": []}}
+        )
+        assert await agent_mcp.account_modules(
+            SimpleNamespace(client=client, school_id="5201")
+        ) == {"dsb_school_plan"}
+        assert (
+            await agent_mcp.account_modules(
+                SimpleNamespace(client=client, school_id="other")
+            )
+            == set()
+        )
+
+    asyncio.run(scenario())
+
+
+def test_module_catalog_distinguishes_unsupported_from_inaccessible(
+    environment, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": ["profile:read"],
+                }
+            ),
+        )
+        portal = SimpleNamespace(
+            BASE_START_URL="https://start.schulportal.hessen.de",
+            get_apps=lambda: {
+                "success": True,
+                "data": {
+                    "entrys": [
+                        {"Name": "Videokonferenz", "link": "videokonferenz.php"},
+                        {
+                            "Name": "Moodle",
+                            "link": "https://school.example/moodle?secret=must-not-leak",
+                        },
+                    ]
+                },
+            },
+        )
+        monkeypatch.setattr(
+            api_module.sessions,
+            "_get_or_create_schulportal_client",
+            AsyncMock(return_value=SimpleNamespace(client=portal)),
+        )
+        result = await mcp._tool_manager.get_tool("lanis_modules").fn()
+        assert result["modules"] == [
+            {"name": "Videokonferenz", "integrated": True},
+            {"name": "Moodle", "integrated": False},
+        ]
+        assert "secret" not in str(result)
+
+    asyncio.run(scenario())
+
+
+def test_video_rooms_require_separate_permission(environment, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        async def identity(scope=None):
+            if scope == "meetings:read":
+                raise ValueError("PERMISSION_REQUIRED")
+            return {"id": "test", "user_id": "5201:alice", "scopes": ["profile:read"]}
+
+        monkeypatch.setattr(agent_mcp, "identity", identity)
+        operation = AsyncMock(side_effect=AssertionError("No meeting permission"))
+        monkeypatch.setattr(api_module, "get_videokonferenz", operation)
+        with pytest.raises(ValueError, match="PERMISSION_REQUIRED"):
+            await mcp._tool_manager.get_tool("lanis_video_rooms").fn()
+        operation.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_every_supported_portal_module_has_an_agent_integration():
+    """New portal adapters must not silently omit their MCP counterpart."""
+    import ast
+    import inspect
+    import textwrap
+
+    from api.agent_mcp import PORTAL_MODULES, TOOL_MODULES
+    from schulportal_hessen.base import SchulportalHessenAPI
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(SchulportalHessenAPI.get_available_modules))
+    )
+    assignment = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "usage_by_link"
+            for target in node.targets
+        )
+    )
+    supported = ast.literal_eval(assignment.value)
+    assert set(supported) == set(PORTAL_MODULES) | {"benutzerverwaltung.php"}
+    # Benutzerverwaltung is covered by the universal, own-account profile tool.
+    assert set(PORTAL_MODULES.values()).issubset(set(TOOL_MODULES.values()))
+
+
+def test_distributed_file_download_uses_bounded_file_pipeline(environment, monkeypatch):
+    from io import BytesIO
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": ["files:read"],
+                }
+            ),
+        )
+        stream = BytesIO(b"School handout")
+        closed = Mock()
+        download = Mock(
+            return_value={
+                "success": True,
+                "stream": stream,
+                "close": closed,
+                "content_type": "text/plain",
+                "filename": "handout.txt",
+            }
+        )
+        portal = SimpleNamespace(dateiverteilung_download_file=download)
+        monkeypatch.setattr(
+            api_module.sessions,
+            "_get_or_create_schulportal_client",
+            AsyncMock(return_value=SimpleNamespace(client=portal)),
+        )
+        result = await mcp._tool_manager.get_tool("lanis_distributed_file").fn(
+            url="dateiverteilung.php?a=download&id=42"
+        )
+        assert result["text"] == "School handout"
+        download.assert_called_once_with("dateiverteilung.php?a=download&id=42")
+        closed.assert_called_once()
+        assert stream.closed
 
     asyncio.run(scenario())

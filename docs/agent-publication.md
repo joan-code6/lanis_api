@@ -148,3 +148,31 @@ The manifest is read without opening external apps or following SSO redirects.
 and Lernkontrollen. It reads the structured Lerngruppen exam list, labels its
 source and sorts by date. The general calendar is not a complete exam schedule;
 missing dates and incomplete coverage must not be replaced with guesses.
+
+### Module coverage
+
+| Account module | Agent integration |
+| --- | --- |
+| Mein Unterricht | Courses, homework, completion, grades/attendance with separate scopes, submissions |
+| Lerngruppen | Study groups and dedicated structured exam list |
+| Stundenplan | Timetable and personal recurring lesson edits |
+| Vertretungsplan | Portal substitutions |
+| DSBmobile | School-configured plan, only for the configured school |
+| Kalender | Views, events and individual event details |
+| Nachrichten | Headers, cached reads, explicit opening/mark-read, recipients, send/reply |
+| Dateispeicher | Browse, search and bounded file reads |
+| Dateiverteilung | Overview and bounded download reads |
+| Oberstufenwahl | Election overview, forms and explicit submissions |
+| Videokonferenz | Fresh rooms and personal join links under `meetings:read`; no automatic joining |
+| Benutzerverwaltung | Own-account profile; never operator/admin functions |
+
+`lanis_modules` lists the account's portal app names without opening apps or
+returning potentially signed external URLs. `integrated` describes server support,
+not an OAuth grant: use `lanis_connection.available_tools` for the actual callable
+capabilities. External school apps such as Moodle are listed as accessible but
+without a dedicated integration. This must not be described as missing account
+access. The regression suite compares the backend's supported module registry
+with MCP coverage so a new backend module cannot silently be omitted.
+
+Existing connections must reconnect to approve the new `meetings:read` permission;
+an existing grant never acquires extra permissions automatically.
