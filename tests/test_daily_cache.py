@@ -115,10 +115,17 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
 
     app = FastAPI()
     requested = []
+    elapsed = 0
 
     @app.get("/{path:path}")
     async def read(path: str, request: Request, response: Response):
         """Serve deterministic read responses for cache warming integration tests."""
+        nonlocal elapsed
+        # Model a long traversal without wall-clock sleeps. A token reused
+        # from the prior read is expired even though its session remains valid.
+        if float(request.headers["X-Session-Token"]) <= elapsed:
+            return JSONResponse({"detail": "token expired"}, status_code=401)
+        elapsed += 3601
         response.headers["X-LANIS-Cache"] = "fresh"
         requested.append((request.url.path, request.url.query))
         if daily_cache.binary_path(request.url.path):
@@ -216,7 +223,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     monkeypatch.setattr(daily_cache.auth_db, "get_cache_warmup_users", users)
     monkeypatch.setattr(api_module, "app", app)
     monkeypatch.setattr(
-        api_module.sessions, "create_access_token", lambda **_: "private-token"
+        api_module.sessions, "create_access_token", lambda **_: str(elapsed + 3600)
     )
     monkeypatch.setattr(daily_cache.asyncio, "sleep", no_delay)
     monkeypatch.setattr(

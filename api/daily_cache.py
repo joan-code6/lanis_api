@@ -207,7 +207,6 @@ async def warm_users():
         timeout=60,
     ) as client:
         for user in users:
-            token = sessions.create_access_token(**user)
             targets = {(path, ()) for path in BASE_PATHS}
             if _school_dsb_credentials(user["school_id"]) is not None:
                 targets.add(("/dsb/school-plan", ()))
@@ -242,6 +241,10 @@ async def warm_users():
                         continue
                     read_failed = False
                     try:
+                        # Long file traversals can outlast a token's lifetime.
+                        # Renew per request; route auth still checks the stored
+                        # session, so logout/revocation remains effective.
+                        token = sessions.create_access_token(**user)
                         response = await asyncio.wait_for(
                             client.get(
                                 path,
