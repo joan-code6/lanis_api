@@ -495,7 +495,9 @@ def test_school_tool_error_recovery(environment, monkeypatch, failure, expected_
 
         async def fail(_auth):
             if failure == "validation":
-                api_module.CustomLessonRequest(date="2026-10-22", period="1", duration=0)
+                api_module.CustomLessonRequest(
+                    date="2026-10-22", period="1", duration=0
+                )
             elif isinstance(failure, int):
                 raise HTTPException(failure, detail=details)
             else:
@@ -525,7 +527,9 @@ def test_school_tool_error_recovery(environment, monkeypatch, failure, expected_
                     "Ask the user to sign in to LANIS again, then retry."
                 )
             elif failure == "unexpected":
-                assert result["next_step"] == "Retry later. No school data was returned."
+                assert (
+                    result["next_step"] == "Retry later. No school data was returned."
+                )
             else:
                 assert result["next_step"] == (
                     "School data could not be loaded. Retry later; do not infer that there are no entries."
@@ -972,5 +976,74 @@ def test_agent_lesson_patch_preserves_details_and_timetable_reads_overrides(
         assert (await agent_mcp.lanis_timetable())["custom_lessons"][0][
             "removed"
         ] is True
+
+    asyncio.run(scenario())
+
+
+def test_token_scope_ceiling_resubmission_never_expands_user_grant(environment):
+    async def scenario():
+        async with client() as c:
+            cid, code, _ = await request_grant(c, agents.DEFAULT_SCOPES)
+            grant = (await c.get("/agents", headers=HEAD)).json()["connections"][0]
+            restricted = list(agents.RESTRICTED_SCOPES)
+            changed = await c.patch(
+                "/agents/" + grant["id"],
+                headers=HEAD,
+                json={"name": "Restricted", "scopes": restricted},
+            )
+            assert changed.status_code == 200
+            response = await exchange(c, cid, code, scope=agents.DEFAULT_SCOPES)
+            assert response.status_code == 200
+            tokens = response.json()
+            for requested in ["schoolwork:read", agents.DEFAULT_SCOPES]:
+                assert set(tokens["scope"].split()) == set(restricted)
+                assert set(
+                    (await agents.authenticate(tokens["access_token"]))["scopes"]
+                ) == set(restricted)
+                response = await c.post(
+                    "/oauth/token",
+                    data={
+                        "grant_type": "refresh_token",
+                        "client_id": cid,
+                        "refresh_token": tokens["refresh_token"],
+                        "scope": requested,
+                    },
+                )
+                assert response.status_code == 200, response.text
+                tokens = response.json()
+            assert set(tokens["scope"].split()) == set(restricted)
+
+    asyncio.run(scenario())
+
+
+def test_token_rate_limits_isolate_clients_and_guard_missing_peer(environment):
+    async def scenario():
+        # No ASGI peer is valid for in-process transports and some deployments.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api_module.app, client=None),
+            base_url="http://localhost:8000",
+        ) as c:
+            registration = await c.post(
+                "/oauth/register",
+                json={"client_name": "No peer", "redirect_uris": [CALLBACK]},
+            )
+            assert registration.status_code == 201
+            for _ in range(120):
+                assert await store.rate_limit(
+                    "token-client:" + store.digest("busy-client"), 120, 60
+                )
+            request = {
+                "grant_type": "refresh_token",
+                "client_id": "busy-client",
+                "refresh_token": "invalid",
+            }
+            assert (await c.post("/oauth/token", data=request)).status_code == 429
+            request["client_id"] = "other-client"
+            assert (await c.post("/oauth/token", data=request)).status_code == 400
+            # The independent IP bucket still stops callers rotating client IDs.
+            for _ in range(1998):
+                assert await store.rate_limit("token-ip:unknown", 2000, 60)
+            request["client_id"] = "third-client"
+            assert (await c.post("/oauth/token", data=request)).status_code == 429
 
     asyncio.run(scenario())

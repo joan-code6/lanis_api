@@ -241,7 +241,8 @@ class Registration(BaseModel):
 
 @router.post("/oauth/register", status_code=201)
 async def register(body: Registration, request: Request):
-    if not await store.rate_limit("register:" + request.client.host, 30, 3600):
+    host = request.client.host if request.client else "unknown"
+    if not await store.rate_limit("register:" + host, 300, 3600):
         return oauth_error("slow_down", "Too many registrations. Try again later.", 429)
     if (
         body.token_endpoint_auth_method != "none"
@@ -489,11 +490,19 @@ async def issue_tokens(db, row):
 
 @router.post("/oauth/token")
 async def token(request: Request):
-    if not await store.rate_limit("token:" + request.client.host, 120, 60):
+    host = request.client.host if request.client else "unknown"
+    if not await store.rate_limit("token-ip:" + host, 2000, 60):
         return oauth_error(
             "slow_down", "Too many token requests. Retry in one minute.", 429
         )
     form = await request.form()
+    client_id = str(form.get("client_id", ""))
+    if not await store.rate_limit("token-client:" + store.digest(client_id), 120, 60):
+        return oauth_error(
+            "slow_down",
+            "Too many token requests for this client. Retry in one minute.",
+            429,
+        )
     kind = {"authorization_code": "code", "refresh_token": "refresh"}.get(
         form.get("grant_type")
     )
@@ -546,17 +555,8 @@ async def token(request: Request):
                     "invalid_grant",
                     "The verifier or redirect URI does not match this authorization.",
                 )
-        if form.get("scope"):
-            grant = await store.one(
-                db, "SELECT data FROM agent_grants WHERE id=?", (row["grant_id"],)
-            )
-            if set(str(form["scope"]).split()) != set(
-                json.loads(grant["data"])["scopes"]
-            ):
-                return oauth_error(
-                    "invalid_scope",
-                    "Permissions cannot change during refresh; reconnect to change access.",
-                )
+        # The user's current grant is authoritative. Ignore a client-resubmitted
+        # scope ceiling and report the actual issued scope without elevating it.
         await db.execute("UPDATE agent_tokens SET used=1 WHERE id=?", (row["id"],))
         return await issue_tokens(db, row)
 

@@ -1,4 +1,4 @@
-"""Build a private ChatGPT plugin package against a verified LANIS MCP issuer.
+"""Build a developer source archive against a verified LANIS MCP issuer.
 
 Does not deploy, upload, or publish. Run after deploying the API and UI.
 """
@@ -107,9 +107,9 @@ def main():
         ]
         for name in ("lanis/mcp.json", "lanis/plugin.json"):
             json.loads(archive.read(name))
-    print(f"Private LANIS plugin package created: {args.output}")
+    print(f"LANIS developer source archive created: {args.output}")
     print(
-        "Server deployment and user OAuth approval are separate from plugin installation."
+        "This remote-MCP archive is not installable via ChatGPT ZIP upload. For private testing use Add custom MCP server; for publication use With MCP."
     )
 
 

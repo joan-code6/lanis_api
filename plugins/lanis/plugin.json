@@ -15,8 +15,8 @@
           "Welche Hausaufgaben habe ich auf?",
           "Hilf mir, meinen nächsten Schultag zu planen."
         ],
-        "logo": "assets/icon.png",
-        "composerIcon": "assets/icon.png"
+        "logo": "./assets/icon.png",
+        "composerIcon": "./assets/icon.png"
       }
     }
   }

@@ -1,15 +1,16 @@
 # External agents
 
 LANIS exposes one provider-neutral Streamable HTTP MCP endpoint at `/mcp`.
-ChatGPT uses it through a plugin; Claude uses the same endpoint through a custom
-connector. Every authorization creates an independent connection, including when
+Claude connects through a custom connector. ChatGPT’s public plugin is planned;
+operators can test the endpoint through its custom MCP connection flow where available. Every authorization creates an independent connection, including when
 the same provider connects twice. No model is run by this feature.
 
 ## User flow
 
 1. Open Settings → Agents for connection instructions and the MCP address.
-2. Add the LANIS plugin in ChatGPT, a custom connector in Claude, or a remote
-   MCP server in another OAuth-capable client. Start connecting from that client.
+2. Add a custom connector in Claude or a remote MCP server in another client.
+   Operators can test ChatGPT through its custom MCP flow where available.
+   Use an OAuth-capable client to connect to the MCP server in another OAuth-capable client. Start connecting from that client.
 3. The client discovers OAuth metadata, registers its callback, and opens LANIS.
 4. LANIS keeps the authorization request through sign-in, shows the account,
    self-declared client name, callback domain, and requested permissions.
@@ -80,7 +81,8 @@ Revocation and scope reductions are checked again for each tool call.
 
 Pending browser requests expire after ten minutes; one-use codes after two
 minutes. Public registration and authorization are rate-limited per network
-identity; token requests and school reads have separate limits. Used refresh
+identity; token requests have separate per-client and higher per-IP abuse limits.
+School reads have separate limits. Used refresh
 tokens remain until expiry for replay detection. Expired transient records are
 pruned during new authorizations/registrations. Revoked connection metadata is
 retained in account export and removed on account deletion; raw tokens, passwords,
@@ -139,10 +141,22 @@ existence through their existing SQLite transaction, without invoking session
 cleanup on a second connection. Tests cover real signed browser sessions and an
 expired session belonging to another account.
 
-## ChatGPT plugin
+## ChatGPT connection and plugin source
+
+The LANIS UI keeps ChatGPT marked **Coming Soon** until the supported public
+plugin is available. For operator/private testing, use ChatGPT’s **Add custom
+MCP server** flow with the deployed `https://YOUR_PUBLIC_API_ORIGIN/mcp` URL
+and OAuth, where enabled for the account/workspace. Complete LANIS consent.
+See [OpenAI’s connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt).
+
+Remote MCP publication uses the portal’s **With MCP** path, with production
+server verification, tool scanning, publisher metadata and review. The
+**Skills only** ZIP-upload path excludes remote MCP configuration; this
+repository’s MCP-only archive is not installable through that path. See
+[submission requirements](https://developers.openai.com/plugins/deploy/submission-errors).
 
 `plugins/lanis/plugin.json` is the portable plugin source. After the API and UI
-are deployed, build a **private** package using the verified public issuer:
+are deployed, build a **developer source archive** using the verified public issuer:
 
 ```sh
 python scripts/build_agent_plugin.py --issuer https://YOUR_PUBLIC_API_ORIGIN --output /tmp/lanis-plugin.zip
@@ -152,9 +166,10 @@ The builder verifies live OAuth discovery and writes `plugin.json` and `mcp.json
 with Streamable HTTP, OAuth dynamic registration, the existing LANIS icon, and
 the full advertised scope ceiling. Users still default to Restricted at consent.
 The package contains no user credentials or app IDs.
-Building it does not upload, install, publish, or deploy anything. A public
-listing still needs publisher details, privacy review, and platform submission;
-account/workspace availability of custom plugins varies. Claude can connect to
+Building it does not upload, install, publish, or deploy anything. Use it as
+source/reference for the remote MCP integration, not as a ZIP installation
+shortcut. A public listing still needs publisher details, privacy review, and
+With MCP submission. Claude can connect to
 the public MCP URL directly without installing this ChatGPT package.
 
 Official references: [ChatGPT MCP plugins](https://developers.openai.com/plugins/build/mcp-server),
