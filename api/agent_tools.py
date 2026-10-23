@@ -26,7 +26,9 @@ def portal_lesson_defaults(plan, lesson_date, period):
         raise HTTPException(422, "Invalid lesson date") from exc
     if not plan.get("success"):
         raise HTTPException(503, "Timetable unavailable; no lesson was changed")
-    days = plan.get("plan_for_own", plan.get("plan_for_all", []))
+    days = plan.get("plan_for_own")
+    if days is None:
+        days = plan.get("plan_for_all", [])
     lessons = days[weekday] if isinstance(days, list) and weekday < len(days) else []
     matches = (
         [

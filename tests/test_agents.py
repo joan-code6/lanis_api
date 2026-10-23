@@ -1155,8 +1155,9 @@ assert 'https://dotenv-api.example/.well-known/oauth-protected-resource/mcp' in 
 
 
 @pytest.mark.parametrize("badge", ["A", "Q1"])
+@pytest.mark.parametrize("personal_plan", [True, False])
 def test_first_agent_lesson_edit_preserves_portal_details(
-    environment, monkeypatch, badge
+    environment, monkeypatch, badge, personal_plan
 ):
     from types import SimpleNamespace
 
@@ -1183,7 +1184,11 @@ def test_first_agent_lesson_edit_preserves_portal_details(
             "course_id": "42",
             "badge": badge,
         }
-        plan = {"success": True, "plan_for_own": [[original]]}
+        plan = {
+            "success": True,
+            "plan_for_own": [[original]] if personal_plan else None,
+            "plan_for_all": [[original]],
+        }
 
         async def session(_user):
             return SimpleNamespace(
@@ -1226,3 +1231,25 @@ def test_first_agent_lesson_edit_preserves_portal_details(
         assert len(await auth_db.get_custom_lessons("5201:alice")) == 1
 
     asyncio.run(scenario())
+
+
+def test_empty_personal_plan_does_not_seed_another_classes_lesson():
+    from api.agent_tools import portal_lesson_defaults
+
+    portal = [[{"stunde": 1, "name": "Other class", "teacher": "Other"}]]
+    for own in ([], [[]]):
+        assert (
+            portal_lesson_defaults(
+                {"success": True, "plan_for_own": own, "plan_for_all": portal},
+                "2026-10-19",
+                "1",
+            )
+            == {}
+        )
+    for plan in (
+        {"success": True, "plan_for_all": portal},
+        {"success": True, "plan_for_own": None, "plan_for_all": portal},
+    ):
+        assert (
+            portal_lesson_defaults(plan, "2026-10-19", "1")["subject"] == "Other class"
+        )
