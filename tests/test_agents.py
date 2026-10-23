@@ -1408,3 +1408,36 @@ def test_registration_reclaims_idle_capacity_without_breaking_pending_consent(
             assert (await exchange(c, "idle-00000", pending_code)).status_code == 200
 
     asyncio.run(scenario())
+
+
+def test_recurring_lesson_exact_match_and_ambiguous_fallback(environment):
+    async def scenario():
+        for period, room in [("1", "Single"), ("1–2", "Double")]:
+            await auth_db.save_custom_lesson(
+                "5201:alice",
+                {
+                    "date": "2026-10-19",
+                    "period": period,
+                    "subject": "Math",
+                    "room": room,
+                },
+            )
+        saved = await auth_db.save_custom_lesson(
+            "5201:alice",
+            {"date": "2026-10-26", "period": "1–2", "teacher": "Changed"},
+            merge_and_validate=lambda values: values,
+        )
+        assert saved["period"] == "1–2"
+        assert saved["room"] == "Double"
+        before = await auth_db.get_custom_lessons("5201:alice")
+        assert next(row for row in before if row["period"] == "1")["teacher"] == ""
+        with pytest.raises(HTTPException) as error:
+            await auth_db.save_custom_lesson(
+                "5201:alice",
+                {"date": "2026-11-02", "period": "1–3", "room": "Wrong"},
+                merge_and_validate=lambda values: values,
+            )
+        assert error.value.status_code == 422
+        assert await auth_db.get_custom_lessons("5201:alice") == before
+
+    asyncio.run(scenario())

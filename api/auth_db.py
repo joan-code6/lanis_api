@@ -2087,13 +2087,19 @@ async def save_custom_lesson(
                     rows = await cursor.fetchall()
                 from .user_overrides import _same_period
 
-                row = next(
-                    (
+                row = next((row for row in rows if row["period"] == lesson["period"]), None)
+                if row is None:
+                    matches = [
                         row for row in rows
                         if _same_period({"stunde": row["period"]}, lesson["period"])
-                    ),
-                    None,
-                )
+                    ]
+                    if len(matches) > 1:
+                        from fastapi import HTTPException
+
+                        raise HTTPException(
+                            422, "Multiple saved lessons match this period. Edit this lesson in LANIS."
+                        )
+                    row = matches[0] if matches else None
                 existing = _custom_lesson_from_row(row) if row else (defaults or {})
                 # Agent edits target the recurring weekday/period identity. Keep
                 # its current anchor so another Monday does not add a new row.
