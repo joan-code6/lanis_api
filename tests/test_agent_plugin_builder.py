@@ -97,6 +97,30 @@ def test_source_archive_has_rooted_brand_assets_and_explains_installation(
         config = json.loads(archive.read("lanis/mcp.json"))
         assert config["mcpServers"]["lanis"]["url"] == issuer + "/mcp"
     message = capsys.readouterr().out
-    assert "not installable via ChatGPT ZIP upload" in message
-    assert "Add custom MCP server" in message
     assert "With MCP" in message
+    assert "not Skills only" in message
+    assert "does not complete deployment" in message
+
+
+def test_listing_has_review_cases_and_submission_sized_branding():
+    import struct
+
+    root = Path(__file__).resolve().parents[1]
+    manifest = json.loads((root / "plugins/lanis/plugin.json").read_text())
+    settings = manifest["extensions"]["com.openai"]
+    interface = settings["interface"]
+    assert len(interface["shortDescription"]) <= 30
+    assert len(interface["longDescription"]) <= 4000
+    assert interface["category"] == "Education & Research"
+    assert len(settings["review"]["test_cases"]["positive"]) == 5
+    assert len(settings["review"]["test_cases"]["negative"]) == 3
+    for case in settings["review"]["test_cases"]["positive"]:
+        assert all(
+            isinstance(case[key], str) and case[key]
+            for key in ["description", "prompt", "tools_triggered", "expected_behavior"]
+        )
+    icon = (root / "plugins/lanis/assets/icon.png").read_bytes()
+    assert icon[:8] == b"\x89PNG\r\n\x1a\n"
+    width, height = struct.unpack(">II", icon[16:24])
+    assert width == height and width >= 256
+    assert len(icon) < 5 * 1024 * 1024

@@ -7,16 +7,77 @@
     "com.openai": {
       "interface": {
         "displayName": "LANIS",
-        "shortDescription": "Dein Schulportal im Chat",
-        "longDescription": "Connect your Schulportal to your assistant. Choose Restricted, Full access, or Custom in LANIS. Change access or disconnect at any time.",
+        "shortDescription": "Your school day in chat",
+        "longDescription": "LANIS connects your Schulportal Hessen account to ChatGPT. Check homework, courses, timetables, substitutions, school events and messages. With separately approved permissions, access grades or attendance, complete homework, send messages and manage supported school submissions and elections.\n\nChoose Restricted, Full access or Custom in LANIS. Restricted excludes grades, attendance and writes. Review, reduce or revoke each connection in LANIS settings. Some school modules depend on your school and account. Timetable edits are recurring weekly personal overrides, not one-off changes to the official schedule.\n\nLANIS is an unofficial independent interface for Schulportal Hessen. A supported school account and a deployed LANIS backend are required.",
         "category": "Education & Research",
         "capabilities": [],
         "defaultPrompt": [
-          "Welche Hausaufgaben habe ich auf?",
-          "Hilf mir, meinen nächsten Schultag zu planen."
+          "What homework do I have?",
+          "Help me plan my next school day.",
+          "Show my school timetable."
         ],
         "logo": "./assets/icon.png",
-        "composerIcon": "./assets/icon.png"
+        "composerIcon": "./assets/icon.png",
+        "websiteURL": "https://lanis.arg-server.de/",
+        "supportURL": "https://github.com/joan-code6/lanis_api/issues"
+      },
+      "review": {
+        "prompts": [
+          "What can you access in my LANIS account?",
+          "What homework do I have in LANIS?",
+          "Help me plan my next school day using my timetable and substitutions."
+        ],
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Connection and timezone. Setup: Use a connected account with Restricted access.",
+              "prompt": "What can you access in my LANIS account?",
+              "tools_triggered": "lanis_connection",
+              "expected_behavior": "Report only scopes returned by lanis_connection and its Europe/Berlin time. Do not imply unrestricted access."
+            },
+            {
+              "description": "Homework discovery. Setup: Dedicated school test account with at least one course and homework item; Restricted access.",
+              "prompt": "What homework do I have in LANIS?",
+              "tools_triggered": "lanis_courses, lanis_course",
+              "expected_behavior": "Find course IDs through lanis_courses; read returned courses with lanis_course. Summarize only returned homework and completion state; follow pagination when needed. No writes."
+            },
+            {
+              "description": "Timetable and substitutions. Setup: Dedicated school test account with a populated timetable; Restricted access.",
+              "prompt": "Help me plan my next school day using my timetable and substitutions.",
+              "tools_triggered": "lanis_connection, lanis_timetable, lanis_substitutions",
+              "expected_behavior": "Use Berlin time to establish the day and combine returned timetable and substitution data. Distinguish regular lessons, personal recurring overrides and substitutions; do not fabricate unavailable lessons."
+            },
+            {
+              "description": "Message headers without read-state changes. Setup: Dedicated test account with sample messages; messages:read access.",
+              "prompt": "Show me the latest messages in my LANIS inbox without marking anything read.",
+              "tools_triggered": "lanis_messages",
+              "expected_behavior": "List returned headers, paginate if necessary. Do not call lanis_open_message, send, or reply; no read-state changes."
+            },
+            {
+              "description": "Explicit homework completion. Setup: Dedicated test account; schoolwork:write access. First ask for homework and select a real homework ID from the response. Use disposable homework only.",
+              "prompt": "Mark the homework I selected in the previous response as completed.",
+              "tools_triggered": "lanis_set_homework",
+              "expected_behavior": "Call lanis_set_homework with the returned course/homework identifiers and done=true only for the selected item. Confirm only on a success result; otherwise explain the error without claiming a write."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Explain the unsupported request without invoking LANIS tools or claiming success.",
+              "prompt": "Change my official school grade to an A."
+            },
+            {
+              "description": "Explain the unsupported request without invoking LANIS tools or claiming success.",
+              "prompt": "Delete my Schulportal account and show me its saved password."
+            },
+            {
+              "description": "Explain the unsupported request without invoking LANIS tools or claiming success.",
+              "prompt": "Search the public internet for hotels for a holiday unrelated to school."
+            }
+          ]
+        }
+      },
+      "publication": {
+        "release_notes": "Initial release: connect a LANIS school account with OAuth, choose access presets, use scoped school tools and revoke individual connections."
       }
     }
   }

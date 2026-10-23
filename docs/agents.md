@@ -151,28 +151,22 @@ MCP server** flow with the deployed `https://YOUR_PUBLIC_API_ORIGIN/mcp` URL
 and OAuth, where enabled for the account/workspace. Complete LANIS consent.
 See [OpenAI’s connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt).
 
-Remote MCP publication uses the portal’s **With MCP** path, with production
-server verification, tool scanning, publisher metadata and review. The
-**Skills only** ZIP-upload path excludes remote MCP configuration; this
-repository’s MCP-only archive is not installable through that path. See
-[submission requirements](https://developers.openai.com/plugins/deploy/submission-errors).
+Remote MCP publication uses the portal’s **With MCP** path. The ZIP includes
+`plugin.json`, `mcp.json` and the existing LANIS branding. Do not select the
+**Skills only** upload path for this integration. Public uploads must not contain
+private app bindings or credentials. See the [publishing preparation guide](agent-publication.md)
+for the exact remaining inputs, review walkthrough and deployment gate.
 
-`plugins/lanis/plugin.json` is the portable plugin source. After the API and UI
-are deployed, build a **developer source archive** using the verified public issuer:
+After the API and UI are deployed, build against the verified public issuer:
 
 ```sh
 python scripts/build_agent_plugin.py --issuer https://YOUR_PUBLIC_API_ORIGIN --output /tmp/lanis-plugin.zip
 ```
 
-The builder verifies live OAuth discovery and writes `plugin.json` and `mcp.json`
-with Streamable HTTP, OAuth dynamic registration, the existing LANIS icon, and
-the full advertised scope ceiling. Users still default to Restricted at consent.
-The package contains no user credentials or app IDs.
-Building it does not upload, install, publish, or deploy anything. Use it as
-source/reference for the remote MCP integration, not as a ZIP installation
-shortcut. A public listing still needs publisher details, privacy review, and
-With MCP submission. Claude can connect to
-the public MCP URL directly without installing this ChatGPT package.
+The builder verifies live OAuth discovery, dynamic registration and scope shapes
+before writing the archive. It does not upload, publish or deploy anything. A
+successful build is not a completed submission: publisher details, listing URLs,
+a working demo and reviewer access must also be ready.
 
 Official references: [ChatGPT MCP plugins](https://developers.openai.com/plugins/build/mcp-server),
 [plugin authentication](https://developers.openai.com/plugins/build/auth),

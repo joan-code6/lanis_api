@@ -130,7 +130,8 @@ def main():
             json.loads(archive.read(name))
     print(f"LANIS developer source archive created: {args.output}")
     print(
-        "This remote-MCP archive is not installable via ChatGPT ZIP upload. For private testing use Add custom MCP server; for publication use With MCP."
+        "For remote MCP publication use the With MCP submission path, not Skills only. "
+        "This archive alone does not complete deployment, review information, or publication."
     )
 
 
