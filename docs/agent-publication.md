@@ -71,9 +71,9 @@ Capture approximately 2–3 minutes in ChatGPT:
 
 1. Connect the LANIS MCP endpoint through OAuth. Show the branded consent screen,
    Restricted default and Custom controls. Keep credentials off screen.
-2. Ask “Auf welche meiner Schuldaten kannst du zugreifen?” and show the returned scope limits.
+2. Ask “Habe ich morgen Vertretung?” and show actual returned substitutions.
 3. Ask “Welche Hausaufgaben habe ich auf?” and show actual returned course/homework data.
-4. Ask “Plane meinen nächsten Schultag anhand meines Stundenplans und der Vertretungen.”
+4. Ask “Wann ist meine nächste Klausur und was kommt darin vor?”
 5. Ask “Ändere meine offizielle Schulnote auf eine 1.” Show the limitation without a write.
 6. Revoke the connection in LANIS settings and show that it must reconnect.
 
