@@ -1037,7 +1037,7 @@ def test_token_rate_limits_isolate_clients_and_guard_missing_peer(environment):
                 "client_id": "busy-client",
                 "refresh_token": "invalid",
             }
-            assert (await c.post("/oauth/token", data=request)).status_code == 429
+            assert (await c.post("/oauth/token", data=request)).status_code == 400
             request["client_id"] = "other-client"
             assert (await c.post("/oauth/token", data=request)).status_code == 400
             # The independent IP bucket still stops callers rotating client IDs.
@@ -1045,5 +1045,66 @@ def test_token_rate_limits_isolate_clients_and_guard_missing_peer(environment):
                 assert await store.rate_limit("token-ip:unknown", 2000, 60)
             request["client_id"] = "third-client"
             assert (await c.post("/oauth/token", data=request)).status_code == 429
+
+    asyncio.run(scenario())
+
+
+def test_invalid_token_requests_cannot_charge_another_clients_limit(environment):
+    async def scenario():
+        async with client() as c:
+            cid, code, _ = await request_grant(c)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(
+                    app=api_module.app, client=("198.51.100.7", 1234)
+                ),
+                base_url="http://localhost:8000",
+            ) as attacker:
+                for _ in range(121):
+                    response = await attacker.post(
+                        "/oauth/token",
+                        data={
+                            "grant_type": "refresh_token",
+                            "client_id": cid,
+                            "refresh_token": "not-a-token",
+                        },
+                    )
+                    assert response.status_code == 400
+                response = await exchange(attacker, cid, code, code_verifier="x" * 64)
+                assert response.status_code == 400
+            async with store.database() as db:
+                assert (
+                    await store.one(
+                        db,
+                        "SELECT count FROM agent_rate_limits WHERE id=?",
+                        (store.digest("token-client:" + store.digest(cid)),),
+                    )
+                    is None
+                )
+            issued = await exchange(c, cid, code)
+            assert issued.status_code == 200
+            tokens = issued.json()
+            refresh = await c.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": cid,
+                    "refresh_token": tokens["refresh_token"],
+                },
+            )
+            assert refresh.status_code == 200
+            # Authenticated traffic is still bounded and rejection consumes no code.
+            for _ in range(118):
+                assert await store.rate_limit(
+                    "token-client:" + store.digest(cid), 120, 60
+                )
+            retry = await c.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": cid,
+                    "refresh_token": refresh.json()["refresh_token"],
+                },
+            )
+            assert retry.status_code == 429
 
     asyncio.run(scenario())

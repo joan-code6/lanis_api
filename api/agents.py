@@ -497,12 +497,6 @@ async def token(request: Request):
         )
     form = await request.form()
     client_id = str(form.get("client_id", ""))
-    if not await store.rate_limit("token-client:" + store.digest(client_id), 120, 60):
-        return oauth_error(
-            "slow_down",
-            "Too many token requests for this client. Retry in one minute.",
-            429,
-        )
     kind = {"authorization_code": "code", "refresh_token": "refresh"}.get(
         form.get("grant_type")
     )
@@ -555,6 +549,16 @@ async def token(request: Request):
                     "invalid_grant",
                     "The verifier or redirect URI does not match this authorization.",
                 )
+        # Only proof of a valid code/refresh token may charge this shared
+        # client bucket. Invalid callers are limited by their source IP above.
+        if not await store.rate_limit(
+            "token-client:" + store.digest(client_id), 120, 60, db=db
+        ):
+            return oauth_error(
+                "slow_down",
+                "Too many token requests for this client. Retry in one minute.",
+                429,
+            )
         # The user's current grant is authoritative. Ignore a client-resubmitted
         # scope ceiling and report the actual issued scope without elevating it.
         await db.execute("UPDATE agent_tokens SET used=1 WHERE id=?", (row["id"],))

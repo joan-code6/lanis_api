@@ -79,17 +79,19 @@ async def prune(db):
     await db.execute("DELETE FROM agent_tokens WHERE expires < ?", (now,))
 
 
-async def rate_limit(key, limit, seconds):
-    """Shared across workers/restarts; callers use a hashed network identity or grant."""
+async def rate_limit(key, limit, seconds, *, db=None):
+    """Shared rate counter; reuse a caller's write transaction when provided."""
+    if db is None:
+        async with database(True) as connection:
+            return await rate_limit(key, limit, seconds, db=connection)
     now = time.time()
     key = digest(key)
-    async with database(True) as db:
-        await db.execute("DELETE FROM agent_rate_limits WHERE expires <= ?", (now,))
-        row = await one(db, "SELECT count FROM agent_rate_limits WHERE id=?", (key,))
-        if row and row["count"] >= limit:
-            return False
-        await db.execute(
-            "INSERT INTO agent_rate_limits VALUES (?,1,?) ON CONFLICT(id) DO UPDATE SET count=count+1",
-            (key, now + seconds),
-        )
+    await db.execute("DELETE FROM agent_rate_limits WHERE expires <= ?", (now,))
+    row = await one(db, "SELECT count FROM agent_rate_limits WHERE id=?", (key,))
+    if row and row["count"] >= limit:
+        return False
+    await db.execute(
+        "INSERT INTO agent_rate_limits VALUES (?,1,?) ON CONFLICT(id) DO UPDATE SET count=count+1",
+        (key, now + seconds),
+    )
     return True
