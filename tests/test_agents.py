@@ -1108,3 +1108,47 @@ def test_invalid_token_requests_cannot_charge_another_clients_limit(environment)
             assert retry.status_code == 429
 
     asyncio.run(scenario())
+
+
+def test_dotenv_loaded_before_mcp_construction(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    config = tmp_path / ".env"
+    config.write_text(
+        "LANIS_AGENT_ISSUER=https://dotenv-api.example\nLANIS_AGENT_UI_ORIGIN=https://dotenv-ui.example\n"
+    )
+    code = """
+import os, sys
+import dotenv
+original = dotenv.load_dotenv
+dotenv.load_dotenv = lambda *a, **kw: original(dotenv_path=sys.argv[1])
+from api.api import app
+from api.agent_mcp import mcp
+from fastapi.testclient import TestClient
+assert str(mcp.settings.auth.issuer_url).rstrip('/') == 'https://dotenv-api.example'
+assert str(mcp.settings.auth.resource_server_url) == 'https://dotenv-api.example/mcp'
+assert 'dotenv-api.example' in mcp.settings.transport_security.allowed_hosts
+assert 'https://dotenv-ui.example' in mcp.settings.transport_security.allowed_origins
+client = TestClient(app, base_url='https://dotenv-api.example')
+metadata = client.get('/.well-known/oauth-authorization-server').json()
+assert metadata['issuer'] == 'https://dotenv-api.example'
+response = client.post('/mcp', json={'jsonrpc':'2.0','id':1,'method':'tools/list'})
+assert response.status_code == 401, response.text
+assert 'https://dotenv-api.example/.well-known/oauth-protected-resource/mcp' in response.headers['www-authenticate']
+"""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"LANIS_AGENT_ISSUER", "LANIS_AGENT_UI_ORIGIN"}
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(config)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

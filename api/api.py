@@ -60,6 +60,10 @@ except ImportError:  # Pydantic v1
     from pydantic import validator as field_validator
 
 import jwt
+from dotenv import load_dotenv
+
+# Configure import-time services (including MCP) before local modules capture URLs.
+load_dotenv()
 
 from schulportal_hessen.base import SchulportalHessenAPI
 
@@ -200,9 +204,6 @@ from .whatsapp import (
     verify_webhook_signature,
 )
 from .ai_agent import AIConfig, AIProviderError, AgentTool, run_agent
-
-from dotenv import load_dotenv
-load_dotenv()
 
 logger = logging.getLogger("api")
 
