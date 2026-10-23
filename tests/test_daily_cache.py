@@ -215,7 +215,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     async def no_delay(_):
         """Skip pacing delays while exercising the warm-up requests."""
 
-    async def save_state(*_):
+    async def save_state(*_, **kwargs):
         """Isolate coverage persistence in the in-process route integration test."""
 
     monkeypatch.setattr(daily_cache.auth_db, "save_cache_sync_state", save_state)

@@ -2920,6 +2920,61 @@ async def get_message_headers(
     return result
 
 
+async def saved_dashboard_notification_inbox(user_id, *, sources=None, show_read=None):
+    """Render the current local inbox without contacting the portal during outages."""
+    from .auth_db import get_dashboard_notifications
+
+    preferences, _ = await get_user_preferences(user_id)
+    settings = preferences.get("dashboard") or {}
+    enabled = settings.get("notifications_enabled", True)
+    allowed = {
+        source
+        for source in ("messages", "native", "dsb")
+        if settings.get("notification_" + source + "_enabled", True)
+    }
+    if sources is not None:
+        allowed &= {source.strip() for source in sources.split(",")}
+    rows = await get_dashboard_notifications(user_id)
+    items = [
+        {
+            **row["payload"],
+            "created_at": row["first_seen_at"],
+            "read": row["read_at"] is not None,
+            "read_at": row["read_at"],
+        }
+        for row in rows
+        if enabled
+        and row["is_active"]
+        and row["source"] in allowed
+        and isinstance(row["payload"], dict)
+    ]
+    items.sort(
+        key=lambda item: (
+            str(item.get("occurred_at") or ""),
+            str(item.get("created_at") or ""),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    unread = [item for item in items if not item["read"]]
+    include_read = (
+        settings.get("notification_show_read", False)
+        if show_read is None
+        else str(show_read).lower() in {"true", "1", "yes", "on"}
+    )
+    return {
+        "success": True,
+        "enabled": enabled,
+        "notifications": (items if include_read else unread)[
+            : int(settings.get("notification_limit", 20))
+        ],
+        "unread_count": len(unread),
+        "source_counts": source_counts(items),
+        "unread_source_counts": source_counts(unread),
+        "errors": {},
+    }
+
+
 @app.get("/dashboard/notifications")
 async def get_dashboard_notification_inbox(
     refresh: bool = False,
@@ -3152,6 +3207,12 @@ async def get_conversation(
     # Cached bodies can predate the latest unread headers. Only a live body
     # fetch may acknowledge the activity observed before this request.
     activity = await current_activity(auth.user_id, conversation_id)
+    if warming.get():
+        # Metadata traversal can take a long time. Capture replies arriving
+        # since the batch's initial header read immediately before opening.
+        headers = await get_message_headers(get_type="All", last=0, auth=auth)
+        if not headers.get("success"):
+            return {"success": False, "error": "Cannot preserve current unread state"}
     result = await run_in_threadpool(
         auth.client.nachrichten_get_conversation, conversation_id, last
     )

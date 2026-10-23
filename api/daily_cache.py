@@ -283,7 +283,11 @@ async def warm_users():
                 - evictions_before
             )
             await auth_db.save_cache_sync_state(
-                user["user_id"], attempted, failed, max(0, evicted)
+                user["user_id"],
+                attempted,
+                failed,
+                max(0, evicted),
+                session_id=user["session_id"],
             )
             if failed or evicted:
                 completed = False

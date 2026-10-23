@@ -178,6 +178,67 @@ def test_successful_sync_recovers_despite_lifetime_evictions(state, monkeypatch)
     asyncio.run(scenario())
 
 
+def test_sync_completion_cannot_recreate_deleted_account_data(state):
+    async def scenario():
+        token = await auth_db.store_refresh_token("5201:a", "5201", "a", "unused")
+        session = await auth_db.get_refresh_token(token)
+        await auth_db.save_cache_sync_state(
+            "5201:a", 3, 0, 0, session_id=session["session_id"]
+        )
+        assert await auth_db.get_cache_sync_state("5201:a") is not None
+        await auth_db.delete_user_data("5201:a")
+        # A delayed completion from the selected session must not resurrect data.
+        await auth_db.save_cache_sync_state(
+            "5201:a", 3, 1, 0, session_id=session["session_id"]
+        )
+        assert await auth_db.get_cache_sync_state("5201:a") is None
+        await auth_db.store_refresh_token("5201:a", "5201", "a", "unused")
+        await auth_db.save_cache_sync_state(
+            "5201:a", 3, 1, 0, session_id=session["session_id"]
+        )
+        assert await auth_db.get_cache_sync_state("5201:a") is None
+
+    asyncio.run(scenario())
+
+
+def test_outage_dashboard_uses_current_local_acknowledgments(state, monkeypatch):
+    app = FastAPI()
+    app.router.route_class = outage_cache.OutageCacheRoute
+    online = True
+    store = outage_cache.SnapshotStore()
+    monkeypatch.setattr(outage_cache, "snapshots", store)
+
+    @app.get("/dashboard/notifications")
+    async def inbox():
+        if not online:
+            outage_cache.observation.get().unavailable = True
+            return {"success": False}
+        return await api_module.saved_dashboard_notification_inbox("a")
+
+    async def scenario():
+        nonlocal online
+        item = {"id": "message-1", "source": "messages", "title": "New message"}
+        await auth_db.sync_dashboard_notifications("a", [item])
+        initial = await asgi_request(
+            app, "GET", "/dashboard/notifications", {"X-Session-Token": "a"}
+        )
+        assert initial.json()["unread_count"] == 1
+        await auth_db.mark_dashboard_notifications_read("a", ["message-1"])
+        online = False
+        stale = await asgi_request(
+            app, "GET", "/dashboard/notifications", {"X-Session-Token": "a"}
+        )
+        assert stale.headers["x-lanis-cache"] == "stale"
+        assert stale.json()["unread_count"] == 0
+        assert stale.json()["notifications"] == []
+        # Direct helper covers the query variant even without a prior snapshot.
+        assert (
+            await api_module.saved_dashboard_notification_inbox("a", show_read="true")
+        )["notifications"][0]["read"] is True
+
+    asyncio.run(scenario())
+
+
 def test_binary_files_are_content_deduplicated_but_privately_authorized(state):
     app = FastAPI()
     app.router.route_class = outage_cache.OutageCacheRoute
@@ -301,7 +362,7 @@ def test_message_warmup_body_read_preserves_flags_until_user_opens(state, monkey
     """Exercise normal routes while sync's upstream read changes the portal flag."""
     app = FastAPI()
     app.router.route_class = outage_cache.OutageCacheRoute
-    unread = True
+    unread = False
     online = True
     content = "saved body"
 
@@ -338,12 +399,15 @@ def test_message_warmup_body_read_preserves_flags_until_user_opens(state, monkey
     monkeypatch.setattr(api_module.task_queue, "add_task", no_task)
 
     async def scenario():
-        nonlocal online, content
+        nonlocal online, content, unread
         reset = warming.set(True)
         try:
             await asgi_request(
                 app, "GET", "/nachrichten/headers", {"X-Session-Token": "a"}
             )
+            # A reply arrives after the initial batch headers. The body route
+            # must preserve it immediately before its destructive upstream read.
+            unread = True
             body = await asgi_request(
                 app, "GET", "/nachrichten/c", {"X-Session-Token": "a"}
             )

@@ -596,6 +596,16 @@ class OutageCacheRoute(APIRoute):
                     entry = snapshots.get(key, version)
                 if entry:
                     body = entry.body
+                    if self.path == "/dashboard/notifications":
+                        from .api import saved_dashboard_notification_inbox
+
+                        body = json.dumps(
+                            await saved_dashboard_notification_inbox(
+                                identity.user_id,
+                                sources=request.query_params.get("sources"),
+                                show_read=request.query_params.get("show_read"),
+                            )
+                        ).encode()
                     if self.path.startswith("/nachrichten/"):
                         from .message_read_state import overlay_headers
 

@@ -2770,11 +2770,17 @@ async def get_cache_warmup_users() -> list[dict]:
             return [dict(row) for row in await cursor.fetchall()]
 
 
-async def save_cache_sync_state(user_id, attempted, failed, evicted):
+async def save_cache_sync_state(user_id, attempted, failed, evicted, *, session_id=None):
     """Persist coverage counters instead of treating an incomplete sync as complete."""
     async with _lock, aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO cache_sync_state VALUES (?, ?, ?, ?, ?)",
-                         (user_id, attempted, failed, evicted, datetime.utcnow().isoformat()))
+        sql = "INSERT OR REPLACE INTO cache_sync_state SELECT ?, ?, ?, ?, ?"
+        values = (user_id, attempted, failed, evicted, datetime.utcnow().isoformat())
+        if session_id is not None:
+            # The session check and write are one SQLite statement, serialized
+            # against account deletion even across worker processes.
+            sql += " WHERE EXISTS (SELECT 1 FROM refresh_tokens WHERE user_id = ? AND session_id = ? AND expires_at > ?)"
+            values += (user_id, session_id, datetime.utcnow())
+        await db.execute(sql, values)
         await db.commit()
 
 
