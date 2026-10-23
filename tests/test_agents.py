@@ -531,14 +531,14 @@ def test_school_tool_error_recovery(
         assert result["success"] is False
         if write and expected_error == "SCHOOL_UNAVAILABLE":
             assert result["error"] == "OUTCOME_UNKNOWN"
-            assert "Check the result in LANIS before retrying" in result["next_step"]
-            assert "Do not automatically repeat" in result["next_step"]
+            assert "Verify the existing result in LANIS first" in result["next_step"]
+            assert "A further write requires a confirmed need" in result["next_step"]
             assert "details" not in result
             return
         assert result["error"] == expected_error
         if expected_error == "INVALID_REQUEST":
             assert result["next_step"] == (
-                "Correct the request using these details. Do not retry unchanged."
+                "Correct the request using these details before submitting it again."
             )
             if failure == "validation":
                 assert result["details"] == [
@@ -558,11 +558,12 @@ def test_school_tool_error_recovery(
                 )
             elif failure == "unexpected":
                 assert (
-                    result["next_step"] == "Retry later. No school data was returned."
+                    result["next_step"]
+                    == "Explain that school data is temporarily unavailable and try reading it later."
                 )
             else:
                 assert result["next_step"] == (
-                    "School data could not be loaded. Retry later; do not infer that there are no entries."
+                    "Explain that school data is temporarily unavailable and try reading it later."
                 )
 
     asyncio.run(scenario())
