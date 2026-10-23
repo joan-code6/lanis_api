@@ -1132,7 +1132,7 @@ async def agent_icon():
     from fastapi.responses import FileResponse
 
     return FileResponse(
-        Path(__file__).resolve().parents[1] / "plugins/lanis/assets/icon.png",
+        Path(__file__).resolve().parent / "static/agent-icon.png",
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )

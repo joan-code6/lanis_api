@@ -1724,6 +1724,14 @@ def test_connector_branding_is_served_locally(environment):
                 ).read_bytes()
             )
             assert (await c.get("/favicon.ico")).content == response.content
+        # The Docker runtime copies api/ but deliberately excludes plugins/.
+        # The served asset must therefore live inside the API package.
+        from pathlib import Path
+
+        icon = await api_module.agent_icon()
+        assert Path(icon.path).is_relative_to(
+            Path(api_module.__file__).resolve().parent
+        )
         assert mcp._mcp_server.icons[0].src.endswith("/agent-icon.png")
         assert mcp._mcp_server.website_url == agents.ui_url()
 
