@@ -76,6 +76,17 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
     return result
 
 
+def _observation_end(observations, index, end, interval):
+    """End of a reading's represented time, capped by cadence and transition."""
+    timestamp, check = observations[index]
+    next_timestamp = observations[index + 1][0] if index + 1 < len(observations) else end
+    cadence = uptime._sample_interval_seconds(
+        check, observations[index - 1][0] if index else None,
+        next_timestamp if index + 1 < len(observations) else None, interval,
+    )
+    return min(next_timestamp, timestamp + timedelta(seconds=max(1, cadence * 2)), end)
+
+
 def _aggregate(
     checks: list[tuple[datetime, dict[str, Any]]],
     start: datetime,
@@ -121,18 +132,7 @@ def _aggregate(
         for index, (timestamp, check) in enumerate(observations):
             if check["status"] == "unknown":
                 continue
-            next_timestamp = observations[index + 1][0] if index + 1 < len(observations) else end
-            cadence = uptime._sample_interval_seconds(
-                check,
-                observations[index - 1][0] if index else None,
-                next_timestamp if index + 1 < len(observations) else None,
-                interval,
-            )
-            span_end = min(
-                next_timestamp,
-                timestamp + timedelta(seconds=max(1, cadence * 2)),
-                end,
-            )
+            span_end = _observation_end(observations, index, end, interval)
             seconds = max(0.0, (span_end - max(timestamp, start)).total_seconds())
             observed += seconds
             if check["status"] == "up":
@@ -370,15 +370,21 @@ async def _build_public_status() -> dict[str, Any]:
                 samples, bucket_start, bucket_end, interval,
                 include_end=index == count - 1,
             )
-            percent = aggregate["uptime_percent"]
+            represented_statuses = {
+                check["status"] for sample_index, (timestamp, check) in enumerate(samples)
+                if check["status"] != "unknown" and (
+                    # Included observations count even at the snapshot, where
+                    # no elapsed duration has accumulated yet.
+                    bucket_start <= timestamp < bucket_end
+                    or (index == count - 1 and timestamp == now)
+                    or _observation_end(samples, sample_index, bucket_end, interval)
+                    > max(timestamp, bucket_start)
+                )
+            }
             bucket_status = (
-                "unknown" if percent is None else
-                "up" if percent == 100 else
-                "down" if percent == 0 and not any(
-                    check["status"] == "degraded"
-                    for timestamp, check in samples
-                    if timestamp < bucket_end or (index == count - 1 and timestamp == now)
-                ) else "degraded"
+                "unknown" if not represented_statuses else
+                "up" if represented_statuses == {"up"} else
+                "down" if represented_statuses == {"down"} else "degraded"
             )
             buckets.append({
                 "start": _iso(bucket_start), "end": _iso(bucket_end),

@@ -293,3 +293,30 @@ def test_snapshot_observation_belongs_to_final_bucket(monitor):
             assert all(bucket["status"] == "unknown" for bucket in buckets[:-1])
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("snapshot_status", ["down", "degraded"])
+def test_failed_snapshot_after_healthy_reading_is_not_green(monitor, snapshot_status):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now - timedelta(minutes=5), "up")
+        await record(db, now, snapshot_status)
+        result = await public_status._build_public_status()
+        for buckets in result["history_windows"].values():
+            assert buckets[-1]["status"] == "degraded"
+            assert buckets[-1]["uptime_percent"] == 100
+
+    asyncio.run(scenario())
+
+
+def test_expired_degraded_reading_does_not_change_down_bucket(monitor):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now - timedelta(minutes=31), "degraded", sample_interval_seconds=15)
+        await record(db, now - timedelta(minutes=30), "down", sample_interval_seconds=300)
+        result = await public_status._build_public_status()
+        assert result["history_windows"]["24h"][-1]["status"] == "down"
+
+    asyncio.run(scenario())
