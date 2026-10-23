@@ -320,3 +320,19 @@ def test_expired_degraded_reading_does_not_change_down_bucket(monitor):
         assert result["history_windows"]["24h"][-1]["status"] == "down"
 
     asyncio.run(scenario())
+
+
+
+def test_carried_legacy_incident_retains_original_cadence(monitor):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now - timedelta(minutes=31, seconds=15), "down")
+        await record(db, now - timedelta(minutes=31), "down")
+        result = await public_status._build_public_status()
+        last = result["history_windows"]["24h"][-1]
+        assert last["status"] == "unknown"
+        assert last["coverage_percent"] == 0
+        assert last["uptime_percent"] is None
+
+    asyncio.run(scenario())

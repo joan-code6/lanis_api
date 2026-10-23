@@ -349,6 +349,21 @@ async def _build_public_status() -> dict[str, Any]:
             ]),
         }
     # Short-range strips use real rolling time buckets, never duplicated days.
+    # Infer legacy cadence with the original neighbors before bucket slicing.
+    # A lone carried reading must not fall back to the normal interval after
+    # losing the preceding incident reading that establishes its cadence.
+    bucket_checks = [
+        (timestamp, {
+            **check,
+            "sample_interval_seconds": uptime._sample_interval_seconds(
+                check,
+                ordered_checks[index - 1][0] if index else None,
+                ordered_checks[index + 1][0] if index + 1 < len(ordered_checks) else None,
+                interval,
+            ),
+        })
+        for index, (timestamp, check) in enumerate(ordered_checks)
+    ]
     history_windows = {}
     for key, hours, count in (("24h", 24, 48), ("7d", 168, 28)):
         window_start = now - timedelta(hours=hours)
@@ -365,7 +380,7 @@ async def _build_public_status() -> dict[str, Any]:
                 end_cursor += 1
             # Include the preceding reading and the next transition to preserve
             # cadence limits and clip carried observations at bucket boundaries.
-            samples = ordered_checks[max(0, cursor - 1):min(len(ordered_checks), end_cursor + 1)]
+            samples = bucket_checks[max(0, cursor - 1):min(len(bucket_checks), end_cursor + 1)]
             aggregate = _aggregate(
                 samples, bucket_start, bucket_end, interval,
                 include_end=index == count - 1,
