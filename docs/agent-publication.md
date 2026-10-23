@@ -17,6 +17,14 @@ The English base listing describes actual capabilities and limitations. The
 category is Education & Research. Website and GitHub support page are public.
 Do not attach school data or credentials to a GitHub issue.
 
+## Confirmed publication choices
+
+Publisher: **Joan Code** (select the matching verified identity in the portal).
+Directory availability: **Germany (`DE`)**. Eligibility depends on a supported
+Schulportal Hessen school account; this does not add API geoblocking.
+LANIS is **free**, with no purchases, subscriptions or payment processing.
+The manifest includes a German listing translation.
+
 ## Inputs still needed
 
 Before building the submission version, fill these confirmed values under
@@ -24,11 +32,8 @@ Before building the submission version, fill these confirmed values under
 
 | Field | Needed value |
 | --- | --- |
-| `interface.developerName` | Intended verified individual/business identity |
 | `interface.privacyPolicyURL` | Published policy covering external agent access |
 | `interface.termsOfServiceURL` | Published applicable terms; an imprint is not a substitute |
-| `publication.countries` | Confirmed country codes, or explicit choice of all countries (`[]`) |
-| `review.commerce` | Actual commerce declaration using the portal's supported value |
 | `review.demo_recording_url` | Verified reviewer-accessible recording |
 
 Do not invent publisher verification or attestations. Optional dark icons and

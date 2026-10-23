@@ -8,7 +8,7 @@
       "interface": {
         "displayName": "LANIS",
         "shortDescription": "Your school day in chat",
-        "longDescription": "LANIS connects your Schulportal Hessen account to ChatGPT. Check homework, courses, timetables, substitutions, school events and messages. With separately approved permissions, access grades or attendance, complete homework, send messages and manage supported school submissions and elections.\n\nChoose Restricted, Full access or Custom in LANIS. Restricted excludes grades, attendance and writes. Review, reduce or revoke each connection in LANIS settings. Some school modules depend on your school and account. Timetable edits are recurring weekly personal overrides, not one-off changes to the official schedule.\n\nLANIS is an unofficial independent interface for Schulportal Hessen. A supported school account and a deployed LANIS backend are required.",
+        "longDescription": "LANIS connects your Schulportal Hessen account to ChatGPT. Check homework, courses, timetables, substitutions, school events and messages. With separately approved permissions, access grades or attendance, complete homework, send messages and manage supported school submissions and elections.\n\nChoose Restricted, Full access or Custom in LANIS. Restricted excludes grades, attendance and writes. Review, reduce or revoke each connection in LANIS settings. Some school modules depend on your school and account. Timetable edits are recurring weekly personal overrides, not one-off changes to the official schedule.\n\nLANIS is an unofficial independent interface for Schulportal Hessen. A supported school account and a deployed LANIS backend are required. LANIS is free to use and intended for users with accounts at schools using Schulportal Hessen in Germany.",
         "category": "Education & Research",
         "capabilities": [],
         "defaultPrompt": [
@@ -19,7 +19,8 @@
         "logo": "./assets/icon.png",
         "composerIcon": "./assets/icon.png",
         "websiteURL": "https://lanis.arg-server.de/",
-        "supportURL": "https://github.com/joan-code6/lanis_api/issues"
+        "supportURL": "https://github.com/joan-code6/lanis_api/issues",
+        "developerName": "Joan Code"
       },
       "review": {
         "prompts": [
@@ -74,10 +75,21 @@
               "prompt": "Search the public internet for hotels for a holiday unrelated to school."
             }
           ]
-        }
+        },
+        "commerce": false,
+        "commerce_description": "LANIS is free to use. It does not sell products, charge subscription fees or process payments."
       },
       "publication": {
-        "release_notes": "Initial release: connect a LANIS school account with OAuth, choose access presets, use scoped school tools and revoke individual connections."
+        "release_notes": "Initial release: connect a LANIS school account with OAuth, choose access presets, use scoped school tools and revoke individual connections.",
+        "countries": [
+          "DE"
+        ],
+        "translations": {
+          "de-DE": {
+            "subtitle": "Dein Schulportal im Chat",
+            "description": "LANIS von Joan Code verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab."
+          }
+        }
       }
     }
   }
