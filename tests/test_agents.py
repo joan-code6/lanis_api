@@ -943,7 +943,7 @@ def test_agent_lesson_patch_preserves_details_and_timetable_reads_overrides(
             "5201:alice",
             {
                 "date": "2026-10-19",
-                "period": "1",
+                "period": "1–2",
                 "subject": "Math",
                 "teacher": "Teacher",
                 "room": "Old",
@@ -958,9 +958,12 @@ def test_agent_lesson_patch_preserves_details_and_timetable_reads_overrides(
             },
         )
         edit = mcp._tool_manager.get_tool("lanis_update_lesson")
-        result = await edit.fn(date="2026-10-19", period="1", room="New")
+        result = await edit.fn(date="2026-10-26", period="1", room="New")
         lesson = result["lesson"]
         assert lesson["room"] == "New"
+        assert lesson["period"] == "1–2"
+        assert lesson["date"] == "2026-10-19"
+        assert len(await auth_db.get_custom_lessons("5201:alice")) == 1
         for key, expected in {
             "subject": "Math",
             "info": "Keep notes",

@@ -432,6 +432,7 @@ def register_tools(tool, run):
 
         from .api import CustomLessonRequest, _validate_custom_lesson, sessions
         from .auth_db import get_custom_lessons, save_custom_lesson
+        from .user_overrides import _same_period
 
         async def update(auth):
             # Match the storage key after normalizing period ranges.
@@ -448,7 +449,7 @@ def register_tools(tool, run):
             defaults = {}
             if not any(
                 calendar_date.fromisoformat(lesson["date"]).weekday() == weekday
-                and lesson["period"] == key
+                and _same_period({"stunde": lesson["period"]}, key)
                 for lesson in await get_custom_lessons(auth.user_id)
             ):
                 plan = await run_in_threadpool(auth.client.stundenplan_get_plan)
