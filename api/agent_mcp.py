@@ -1,5 +1,6 @@
 """Provider-neutral MCP tools: small schemas, progressive discovery, explicit recovery."""
 
+import logging
 import time
 from typing import Annotated
 from urllib.parse import urlencode, urlsplit
@@ -16,6 +17,8 @@ from pydantic import Field, ValidationError
 from . import agent_store as store
 from . import auth_db
 from .agents import api_url, authenticate, ui_url
+
+logger = logging.getLogger(__name__)
 
 
 class Verifier:
@@ -172,11 +175,14 @@ async def run(scope, fn, *, write=False):
                 "error": "SCHOOL_UNAVAILABLE",
                 "next_step": "Retry later. No school data was returned.",
             }
-        async with store.database(True) as db:
-            await db.execute(
-                "UPDATE agent_grants SET last_used=? WHERE id=? AND revoked=0",
-                (time.time(), grant["id"]),
-            )
+        try:
+            async with store.database(True) as db:
+                await db.execute(
+                    "UPDATE agent_grants SET last_used=? WHERE id=? AND revoked=0",
+                    (time.time(), grant["id"]),
+                )
+        except Exception:
+            logger.warning("Could not record agent last_used", exc_info=True)
         return result
 
 

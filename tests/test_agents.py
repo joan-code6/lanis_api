@@ -1275,3 +1275,133 @@ def test_empty_personal_plan_does_not_seed_another_classes_lesson():
         assert (
             portal_lesson_defaults(plan, "2026-10-19", "1")["subject"] == "Other class"
         )
+
+
+@pytest.mark.parametrize("omitted", ["code_challenge", "state"])
+def test_missing_authorization_parameters_return_oauth_error(environment, omitted):
+    async def scenario():
+        async with client() as c:
+            params = {
+                "client_id": "unused",
+                "redirect_uri": CALLBACK,
+                "code_challenge": CHALLENGE,
+                "state": "state",
+            }
+            params.pop(omitted)
+            response = await c.get("/oauth/authorize", params=params)
+            assert response.status_code == 400
+            assert response.json()["error"] == "invalid_request"
+            assert response.headers["cache-control"] == "no-store"
+
+    asyncio.run(scenario())
+
+
+def test_successful_write_survives_metadata_database_failure(
+    environment, monkeypatch, caplog
+):
+    import sqlite3
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(return_value={"id": "test", "user_id": "5201:alice"}),
+        )
+        monkeypatch.setattr(
+            api_module.sessions,
+            "_get_or_create_schulportal_client",
+            AsyncMock(return_value=SimpleNamespace(client=None)),
+        )
+        result = {"success": True, "message_id": "sent-once"}
+        writes = []
+
+        @asynccontextmanager
+        async def failed_database(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+            yield  # pragma: no cover
+
+        async def send(_auth):
+            writes.append("sent")
+            monkeypatch.setattr(store, "database", failed_database)
+            return result
+
+        assert await agent_mcp.run("messages:write", send, write=True) is result
+        assert writes == ["sent"]
+        assert "Could not record agent last_used" in caplog.text
+
+    asyncio.run(scenario())
+
+
+def test_registration_reclaims_idle_capacity_without_breaking_pending_consent(
+    environment,
+):
+    import json
+
+    async def scenario():
+        async with client() as c:
+            cid, code, _ = await request_grant(c)
+            async with store.database(True) as db:
+                await db.executemany(
+                    "INSERT INTO agent_clients VALUES(?,?,?)",
+                    [
+                        (
+                            f"idle-{i:05}",
+                            json.dumps(
+                                {"client_name": "Idle", "redirect_uris": [CALLBACK]}
+                            ),
+                            time.time() + 86400,
+                        )
+                        for i in range(9999)
+                    ],
+                )
+            pending = await c.get(
+                "/oauth/authorize",
+                params={
+                    "client_id": "idle-00000",
+                    "redirect_uri": CALLBACK,
+                    "code_challenge": CHALLENGE,
+                    "state": "pending-state",
+                    "scope": "schoolwork:read",
+                },
+            )
+            assert pending.status_code == 303
+            rid = parse_qs(urlsplit(pending.headers["location"]).query)["request"][0]
+            registered = await c.post(
+                "/oauth/register",
+                json={"client_name": "New", "redirect_uris": [CALLBACK]},
+            )
+            assert registered.status_code == 201
+            async with store.database() as db:
+                assert (
+                    await store.one(db, "SELECT COUNT(*) AS count FROM agent_clients")
+                )["count"] == 9001
+                assert await store.one(
+                    db, "SELECT id FROM agent_clients WHERE id=?", (cid,)
+                )
+                assert (
+                    await store.one(
+                        db, "SELECT id FROM agent_clients WHERE id=?", ("idle-00000",)
+                    )
+                    is None
+                )
+            assert (await exchange(c, cid, code)).status_code == 200
+            approval = await c.post(
+                "/agents/authorization/" + rid,
+                headers=HEAD,
+                json={
+                    "approve": True,
+                    "scopes": ["schoolwork:read"],
+                    "name": "Pending",
+                },
+            )
+            assert approval.status_code == 200
+            pending_code = parse_qs(urlsplit(approval.json()["redirect_url"]).query)[
+                "code"
+            ][0]
+            assert (await exchange(c, "idle-00000", pending_code)).status_code == 200
+
+    asyncio.run(scenario())

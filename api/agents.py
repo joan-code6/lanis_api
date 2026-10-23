@@ -263,6 +263,16 @@ async def register(body: Registration, request: Request):
         await store.prune(db)
         row = await store.one(db, "SELECT COUNT(*) AS count FROM agent_clients")
         if row["count"] >= 10000:
+            # Unused registrations cannot monopolize capacity for 90 days.
+            # Pending requests retain their own client/redirect snapshot.
+            await db.execute(
+                "DELETE FROM agent_clients WHERE id IN ("
+                "SELECT id FROM agent_clients "
+                "WHERE id NOT IN (SELECT client_id FROM agent_tokens) "
+                "ORDER BY expires, id LIMIT 1000)"
+            )
+            row = await store.one(db, "SELECT COUNT(*) AS count FROM agent_clients")
+        if row["count"] >= 10000:
             return oauth_error(
                 "temporarily_unavailable",
                 "Registration capacity reached; retry later.",
@@ -284,8 +294,8 @@ async def authorize(
     request: Request,
     client_id: str,
     redirect_uri: str,
-    code_challenge: str,
-    state: str,
+    code_challenge: str = "",
+    state: str = "",
     response_type: str = "code",
     code_challenge_method: str = "S256",
     scope: str = DEFAULT_SCOPES,
