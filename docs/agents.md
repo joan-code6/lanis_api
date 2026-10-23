@@ -110,7 +110,7 @@ receive more than that set; Full is disabled until the full catalog is requested
 | --- | --- | --- |
 | Connection and clock | Always | `lanis_connection` |
 | Schoolwork | `schoolwork:read`, `schoolwork:write` | Courses, paginated homework/lessons, study groups; change homework completion |
-| Timetable | `timetable:read`, `timetable:write` | Raw plan and substitutions; personal lesson overrides |
+| Timetable | `timetable:read`, `timetable:write` | Raw plan and substitutions; recurring weekly personal lesson overrides |
 | Calendar | `calendar:read` | Events for an explicit year |
 | Messages | `messages:read`, `messages:mark-read`, `messages:write` | Headers and cached content; open/mark read; recipients, send and reply |
 | Files | `files:read` | Browse/search Dateispeicher, read files up to 2 MiB, list distributed files |
@@ -122,7 +122,9 @@ receive more than that set; Full is disabled until the full catalog is requested
 
 Schoolwork responses always exclude grades and attendance, even under Full;
 these have their own tools and grants. Timetable reads do not use homework
-enrichment. `lanis_message` only reads the existing conversation cache; a cache
+enrichment. Lesson override dates are weekday anchors, so edits and hiding recur
+every week. Agents must obtain an explicit request for a recurring change;
+one-off edits are not supported. `lanis_message` only reads the existing conversation cache; a cache
 miss returns instructions instead of making an upstream request. The separately
 permitted `lanis_open_message` discloses its read-state effect and has
 `readOnlyHint=false`. Restricted therefore cannot silently clear unread reminders.

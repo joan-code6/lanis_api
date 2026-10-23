@@ -357,7 +357,7 @@ def register_tools(tool, run):
             lambda auth: update_account_preferences(payload=payload, auth=auth),
         )
 
-    @tool("timetable:write", write=True, title="Edit a personal timetable lesson")
+    @tool("timetable:write", write=True, title="Edit a recurring weekly lesson")
     async def lanis_update_lesson(
         date: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")],
         period: Identifier,
@@ -366,7 +366,7 @@ def register_tools(tool, run):
         room: Annotated[str | None, Field(max_length=100)] = None,
         removed: bool | None = None,
     ) -> dict:
-        """Create/edit a personal lesson override for a specific date and period; removed=true hides it. Omitted fields keep their saved values. This changes the LANIS overlay, not the school's official timetable."""
+        """Create/edit a recurring weekly personal lesson override. The date is a weekday anchor: this affects that weekday and period every week, not just that date. removed=true hides the recurring lesson. Only call when the user explicitly requests a recurring change; for a one-off request, explain the limitation and ask before making a recurring change. Omitted fields keep their saved values. Changes only the LANIS overlay, not the school's official timetable."""
         import re
 
         from .api import CustomLessonRequest, _validate_custom_lesson, sessions
