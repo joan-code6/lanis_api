@@ -327,6 +327,17 @@ Fetch files and folders for a specific dateispeicher node.
 
 Search files in the dateispeicher by name.
 
+#### dateiverteilung_get_overview
+
+Fetch targeted file distributions for the authenticated user. Returns each
+distribution's title, provenance, date, unread state, files, and related links.
+
+#### dateiverteilung_download_file
+
+Stream a file from `dateiverteilung.php` through the authenticated portal
+session. Download URLs are restricted to the configured Schulportal origin,
+the Dateiverteilung endpoint, and known download actions.
+
 #### lerngruppen_get_overview
 
 Fetch study groups and exam data (lerngruppen.php).
@@ -635,3 +646,76 @@ Example:
 #### _filter_tables_by_klasse
 
 Filter tables to only include rows matching the given class name.
+
+
+### Interrupted account deletion recovery
+
+`POST /account/deletion/recover` accepts `{ "access_token": "...", "refresh_token": "..." }`
+from the session that requested deletion. It returns `Cache-Control: no-store`.
+An expired access token is accepted only to verify this recovery identity; it
+cannot authorize account deletion or an account export.
+
+The route holds the account lifecycle lock until any ongoing deletion settles.
+If the original refresh session survives, it rotates that session's JWT ID and
+returns `{ "state": "cancelled", "access_token": "...", "expires_in": 3600 }`.
+Every DELETE rechecks its original JWT ID after taking the same lock, so a delayed
+request cannot erase an account that recovery has restored. Retrying recovery
+with the saved original tokens is safe if its response was interrupted.
+
+`{ "state": "revoked" }` means the saved session no longer exists or has expired.
+It authorizes clearing local data for that obsolete session; it does not assert
+that the user's Schulportal account or all server-side account data was deleted.
+A missing or mismatched refresh token for a surviving session returns HTTP 409;
+a forged recovery identity returns HTTP 401. These responses do not authorize
+browser cleanup.
+
+Deploy the API change before the UI change. The UI persists recovery identity
+before sending DELETE and preserves it until browser cleanup finishes.
+For attachments cached before ownership tracking, the UI re-fetches course
+metadata and retries the download, establishing access through the authenticated
+course response without granting access based on possession of a file hash.
+
+
+### Account deletion and administrator sessions
+
+Administrator JWTs now have a `jti` backed by a short-lived `admin_sessions`
+record in auth.db. Deleting an account revokes its administrator sessions as
+well as its regular sessions. A fresh login creates a new session; it does not
+reactivate old JWTs. The administrator allowlist still applies.
+
+Existing stateless administrator JWTs from before this migration are rejected.
+Administrators must sign in again after deploying this change. The JWT lifetime
+and admin frontend response schema remain unchanged. Session metadata expires
+and is purged on lookup, login and periodic cleanup.
+
+Stale `/apps`, `/modules` and `/benutzer` caches are revalidated through tracked
+account tasks. Pending refresh tasks hold identifiers, not private clients;
+running upstream fetches hold a shared lifecycle lease so deletion waits for them.
+Completed refresh work is not retained. Revoked regular JWTs release the
+lifecycle lock before downstream request-body parsing.
+
+Ordinary authenticated requests, profile/message refresh tasks, attachment
+downloads, notifications and WhatsApp work can run concurrently for one account.
+Login, recovery and deletion take exclusive access and wait for active work to
+finish; a waiting exclusive operation blocks new shared entrants. Slow upstream
+or AI calls therefore do not serialize page requests, while deletion still
+waits for private upstream work before closing clients and removing data.
+Message refresh jobs also carry the original session ID instead of bound
+private clients, validate it when starting, and discard completed payloads.
+
+Authenticated admin handlers also hold shared actor lifecycle access. They
+revalidate the persisted admin session after entering; deletion waits for
+already-running handlers, and handlers waiting behind deletion reject the
+revoked session. User-detail routes acquire actor and target access in a stable
+order, and nested audit helpers reuse those leases. Admin login keeps its
+exclusive lifecycle context.
+
+Account export and deletion read refresh-session metadata without decrypting the
+stored Schulportal password. Rotating the encryption key or corrupting a stored
+ciphertext therefore does not prevent a user from exporting LANIS-held data or
+deleting the account.
+
+Account export and deletion include submitted feedback from `feedback.db`.
+Deletion also clears the deleted administrator's identity from completion
+actions on other users' reports. Admin credential reveal and step-up routes
+are removed; user detail exposes only credential availability and timestamps.

@@ -33,6 +33,7 @@ _URL_TAG_MAP = [
     ("/vertretungsplan", "Plans"),
     ("/stundenplan", "Plans"),
     ("/dateispeicher", "File Storage"),
+    ("/dateiverteilung", "File Distribution"),
     ("/lerngruppen", "Study Groups"),
     ("/school-list", "School List"),
     ("/benutzer", "User Info"),

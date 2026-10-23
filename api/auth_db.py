@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import base64
 import hashlib
 import hmac
@@ -95,7 +96,9 @@ DEFAULT_SIDEBAR_ORDER = [
     "search",
     "dashboard",
     "messages",
+    "videokonferenz",
     "dateispeicher",
+    "dateiverteilung",
     "vertretungsplan",
     "dsb",
     "courses",
@@ -114,17 +117,28 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     "sidebar": {
         "order": DEFAULT_SIDEBAR_ORDER,
         "hidden_items": [],
+        "show_feedback_button": True,
     },
     "dashboard": {
         "pinned_modules": [],
         "hidden_modules": [],
         "view_mode": "grid",
+        "show_search": True,
+        "show_subtitle": True,
+        "notifications_enabled": True,
+        "notification_messages_enabled": True,
+        "notification_native_enabled": True,
+        "notification_dsb_enabled": True,
+        "notification_show_read": False,
+        "notification_limit": 20,
     },
     "timetable": {
         "view_mode": "rolling",
         "layout_mode": "cards",
+        "show_substitutions": True,
         "show_homework": True,
         "show_exams": True,
+        "class_colors": {},
     },
     "homework": {
         "completed_display": "green",
@@ -162,6 +176,13 @@ def _merge_nested_preferences(
 
 def _normalize_user_preferences(preferences: Dict[str, Any]) -> Dict[str, Any]:
     """Enforce invariants for persisted preference groups."""
+    sidebar = preferences.get("sidebar")
+    if isinstance(sidebar, dict) and isinstance(sidebar.get("order"), list):
+        # Saved orders predate newly supported modules. Preserve customization
+        # and dividers while appending missing defaults; hidden_items is separate.
+        order = list(dict.fromkeys(sidebar["order"]))
+        order.extend(item for item in DEFAULT_SIDEBAR_ORDER if item not in order)
+        sidebar["order"] = order
     dashboard = preferences.get("dashboard")
     if isinstance(dashboard, dict):
         hidden_modules = dashboard.get("hidden_modules", [])
@@ -292,6 +313,7 @@ async def _migrate_user_ids(db: aiosqlite.Connection) -> None:
         ("class_link_overrides", ("user_id", "course_id")),
         ("message_notification_state", ("user_id",)),
         ("vertretungsplan_notification_state", ("user_id",)),
+        ("dashboard_notifications", ("user_id", "notification_id")),
         ("user_preferences", ("user_id",)),
         ("whatsapp_links", ("user_id",)),
         ("whatsapp_ai_conversations", ("user_id",)),
@@ -320,10 +342,38 @@ async def initialize() -> None:
             )
             """
         )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS account_deletion_markers ("
+            "user_id TEXT PRIMARY KEY, expires_at TEXT NOT NULL)"
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS admin_sessions ("
+            "session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL)"
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cached_file_references (
+                user_id TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, file_hash)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cached_file_references_hash "
+            "ON cached_file_references(file_hash)"
+        )
+        await db.execute(
+            "DELETE FROM account_deletion_markers WHERE expires_at <= ?",
+            (datetime.utcnow().isoformat(),),
+        )
         async with db.execute("PRAGMA table_info(refresh_tokens)") as cursor:
             refresh_columns = {row[1] for row in await cursor.fetchall()}
         if "session_id" not in refresh_columns:
             await db.execute("ALTER TABLE refresh_tokens ADD COLUMN session_id TEXT")
+        if "deletion_recovery_origin" not in refresh_columns:
+            await db.execute("ALTER TABLE refresh_tokens ADD COLUMN deletion_recovery_origin TEXT")
         async with db.execute(
             "SELECT token FROM refresh_tokens WHERE session_id IS NULL OR session_id = ''"
         ) as cursor:
@@ -445,6 +495,7 @@ async def initialize() -> None:
             CREATE TABLE IF NOT EXISTS push_subscriptions (
                 endpoint TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 p256dh TEXT NOT NULL,
                 auth TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -452,11 +503,48 @@ async def initialize() -> None:
             )
             """
         )
+        async with db.execute("PRAGMA table_info(push_subscriptions)") as cursor:
+            push_subscription_columns = {row[1] for row in await cursor.fetchall()}
+        if "session_id" not in push_subscription_columns:
+            await db.execute(
+                "ALTER TABLE push_subscriptions ADD COLUMN session_id TEXT"
+            )
+        # Existing endpoints cannot be attributed safely when an account has
+        # more than one login. Browsers with notifications enabled will
+        # register again under their current session.
+        await db.execute(
+            "DELETE FROM push_subscriptions "
+            "WHERE session_id IS NULL OR session_id = ''"
+        )
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS push_subscriptions_session_id_insert
+            BEFORE INSERT ON push_subscriptions
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'push subscription session_id is required');
+            END
+            """
+        )
+        await db.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS push_subscriptions_session_id_update
+            BEFORE UPDATE OF session_id ON push_subscriptions
+            WHEN NEW.session_id IS NULL OR NEW.session_id = ''
+            BEGIN
+                SELECT RAISE(ABORT, 'push subscription session_id is required');
+            END
+            """
+        )
         await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id
             ON push_subscriptions(user_id)
             """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_session_id "
+            "ON push_subscriptions(session_id)"
         )
         await db.execute(
             """
@@ -474,6 +562,36 @@ async def initialize() -> None:
                 snapshot TEXT NOT NULL,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dashboard_notifications (
+                user_id TEXT NOT NULL,
+                notification_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                read_at TIMESTAMP,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (user_id, notification_id)
+            )
+            """
+        )
+        async with db.execute("PRAGMA table_info(dashboard_notifications)") as cursor:
+            dashboard_notification_columns = {row[1] for row in await cursor.fetchall()}
+        if "is_active" not in dashboard_notification_columns:
+            await db.execute(
+                """
+                ALTER TABLE dashboard_notifications
+                ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0
+                """
+            )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_dashboard_notifications_user
+            ON dashboard_notifications(user_id, last_seen_at DESC)
             """
         )
         await db.execute(
@@ -746,6 +864,17 @@ async def delete_whatsapp_link(user_id: str) -> None:
     user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT whatsapp_id_hash FROM whatsapp_links WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                sender_hashes = [row[0] for row in await cursor.fetchall()]
+            if sender_hashes:
+                placeholders = ", ".join("?" for _ in sender_hashes)
+                await db.execute(
+                    f"DELETE FROM whatsapp_rate_limits WHERE whatsapp_id_hash IN ({placeholders})",
+                    sender_hashes,
+                )
             await db.execute("DELETE FROM whatsapp_links WHERE user_id = ?", (user_id,))
             await db.execute(
                 "DELETE FROM whatsapp_ai_conversations WHERE user_id = ?", (user_id,)
@@ -1043,6 +1172,31 @@ async def allow_whatsapp_message(
             return allowed
 
 
+async def purge_expired_whatsapp_rate_limits(max_age_seconds: int = 300) -> int:
+    """Remove sender hashes after their rate-limit window has expired."""
+    cutoff = int(time.time()) - max(max_age_seconds, 300)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "DELETE FROM whatsapp_rate_limits WHERE window_started < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            return max(cursor.rowcount, 0)
+
+
+async def clear_whatsapp_rate_limit(whatsapp_id: str) -> None:
+    """Remove a sender's transient rate-limit record after unlink/deletion races."""
+    sender_hash = _whatsapp_id_hash(whatsapp_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM whatsapp_rate_limits WHERE whatsapp_id_hash = ?",
+                (sender_hash,),
+            )
+            await db.commit()
+
+
 async def store_refresh_token(
     user_id: str, school_id: str, username: str, password: str
 ) -> str:
@@ -1056,6 +1210,9 @@ async def store_refresh_token(
     session_id = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS)
 
+    # Keep refresh-token and push-subscription cleanup coordinated so an
+    # expired browser cannot retain a notification endpoint after a new login.
+    await _revoke_expired_sessions()
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
@@ -1087,12 +1244,22 @@ async def _revoke_expired_sessions() -> None:
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT DISTINCT user_id FROM refresh_tokens WHERE expires_at <= ?",
+                "SELECT user_id, session_id FROM refresh_tokens WHERE expires_at <= ?",
                 (now,),
             ) as cursor:
-                user_ids = [row[0] for row in await cursor.fetchall()]
+                expired_rows = await cursor.fetchall()
+            user_ids = list({row[0] for row in expired_rows})
             if not user_ids:
                 return
+
+            session_ids = [row[1] for row in expired_rows if row[1]]
+            if session_ids:
+                session_placeholders = ", ".join("?" for _ in session_ids)
+                await db.execute(
+                    f"DELETE FROM push_subscriptions "
+                    f"WHERE session_id IN ({session_placeholders})",
+                    session_ids,
+                )
 
             placeholders = ", ".join("?" for _ in user_ids)
             async with db.execute(
@@ -1215,6 +1382,50 @@ async def delete_refresh_token(token: str) -> None:
             await db.commit()
 
 
+async def delete_refresh_token_by_session_id(session_id: str) -> None:
+    """Revoke one browser session and unlink WhatsApp after the final session."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT user_id FROM refresh_tokens WHERE session_id = ?",
+                (session_id,),
+            ) as cursor:
+                session = await cursor.fetchone()
+            await db.execute(
+                "DELETE FROM push_subscriptions WHERE session_id = ?", (session_id,)
+            )
+            await db.execute(
+                "DELETE FROM refresh_tokens WHERE session_id = ?", (session_id,)
+            )
+            if session is not None:
+                user_id = _canonical_user_id(session["user_id"])
+                async with db.execute(
+                    "SELECT 1 FROM refresh_tokens "
+                    "WHERE user_id = ? AND expires_at > ? LIMIT 1",
+                    (user_id, datetime.utcnow()),
+                ) as cursor:
+                    has_active_session = await cursor.fetchone()
+                if has_active_session is None:
+                    await db.execute(
+                        "DELETE FROM whatsapp_links WHERE user_id = ?", (user_id,)
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_ai_conversations WHERE user_id = ?",
+                        (user_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_pending_actions WHERE user_id = ?",
+                        (user_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM whatsapp_pairing_codes WHERE user_id = ?",
+                        (user_id,),
+                    )
+            await db.commit()
+
+
 async def delete_user_tokens(user_id: str) -> None:
     """Delete all refresh tokens for a user (used on full logout)."""
     user_id = _canonical_user_id(user_id)
@@ -1285,10 +1496,69 @@ async def get_refresh_token_by_session_id(session_id: str) -> Optional[dict]:
     }
 
 
+async def fence_interrupted_deletion(
+    user_id: str, session_id: str, refresh_token: str
+) -> Optional[dict]:
+    """Rotate a surviving session so a delayed DELETE cannot authenticate.
+
+    The caller holds the account lifecycle lock. Looking up the refresh token
+    also makes recovery retryable if the response to a prior rotation was lost.
+    No credentials are decrypted and the session lifetime is not extended.
+    """
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute('BEGIN IMMEDIATE')
+            async with db.execute(
+                'SELECT user_id, school_id, username, session_id, expires_at, deletion_recovery_origin '
+                'FROM refresh_tokens WHERE token = ? AND user_id = ?',
+                (refresh_token, user_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                async with db.execute(
+                    'SELECT 1 FROM refresh_tokens WHERE session_id = ? AND user_id = ?',
+                    (session_id, user_id),
+                ) as cursor:
+                    if await cursor.fetchone():
+                        raise ValueError('Recovery requires the matching refresh token')
+                return None
+            if row['session_id'] != session_id and row['deletion_recovery_origin'] != session_id:
+                raise ValueError('Recovery identity does not match the refresh session')
+            if datetime.fromisoformat(row['expires_at']) <= datetime.utcnow():
+                await db.execute('DELETE FROM refresh_tokens WHERE token = ?', (refresh_token,))
+                await db.commit()
+                return None
+            new_session_id = uuid.uuid4().hex
+            await db.execute(
+                'UPDATE refresh_tokens SET session_id = ?, deletion_recovery_origin = ? WHERE token = ?',
+                (new_session_id, session_id, refresh_token),
+            )
+            await db.commit()
+            return {**dict(row), 'session_id': new_session_id}
+
+
+async def get_refresh_metadata_by_user_id(user_id: str) -> Optional[dict]:
+    """Return current session metadata without decrypting stored credentials."""
+    user_id = _canonical_user_id(user_id)
+    await _revoke_expired_sessions()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT user_id, school_id, username, session_id, created_at, expires_at "
+            "FROM refresh_tokens WHERE user_id = ? AND expires_at > ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (user_id, datetime.utcnow()),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     """Return user-owned persisted data without exposing authentication secrets."""
     user_id = _canonical_user_id(user_id)
-    credential = await get_refresh_token_by_user_id(user_id)
+    credential = await get_refresh_metadata_by_user_id(user_id)
     preferences, _ = await get_user_preferences(user_id)
     notification_preferences = await get_notification_preferences(user_id)
     custom_lessons = await get_custom_lessons(user_id)
@@ -1297,6 +1567,8 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     whatsapp = await get_whatsapp_link_for_user(user_id)
     message_state = await get_message_notification_state(user_id)
     vertretungsplan_state = await get_vertretungsplan_notification_state(user_id)
+    dashboard_notifications = await get_dashboard_notifications(user_id)
+    cached_file_references = await get_cached_file_references(user_id)
     return {
         "account": {
             "school_id": credential["school_id"] if credential else None,
@@ -1321,8 +1593,91 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
         "notification_state": {
             "messages": message_state,
             "vertretungsplan": vertretungsplan_state,
+            "dashboard_notifications": dashboard_notifications,
         },
+        "cached_file_references": cached_file_references,
     }
+
+
+def _validate_cached_file_hash(file_hash: str) -> str:
+    value = str(file_hash).lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise ValueError("Invalid cached file hash")
+    return value
+
+
+async def add_cached_file_reference(user_id: str, file_hash: str) -> None:
+    """Record that a user is entitled to a shared cached attachment."""
+    user_id = _canonical_user_id(user_id)
+    file_hash = _validate_cached_file_hash(file_hash)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO cached_file_references (user_id, file_hash) VALUES (?, ?)",
+                (user_id, file_hash),
+            )
+            await db.commit()
+
+
+async def get_cached_file_references(user_id: str) -> List[str]:
+    """List hashes for shared file-cache entries referenced by one user."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT file_hash FROM cached_file_references WHERE user_id = ? ORDER BY file_hash",
+                (user_id,),
+            ) as cursor:
+                return [str(row[0]) for row in await cursor.fetchall()]
+
+
+async def has_cached_file_reference(user_id: str, file_hash: str) -> bool:
+    """Check that a logged-in user still owns a reference to the attachment."""
+    user_id = _canonical_user_id(user_id)
+    file_hash = _validate_cached_file_hash(file_hash)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT 1 FROM cached_file_references WHERE user_id = ? AND file_hash = ?",
+                (user_id, file_hash),
+            ) as cursor:
+                return await cursor.fetchone() is not None
+
+
+async def get_dashboard_notifications(user_id: str) -> List[Dict[str, Any]]:
+    """Return retained dashboard notification payloads and read state for export."""
+    user_id = _canonical_user_id(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT notification_id, source, payload, first_seen_at, last_seen_at,
+                   read_at, is_active
+            FROM dashboard_notifications
+            WHERE user_id = ?
+            ORDER BY first_seen_at ASC, notification_id ASC
+            """,
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    notifications = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            payload = None
+        notifications.append(
+            {
+                "notification_id": row["notification_id"],
+                "source": row["source"],
+                "payload": payload,
+                "first_seen_at": row["first_seen_at"],
+                "last_seen_at": row["last_seen_at"],
+                "read_at": row["read_at"],
+                "is_active": bool(row["is_active"]),
+            }
+        )
+    return notifications
 
 
 async def delete_user_data(user_id: str) -> Dict[str, int]:
@@ -1330,12 +1685,14 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     user_id = _canonical_user_id(user_id)
     tables = (
         "refresh_tokens",
+        "admin_sessions",
         "notification_preferences",
         "custom_lessons",
         "class_link_overrides",
         "push_subscriptions",
         "message_notification_state",
         "vertretungsplan_notification_state",
+        "dashboard_notifications",
         "user_preferences",
         "whatsapp_pairing_codes",
         "whatsapp_links",
@@ -1343,6 +1700,8 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
         "whatsapp_pending_actions",
     )
     counts: Dict[str, int] = {}
+    orphaned_file_hashes: List[str] = []
+    staged_file_paths = []
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -1360,16 +1719,106 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
                 counts["whatsapp_rate_limits"] = max(cursor.rowcount, 0)
             else:
                 counts["whatsapp_rate_limits"] = 0
+            async with db.execute(
+                "SELECT file_hash FROM cached_file_references WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                owned_file_hashes = [row[0] for row in await cursor.fetchall()]
+            cursor = await db.execute(
+                "DELETE FROM cached_file_references WHERE user_id = ?", (user_id,)
+            )
+            counts["cached_file_references"] = max(cursor.rowcount, 0)
+            orphaned_file_hashes = []
+            for file_hash in owned_file_hashes:
+                async with db.execute(
+                    "SELECT 1 FROM cached_file_references WHERE file_hash = ? LIMIT 1",
+                    (file_hash,),
+                ) as cursor:
+                    if await cursor.fetchone() is None:
+                        orphaned_file_hashes.append(file_hash)
             for table in tables:
                 cursor = await db.execute(
                     f"DELETE FROM {table} WHERE user_id = ?", (user_id,)
                 )
                 counts[table] = max(cursor.rowcount, 0)
-            await db.execute(
+            cursor = await db.execute(
                 "DELETE FROM admin_audit WHERE target_user_id = ?", (user_id,)
             )
+            counts["admin_audit"] = max(cursor.rowcount, 0)
+            # Preserve other accounts' audit history without retaining the
+            # deleted administrator's identity. This legacy column is NOT NULL.
+            cursor = await db.execute(
+                "UPDATE admin_audit SET actor_user_id = '' WHERE actor_user_id = ?",
+                (user_id,),
+            )
+            counts["admin_audit_anonymized"] = max(cursor.rowcount, 0)
+            await db.execute(
+                "INSERT OR REPLACE INTO account_deletion_markers (user_id, expires_at) VALUES (?, ?)",
+                (user_id, (datetime.utcnow() + timedelta(hours=1)).isoformat()),
+            )
+            await db.execute(
+                "DELETE FROM account_deletion_markers WHERE expires_at <= ?",
+                (datetime.utcnow().isoformat(),),
+            )
+            counts["file_cache_files"] = 0
+            if orphaned_file_hashes:
+                from .file_cache import stage_files_for_deletion
+
+                # Stage while the deletion transaction still owns reference writes.
+                # A rename failure rolls back account/session removal, allowing retry.
+                staged_file_paths = await asyncio.to_thread(
+                    stage_files_for_deletion, orphaned_file_hashes
+                )
+                counts["file_cache_files"] = len(staged_file_paths)
             await db.commit()
+    if staged_file_paths:
+        from .file_cache import (
+            delete_staged_files,
+            schedule_staged_file_cleanup_retry,
+        )
+
+        for attempt in range(3):
+            try:
+                await asyncio.to_thread(delete_staged_files, staged_file_paths)
+                break
+            except OSError:
+                if attempt == 2:
+                    # The account data transaction has committed; the endpoint
+                    # reports incomplete cleanup while a background retry runs.
+                    schedule_staged_file_cleanup_retry(staged_file_paths)
+                    raise
+                await asyncio.sleep(0.1 * (attempt + 1))
     return counts
+
+
+async def account_deletion_marker_is_active(user_id: str) -> bool:
+    """Return whether a durable account-deletion tombstone is still active."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            now = datetime.utcnow().isoformat()
+            await db.execute(
+                "DELETE FROM account_deletion_markers WHERE user_id = ? AND expires_at <= ?",
+                (user_id, now),
+            )
+            async with db.execute(
+                "SELECT 1 FROM account_deletion_markers WHERE user_id = ? AND expires_at > ?",
+                (user_id, now),
+            ) as cursor:
+                active = await cursor.fetchone() is not None
+            await db.commit()
+            return active
+
+
+async def clear_account_deletion_marker(user_id: str) -> None:
+    """Clear a tombstone after a fresh successful login."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM account_deletion_markers WHERE user_id = ?", (user_id,)
+            )
+            await db.commit()
 
 
 async def get_notification_preferences(user_id: str) -> Dict[str, Any]:
@@ -1537,9 +1986,13 @@ async def save_user_preferences(
             current = _decode_user_preferences(row[0], user_id) if row else (
                 _merge_nested_preferences(DEFAULT_USER_PREFERENCES, {})
             )
-            merged = _normalize_user_preferences(
-                _merge_nested_preferences(current, updates)
-            )
+            merged = _merge_nested_preferences(current, updates)
+            timetable_updates = updates.get("timetable")
+            if isinstance(timetable_updates, dict) and "class_colors" in timetable_updates:
+                merged.setdefault("timetable", {})["class_colors"] = json.loads(
+                    json.dumps(timetable_updates["class_colors"])
+                )
+            merged = _normalize_user_preferences(merged)
             serialized = json.dumps(merged, ensure_ascii=False, sort_keys=True)
             await db.execute(
                 """
@@ -1778,7 +2231,11 @@ async def get_enabled_notification_users() -> List[Dict[str, Any]]:
     ]
 
 
-async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> None:
+async def save_push_subscription(
+    user_id: str,
+    subscription: Dict[str, Any],
+    session_id: str,
+) -> None:
     """Associate a browser push subscription with a user."""
     user_id = _canonical_user_id(user_id)
     keys = subscription.get("keys") or {}
@@ -1787,10 +2244,15 @@ async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> 
             await db.execute(
                 """
                 INSERT INTO push_subscriptions
-                    (endpoint, user_id, p256dh, auth, created_at, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    (endpoint, user_id, session_id, p256dh, auth, created_at, updated_at)
+                SELECT ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                WHERE EXISTS (
+                    SELECT 1 FROM refresh_tokens
+                    WHERE user_id = ? AND session_id = ? AND expires_at > ?
+                )
                 ON CONFLICT(endpoint) DO UPDATE SET
                     user_id = excluded.user_id,
+                    session_id = excluded.session_id,
                     p256dh = excluded.p256dh,
                     auth = excluded.auth,
                     updated_at = CURRENT_TIMESTAMP
@@ -1798,8 +2260,12 @@ async def save_push_subscription(user_id: str, subscription: Dict[str, Any]) -> 
                 (
                     subscription["endpoint"],
                     user_id,
+                    session_id,
                     keys["p256dh"],
                     keys["auth"],
+                    user_id,
+                    session_id,
+                    datetime.utcnow(),
                 ),
             )
             await db.commit()
@@ -1901,3 +2367,278 @@ async def save_vertretungsplan_notification_state(
                 (user_id, json.dumps(snapshot, ensure_ascii=False, sort_keys=True)),
             )
             await db.commit()
+
+
+async def deactivate_and_purge_dashboard_notifications(
+    user_id: str, sources: Optional[List[str]] = None
+) -> int:
+    """Deactivate the current inbox and delete expired persisted rows."""
+    user_id = _canonical_user_id(user_id)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            source_ids = list(dict.fromkeys(
+                str(value).strip() for value in (sources or []) if str(value).strip()
+            ))
+            if sources is not None and source_ids:
+                placeholders = ",".join("?" for _ in source_ids)
+                await db.execute(
+                    f"""
+                    UPDATE dashboard_notifications
+                    SET is_active = 0
+                    WHERE user_id = ?
+                      AND is_active = 1
+                      AND source IN ({placeholders})
+                    """,
+                    (user_id, *source_ids),
+                )
+            elif sources is None:
+                await db.execute(
+                    """
+                    UPDATE dashboard_notifications
+                    SET is_active = 0
+                    WHERE user_id = ? AND is_active = 1
+                    """,
+                    (user_id,),
+                )
+            cursor = await db.execute(
+                """
+                DELETE FROM dashboard_notifications
+                WHERE user_id = ?
+                  AND last_seen_at < datetime('now', '-45 days')
+                """,
+                (user_id,),
+            )
+            await db.commit()
+            return max(cursor.rowcount, 0)
+
+
+async def sync_dashboard_notifications(
+    user_id: str,
+    items: List[Dict[str, Any]],
+    *,
+    include_read: bool = False,
+    limit: int = 20,
+    active_sources: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Persist the current notification inbox and return its active rows."""
+    user_id = _canonical_user_id(user_id)
+    normalized_items = [
+        item for item in items
+        if isinstance(item, dict)
+        and str(item.get("id") or "").strip()
+        and str(item.get("source") or "").strip()
+    ]
+    if not normalized_items:
+        await deactivate_and_purge_dashboard_notifications(user_id, active_sources)
+        return []
+
+    active_ids = list(dict.fromkeys(str(item["id"]) for item in normalized_items))
+    payload_by_id = {
+        str(item["id"]): json.dumps(item, ensure_ascii=False, sort_keys=True)
+        for item in normalized_items
+    }
+    source_by_id = {
+        str(item["id"]): str(item["source"])
+        for item in normalized_items
+    }
+    placeholders = ",".join("?" for _ in active_ids)
+    safe_limit = max(1, min(int(limit), 600))
+
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            source_ids = list(dict.fromkeys(
+                str(value).strip()
+                for value in (active_sources or [])
+                if str(value).strip()
+            ))
+            if active_sources is not None and source_ids:
+                source_placeholders = ",".join("?" for _ in source_ids)
+                await db.execute(
+                    f"""
+                    UPDATE dashboard_notifications
+                    SET is_active = 0
+                    WHERE user_id = ?
+                      AND is_active = 1
+                      AND source IN ({source_placeholders})
+                    """,
+                    (user_id, *source_ids),
+                )
+            elif active_sources is None:
+                await db.execute(
+                    """
+                    UPDATE dashboard_notifications
+                    SET is_active = 0
+                    WHERE user_id = ? AND is_active = 1
+                    """,
+                    (user_id,),
+                )
+            await db.executemany(
+                """
+                INSERT INTO dashboard_notifications
+                    (user_id, notification_id, source, payload, is_active)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(user_id, notification_id) DO UPDATE SET
+                    source = excluded.source,
+                    payload = excluded.payload,
+                    last_seen_at = CURRENT_TIMESTAMP,
+                    is_active = 1
+                """,
+                [
+                    (
+                        user_id,
+                        notification_id,
+                        source_by_id[notification_id],
+                        payload_by_id[notification_id],
+                    )
+                    for notification_id in active_ids
+                ],
+            )
+            await db.execute(
+                """
+                DELETE FROM dashboard_notifications
+                WHERE user_id = ? AND last_seen_at < datetime('now', '-45 days')
+                """,
+                (user_id,),
+            )
+            read_filter = "" if include_read else "AND read_at IS NULL"
+            query = f"""
+                SELECT notification_id, payload, first_seen_at, read_at
+                FROM dashboard_notifications
+                WHERE user_id = ?
+                  AND notification_id IN ({placeholders})
+                  {read_filter}
+                ORDER BY first_seen_at DESC, notification_id ASC
+            """
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                query,
+                (user_id, *active_ids),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            await db.commit()
+
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        result.append({
+            **payload,
+            "created_at": str(row["first_seen_at"]),
+            "read": row["read_at"] is not None,
+            "read_at": str(row["read_at"]) if row["read_at"] is not None else None,
+        })
+    result.sort(
+        key=lambda item: (
+            str(item.get("occurred_at") or ""),
+            str(item.get("created_at") or ""),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    return result[:safe_limit]
+
+
+async def mark_dashboard_notifications_read(
+    user_id: str,
+    notification_ids: Optional[List[str]] = None,
+    sources: Optional[List[str]] = None,
+) -> int:
+    """Mark selected dashboard notifications, or the whole inbox, as read."""
+    user_id = _canonical_user_id(user_id)
+    ids = list(dict.fromkeys(
+        str(value).strip() for value in (notification_ids or []) if str(value).strip()
+    ))
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            if notification_ids is None:
+                source_ids = list(dict.fromkeys(
+                    str(value).strip() for value in (sources or []) if str(value).strip()
+                ))
+                if source_ids:
+                    source_placeholders = ",".join("?" for _ in source_ids)
+                    cursor = await db.execute(
+                        f"""
+                        UPDATE dashboard_notifications
+                        SET read_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ?
+                          AND read_at IS NULL
+                          AND is_active = 1
+                          AND source IN ({source_placeholders})
+                        """,
+                        (user_id, *source_ids),
+                    )
+                else:
+                    cursor = await db.execute(
+                        """
+                        UPDATE dashboard_notifications
+                        SET read_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND read_at IS NULL AND is_active = 1
+                        """,
+                        (user_id,),
+                    )
+            elif not ids:
+                return 0
+            else:
+                placeholders = ",".join("?" for _ in ids)
+                cursor = await db.execute(
+                    f"""
+                    UPDATE dashboard_notifications
+                    SET read_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ?
+                      AND read_at IS NULL
+                      AND notification_id IN ({placeholders})
+                    """,
+                    (user_id, *ids),
+                )
+            await db.commit()
+            return max(cursor.rowcount, 0)
+
+
+async def purge_expired_account_deletion_markers() -> None:
+    """Retire temporary deletion identities even when the user never returns."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                'DELETE FROM account_deletion_markers WHERE expires_at <= ?',
+                (datetime.utcnow().isoformat(),),
+            )
+            await db.execute(
+                'DELETE FROM admin_sessions WHERE expires_at <= ?',
+                (datetime.utcnow().isoformat(),),
+            )
+            await db.commit()
+
+
+async def create_admin_session(user_id: str, expires_at: datetime) -> str:
+    """Persist a revocable admin JWT identity without storing credentials."""
+    await initialize()
+    session_id = secrets.token_urlsafe(32)
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute('DELETE FROM admin_sessions WHERE expires_at <= ?', (datetime.utcnow().isoformat(),))
+            await db.execute(
+                'INSERT INTO admin_sessions (session_id, user_id, expires_at) VALUES (?, ?, ?)',
+                (session_id, _canonical_user_id(user_id), expires_at.isoformat()),
+            )
+            await db.commit()
+    return session_id
+
+
+async def admin_session_is_active(user_id: str, session_id: str) -> bool:
+    """Validate an admin session; deleted sessions never return after fresh login."""
+    if not session_id:
+        return False
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute('DELETE FROM admin_sessions WHERE expires_at <= ?', (datetime.utcnow().isoformat(),))
+            async with db.execute(
+                'SELECT 1 FROM admin_sessions WHERE session_id = ? AND user_id = ?',
+                (session_id, _canonical_user_id(user_id)),
+            ) as cursor:
+                active = await cursor.fetchone() is not None
+            await db.commit()
+    return active

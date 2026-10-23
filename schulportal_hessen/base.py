@@ -277,6 +277,10 @@ class SchulportalHessenAPI:
                 "meinunterricht_get_entry_details",
                 "meinunterricht_get_weekly_view",
                 "meinunterricht_get_submissions",
+                "meinunterricht_get_submission",
+                "meinunterricht_upload_files",
+                "meinunterricht_delete_uploaded_file",
+                "meinunterricht_download_submission_file",
                 "meinunterricht_set_homework_done",
                 "meinunterricht_download_file",
                 "meinunterricht_get_attendance_overview",
@@ -289,6 +293,10 @@ class SchulportalHessenAPI:
                 "dateispeicher_search_files",
                 "dateispeicher_download_file",
             ],
+            "dateiverteilung.php": [
+                "dateiverteilung_get_overview",
+                "dateiverteilung_download_file",
+            ],
             "lerngruppen.php": ["lerngruppen_get_overview"],
             "benutzerverwaltung.php": ["benutzer_get_data"],
             "oberstufenwahl.php": [
@@ -296,6 +304,7 @@ class SchulportalHessenAPI:
                 "wahlen_get_form",
                 "wahlen_submit",
             ],
+            "videokonferenz.php": ["videokonferenz_get_rooms"],
         }
 
         for entry in entries:
@@ -485,8 +494,33 @@ class SchulportalHessenAPI:
         """Fetch the Mein Unterricht submissions/assignments view.
 
         Returns:
-            Dict containing the HTML response for the submissions page.
+            Dict containing typed submission summaries.
         """
+        ...
+
+    def meinunterricht_get_submission(self, detail_ref: str) -> Dict[str, Any]:
+        """Fetch and parse one student submission page."""
+        ...
+
+    def meinunterricht_upload_files(
+        self,
+        course_id: str,
+        entry_id: str,
+        upload_id: str,
+        files: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Upload one to five files to a student submission."""
+        ...
+
+    def meinunterricht_delete_uploaded_file(
+        self,
+        course_id: str,
+        entry_id: str,
+        upload_id: str,
+        file_index: str,
+        password: str,
+    ) -> Dict[str, Any]:
+        """Delete one uploaded file after portal password confirmation."""
         ...
 
     def meinunterricht_set_homework_done(
@@ -514,6 +548,10 @@ class SchulportalHessenAPI:
         Returns:
             Dict containing filename metadata and binary content.
         """
+        ...
+
+    def meinunterricht_download_submission_file(self, file_ref: str) -> Dict[str, Any]:
+        """Download a file referenced by a parsed student submission."""
         ...
 
     def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
@@ -607,6 +645,15 @@ class SchulportalHessenAPI:
 
     def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
         """Download a file from the native dateispeicher."""
+        ...
+
+    # Dateiverteilung methods
+    def dateiverteilung_get_overview(self) -> Dict[str, Any]:
+        """Fetch targeted file distributions for the authenticated user."""
+        ...
+
+    def dateiverteilung_download_file(self, url: str) -> Dict[str, Any]:
+        """Download a file from the native Dateiverteilung."""
         ...
 
     # Lerngruppen methods
@@ -762,10 +809,16 @@ from .applets.mein_unterricht.api import (
     meinunterricht_get_course,
     meinunterricht_get_entry_details,
     meinunterricht_get_weekly_view,
-    meinunterricht_get_submissions,
     meinunterricht_set_homework_done,
     meinunterricht_download_file,
     meinunterricht_get_attendance_overview,
+)
+from .applets.mein_unterricht.submissions import (
+    meinunterricht_get_submissions,
+    meinunterricht_get_submission,
+    meinunterricht_upload_files,
+    meinunterricht_delete_uploaded_file,
+    meinunterricht_download_submission_file,
 )
 
 SchulportalHessenAPI.meinunterricht_get_overview = meinunterricht_get_overview
@@ -773,6 +826,10 @@ SchulportalHessenAPI.meinunterricht_get_course = meinunterricht_get_course
 SchulportalHessenAPI.meinunterricht_get_entry_details = meinunterricht_get_entry_details
 SchulportalHessenAPI.meinunterricht_get_weekly_view = meinunterricht_get_weekly_view
 SchulportalHessenAPI.meinunterricht_get_submissions = meinunterricht_get_submissions
+SchulportalHessenAPI.meinunterricht_get_submission = meinunterricht_get_submission
+SchulportalHessenAPI.meinunterricht_upload_files = meinunterricht_upload_files
+SchulportalHessenAPI.meinunterricht_delete_uploaded_file = meinunterricht_delete_uploaded_file
+SchulportalHessenAPI.meinunterricht_download_submission_file = meinunterricht_download_submission_file
 SchulportalHessenAPI.meinunterricht_set_homework_done = meinunterricht_set_homework_done
 SchulportalHessenAPI.meinunterricht_download_file = meinunterricht_download_file
 SchulportalHessenAPI.meinunterricht_get_attendance_overview = meinunterricht_get_attendance_overview
@@ -804,6 +861,11 @@ from .applets.vertretungsplan.api import vertretungsplan_get_plan
 
 SchulportalHessenAPI.vertretungsplan_get_plan = vertretungsplan_get_plan
 
+# Import and attach the Videokonferenz methods
+from .applets.videokonferenz.api import videokonferenz_get_rooms
+
+SchulportalHessenAPI.videokonferenz_get_rooms = videokonferenz_get_rooms
+
 # Import and attach the stundenplan methods
 from .applets.stundenplan.api import stundenplan_get_plan
 
@@ -821,6 +883,15 @@ SchulportalHessenAPI.dateispeicher_get_root = dateispeicher_get_root
 SchulportalHessenAPI.dateispeicher_get_node = dateispeicher_get_node
 SchulportalHessenAPI.dateispeicher_search_files = dateispeicher_search_files
 SchulportalHessenAPI.dateispeicher_download_file = dateispeicher_download_file
+
+# Import and attach the Dateiverteilung methods
+from .applets.dateiverteilung.api import (
+    dateiverteilung_get_overview,
+    dateiverteilung_download_file,
+)
+
+SchulportalHessenAPI.dateiverteilung_get_overview = dateiverteilung_get_overview
+SchulportalHessenAPI.dateiverteilung_download_file = dateiverteilung_download_file
 
 # Import and attach the lerngruppen methods
 from .applets.lerngruppen.api import lerngruppen_get_overview

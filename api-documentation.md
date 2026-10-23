@@ -36,6 +36,110 @@ X-Session-Token: {token}
 
 ## Endpoints
 
+### Video rooms (Videokonferenz)
+
+#### GET `/videokonferenz`
+
+Returns the authenticated student's current native Schulportal video rooms.
+Each room includes its learning group, teachers, `open`, `waiting`, `closed`, or
+`unknown` state, and an HTTPS join link when the portal provides one. Responses
+are intentionally never cached because join links may be short-lived and bound
+to the current user. Cookies, raw HTML, and Schulportal session tokens are not
+included in the response.
+
+The optional `refresh` query parameter is accepted for consistency with other
+module endpoints; video rooms are fetched fresh on every request regardless.
+
+### Public school data and images
+
+These endpoints load public school information directly from Schulportal Hessen (SPH).
+They do not require authentication or a manually maintained school configuration.
+
+#### GET `/schools`
+
+List all schools from SPH's public school directory (`school_id`, `name`, and `city`).
+This reuses the shared 12-hour directory cache and does not fetch individual school
+profiles or images. An unavailable directory returns `503`.
+
+#### GET `/schools/{school_id}/data`
+
+Load the school's public profile from
+`https://startcache.schulportal.hessen.de/exporteur.php?a=school&i={school_id}`.
+The response maps SPH's `Name`, `Ort`, `Kurzname`, `Farben`, `Logo`, `CSS`, `bgimg`,
+`Hint`, `Support`, and `LetzteAenderung` into a stable JSON contract.
+
+- `palette.primary`, `primary_dark`, and `accent` come from `bg`, `border`, and
+  `activeBG`. The other palette fields preserve text, active text, footer, and heading colors.
+- `assets.logo` and `assets.campus` contain backend image URLs. Image bytes are
+  fetched from SPH on demand and served by LANIS; clients are never redirected to SPH.
+  URLs use `PUBLIC_BASE_URL` when configured, otherwise the incoming request base URL.
+- `assets.stylesheet` preserves the upstream SPH stylesheet URL.
+- `assets.campus_widths` contains SPH's image widths for responsive layouts.
+- Missing assets or invalid colors are `null`. An empty SPH short name stays empty.
+- `support_html` contains upstream support HTML; render as text or sanitize before
+  inserting it as HTML. `last_modified` preserves SPH's modification timestamp.
+
+Successful profiles are cached for 12 hours in a bounded 512-entry cache. Concurrent
+requests for one school share a fetch, with at most four upstream profile/image requests
+running at once. Failed lookups are cached for 60 seconds to avoid repeated upstream requests.
+
+Unknown schools return `404`; malformed IDs return `422`; upstream failures return
+`502`; upstream timeouts return `504`.
+
+#### GET `/schools/{school_id}/logo`
+
+Returns the logo as image bytes with its upstream image content type.
+
+#### GET `/schools/{school_id}/campus?size=lg`
+
+Returns the campus/background image as image bytes. `size` accepts `xs`, `sm`,
+`md`, or `lg` and defaults to `lg`. An unavailable image or size returns `404`;
+invalid sizes return `422`. No fallback image from another school is used.
+
+Images are fetched on demand and cached for 12 hours. The in-memory image cache
+is limited to 128 entries and 64 MiB in total; each image is limited to 8 MiB.
+Concurrent requests for the same image share one download. Image failures are
+cached for 60 seconds. Responses include `Cache-Control`, `nosniff`, and a
+restrictive content security policy. Redirects are followed only within HTTPS
+SPH hosts. Upstream failures return `502`, and timeouts return `504`.
+
+Example response (school values come from SPH; image URLs use your backend base URL):
+```json
+{
+  "success": true,
+  "school": {
+    "school_id": "5201",
+    "name": "Adolf-Reichwein-Gymnasium",
+    "city": "Heusenstamm",
+    "short_name": "",
+    "login_url": "https://login.schulportal.hessen.de/?i=5201",
+    "palette": {
+      "primary": "#00bcd5",
+      "primary_dark": "#00a5bb",
+      "accent": "#00bcd4",
+      "text": "#fffffe",
+      "active_text": "#dfdfdf",
+      "footer": "#00a5bc",
+      "heading": "#606060"
+    },
+    "assets": {
+      "logo": "https://api.example.com/schools/5201/logo",
+      "stylesheet": "https://start.schulportal.hessen.de/exporteur.php?a=schoolcss&i=5201",
+      "campus": {
+        "xs": "https://api.example.com/schools/5201/campus?size=xs",
+        "sm": "https://api.example.com/schools/5201/campus?size=sm",
+        "md": "https://api.example.com/schools/5201/campus?size=md",
+        "lg": "https://api.example.com/schools/5201/campus?size=lg"
+      },
+      "campus_widths": {"xs": 768, "sm": 990, "md": 1200, "lg": 1600}
+    },
+    "hint": false,
+    "support_html": "...",
+    "last_modified": 1607888404
+  }
+}
+```
+
 ### Authentication
 
 #### POST `/login`
@@ -64,7 +168,8 @@ Authenticate a user and create a new session.
   "token": "abc123def456...",
   "school_id": "1234",
   "username": "john.doe",
-  "encryption_ready": true
+  "encryption_ready": true,
+  "is_first_school_user": false
 }
 ```
 
@@ -75,6 +180,7 @@ Authenticate a user and create a new session.
 | `school_id` | string | School ID of the logged-in user |
 | `username` | string | Username of the logged-in user |
 | `encryption_ready` | boolean | Indicates if encryption is ready for the session |
+| `is_first_school_user` | boolean | Whether this account is the earliest known LANIS user at its school; used for the school-specific onboarding notice. Defaults to false if metrics are unavailable. |
 
 **Status Codes:**
 - `200 OK` - Login successful
@@ -837,7 +943,8 @@ Retrieve a weekly view of course entries.
 
 #### GET `/meinunterricht/submissions`
 
-Retrieve all submissions/tasks that need attention.
+Retrieve all student upload assignments. Set the optional query parameter
+`refresh=true` to bypass the live cache and fetch current portal data.
 
 **Headers:**
 - `X-Session-Token: {token}` (required)
@@ -848,13 +955,15 @@ Retrieve all submissions/tasks that need attention.
   "success": true,
   "submissions": [
     {
-      "id": "{submission_id}",
+      "id": "{opaque_detail_reference}",
+      "detail_ref": "{opaque_detail_reference}",
+      "course_id": "{course_id}",
+      "entry_id": "{entry_id}",
       "title": "{submission_title}",
-      "course": "{course_name}",
-      "due_date": "{date}",
-      "status": "{status}",
-      "url": "{submission_url}",
-      "..."
+      "course_name": "{course_name}",
+      "status": "open",
+      "date_text": "{portal_date_text}",
+      "uploaded_count": 0
     },
     "..."
   ]
@@ -864,6 +973,42 @@ Retrieve all submissions/tasks that need attention.
 **Status Codes:**
 - `200 OK` - Submissions retrieved successfully
 - `401 Unauthorized` - Invalid or expired session token
+
+---
+
+#### GET `/meinunterricht/submissions/{detail_ref}`
+
+Retrieve the requirements, current files, and upload state for one submission.
+The `detail_ref` is the opaque reference returned by the list endpoint.
+Set `refresh=true` to bypass the live detail cache. Both read endpoints retain
+the last successful snapshot for a confirmed upstream outage.
+
+#### POST `/meinunterricht/submissions/upload`
+
+Upload one to five files using multipart form data. Required fields are
+`course_id`, `entry_id`, `upload_id`, and one or more `files` fields. The
+response contains an individual status for every file.
+
+#### DELETE `/meinunterricht/submissions/file`
+
+Delete an uploaded file using multipart form fields `course_id`, `entry_id`,
+`upload_id`, and `file_index`, authenticated with `X-Session-Token`. The backend
+reuses the account's encrypted login credentials for Schulportal's required
+password check, so clients do not need to ask for the password again. Missing
+stored credentials return HTTP 401 before attempting deletion.
+
+An optional `password` field remains supported for older clients. An explicitly
+supplied password is encrypted for the Schulportal request and is not persisted
+by this endpoint.
+
+#### GET `/meinunterricht/submissions/file/{file_ref}`
+
+Download a submission file through the authenticated backend session.
+
+Submission reads, downloads, uploads, and deletions return HTTP 401 when
+Schulportal returns an expired-session login page or an authentication failure.
+The backend discards the expired portal client. Uploads and deletions are not
+automatically retried.
 
 ---
 
@@ -1277,34 +1422,49 @@ snapshots for the account, and a backend restart clears the in-memory store.
 
 `GET /status` requires no session token or administrator privileges. It reads the
 existing Schulportal synthetic monitor's stored results; requests never run a
-probe or log in. The sanitized response is shared for up to 30 seconds (less when
-a current result is about to become stale). `generated_at` is the snapshot time.
+probe or log in. The sanitized response is shared for up to 30 seconds (5 seconds
+during an incident, less when a current result is about to become stale).
+`generated_at` is the snapshot time.
 
 - `current`: `status` (`up`, `degraded`, `down`, `unknown`), UTC `checked_at`
-  (nullable), `stale`, and `features` with allowlisted `login`/`modules` names and
-  `up`/`down`/`unknown` status. Results older than twice the configured check
+  (nullable), `stale`, overall `latency_ms`, and `features` with allowlisted
+  `login`/`modules` names, status, and component latency. Results older than twice the configured check
   interval, absent checks, and a disabled/unconfigured monitor show `unknown`.
   `stale` specifically describes the age or absence of the latest observation.
 - `summary`: rolling `period_days: 90`, `checks`, `available_checks`,
   `failed_checks` (including degraded results), `unknown_checks`,
   `uptime_percent` (nullable), and `coverage_percent`.
+- `summary_windows`: exact rolling `24h`, `7d`, `30d`, and `90d` aggregates,
+  each with counts, time-weighted availability, coverage, median/p95 total
+  latency, and median/p95 latency for login and module checks.
 - `daily`: the same counts/percentages per UTC `day` with a daily `status`.
   Days without known observations remain `unknown`. The rolling 90×24-hour window
   intersects up to 91 calendar dates; the first and last dates are partial days.
 - `history`: at most 100 recent observations (`checked_at`, `status`, `features`).
-- `incidents`: at most 100 recent failed/degraded observations, with the same safe
-  shape. These are individual failed checks, not inferred continuous outages.
+- `incidents`: at most 100 recent grouped outages. Each has `started_at`, nullable
+  `resolved_at`, `duration_seconds`, status, confirmed check count, affected
+  components, last check time, and a safe error code.
 - `measurement`: `interval_seconds`, `stale_after_seconds`, UTC `period_start`
   and `period_end`, and a human-readable description of the methodology.
+  During an incident, the freshness window also accounts for the last probe's
+  measured duration and time needed for the next retry cycle.
 
-Availability is successful checks divided by known checks. Missing or unknown
-checks are excluded from that percentage, not counted as successes. Coverage is
-the percentage of interval-sized slots containing at least one known result;
-duplicated/manual checks in the same slot do not increase coverage. Slots are
-anchored at the start of the requested period (or clipped UTC day). The currently
-configured interval is used as the expected cadence throughout the window, so
-changing it affects the coverage estimate. Partial coverage does not mean all
+Failed synthetic probes are retried once immediately. If the retry succeeds,
+the successful result is stored as a healthy observation and the initial failed
+attempt is discarded. While an incident is active, the scheduler waits 15 seconds between checks;
+otherwise it waits the configured normal interval. New observations store the
+effective interval, including probe execution time. Legacy rows infer cadence
+from adjacent timestamps so prior five-minute failures keep their historical
+weight. A result represents at most two such intervals. Missing
+or stale spans are excluded from availability and reduce coverage. Partial
+coverage does not mean all
 unobserved time was healthy; show coverage alongside the availability percentage.
+
+Admin uptime responses include `summary_windows`, grouped incident records, the
+current alert-webhook configuration state, and the 20 latest alert delivery
+outcomes (`delivered` or `failed`). Failed webhook attempts are recorded with a
+safe error code and retried no more often than once every five minutes while
+the corresponding incident or recovery transition remains current.
 
 The existing monitor authenticates with one configured account and opens that
 account's available modules. Its result does not establish availability for all

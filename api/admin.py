@@ -8,26 +8,31 @@ admin secret in configuration or returned by normal user-list endpoints.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from schulportal_hessen.base import SchulportalHessenAPI
 
 from .auth_db import (
+    admin_session_is_active,
+    create_admin_session,
     get_class_link_overrides,
     get_custom_lessons,
     get_notification_preferences,
     get_push_subscriptions,
-    get_refresh_token_by_user_id,
+    get_refresh_metadata_by_user_id,
     get_user_preferences,
 )
 from .identity import (
@@ -36,14 +41,73 @@ from .identity import (
     normalize_school_id,
     normalize_username,
 )
+from . import feedback_db
 from .metrics import user_metrics_db
 from .school_locations import city_coordinates as _city_coordinates
 from .school_locations import geocode_school as _geocode_school
 from .school_locations import get_school_directory as _get_school_directory
-from .uptime import get_uptime_status, run_uptime_check
+from .uptime import get_uptime_status, run_uptime_check, wake_uptime_scheduler
 
 logger = logging.getLogger("admin")
-router = APIRouter(prefix="/admin", tags=["admin"])
+_held_admin_leases: ContextVar[frozenset[str]] = ContextVar(
+    "held_admin_leases", default=frozenset(),
+)
+
+
+@asynccontextmanager
+async def _admin_account_access(*user_ids: str):
+    """Take shared leases once, in stable order, for the actor and viewed user."""
+    from .account_data import account_lifecycle_lock
+
+    held = _held_admin_leases.get()
+    requested = {canonicalize_user_id(user_id) for user_id in user_ids}
+    async with AsyncExitStack() as stack:
+        for user_id in sorted(requested - held):
+            lifecycle = await account_lifecycle_lock(user_id)
+            await stack.enter_async_context(lifecycle.shared())
+        token = _held_admin_leases.set(held | requested)
+        try:
+            yield
+        finally:
+            _held_admin_leases.reset(token)
+
+
+class AdminLifecycleRoute(APIRoute):
+    """Drain authenticated admin handlers before deleting their actor account."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def protected(request: Request):
+            # Login owns exclusive lifecycle access and has no existing JWT.
+            if self.path == "/admin/auth/login":
+                return await handler(request)
+            token = request.headers.get("X-Admin-Token")
+            if not token:
+                return await handler(request)  # Normal dependency reports missing auth.
+            principal = await admin_dependency(token)
+            lock_ids = {principal.user_id}
+            # Acquire actor and viewed account together to avoid a nested lease
+            # deadlock if both accounts have a deletion waiting for readers.
+            target = request.path_params.get("user_id")
+            if target:
+                school, separator, username = target.partition(":")
+                if separator and school and username:
+                    lock_ids.add(make_user_id(school, username))
+            from .account_data import admin_bulk_read_gate
+
+            async with AsyncExitStack() as stack:
+                # Enter the bulk gate before actor access, matching deletion's order.
+                if self.path in {"/admin/users", "/admin/schools/{school_id:path}", "/admin/feedback", "/admin/feedback/{report_id}"}:
+                    await stack.enter_async_context(admin_bulk_read_gate)
+                await stack.enter_async_context(_admin_account_access(*lock_ids))
+                await admin_dependency(token)  # Recheck persisted jti after waiting.
+                return await handler(request)
+
+        return protected
+
+
+router = APIRouter(prefix="/admin", tags=["admin"], route_class=AdminLifecycleRoute)
 
 ADMIN_TOKEN_EXPIRE_MINUTES = 30
 ACTIVE_STATE_DAYS = 7
@@ -92,11 +156,16 @@ class AdminUsersResponse(BaseModel):
     users: list[AdminUserSummary]
 
 
+class FeedbackStatusRequest(BaseModel):
+    status: Literal["open", "done"]
+
+
 @dataclass(frozen=True)
 class AdminPrincipal:
     user_id: str
     school_id: str
     username: str
+    session_id: str = field(default='', compare=False)
 
 
 def _configured_accounts() -> set[str]:
@@ -144,6 +213,7 @@ def _issue_token(principal: AdminPrincipal) -> str:
             "username": principal.username,
             "aud": "lanis-admin",
             "typ": "admin",
+            "jti": principal.session_id,
             "iat": now,
             "exp": now + timedelta(minutes=ADMIN_TOKEN_EXPIRE_MINUTES),
         },
@@ -165,7 +235,7 @@ def _decode_token(token: str, expected_type: str) -> AdminPrincipal:
             secret,
             algorithms=["HS256"],
             audience="lanis-admin",
-            options={"require": ["exp", "sub", "aud", "typ"]},
+            options={"require": ["exp", "sub", "aud", "typ", "jti"]},
         )
     except jwt.InvalidTokenError as error:
         raise HTTPException(
@@ -185,13 +255,16 @@ def _decode_token(token: str, expected_type: str) -> AdminPrincipal:
         )
     school_id, _, canonical_username = user_id.partition(":")
     username = normalize_username(str(payload.get("username") or canonical_username))
-    return AdminPrincipal(user_id=user_id, school_id=school_id, username=username)
+    return AdminPrincipal(user_id=user_id, school_id=school_id, username=username, session_id=str(payload.get('jti') or ''))
 
 
 async def admin_dependency(
     x_admin_token: str = Header(..., alias="X-Admin-Token"),
 ) -> AdminPrincipal:
-    return _decode_token(x_admin_token, "admin")
+    principal = _decode_token(x_admin_token, "admin")
+    if not await admin_session_is_active(principal.user_id, principal.session_id):
+        raise HTTPException(status_code=401, detail='Admin session was revoked')
+    return principal
 
 
 async def _verify_sph_credentials(school_id: str, username: str, password: str) -> bool:
@@ -203,18 +276,47 @@ async def _verify_sph_credentials(school_id: str, username: str, password: str) 
         client.close()
 
 
-async def _record_login(school_id: str, username: str) -> None:
+async def _record_login(
+    school_id: str, username: str, *, locks_held: bool = False
+) -> None:
     try:
-        await user_metrics_db.record_login(school_id, username)
+        user_id = make_user_id(school_id, username)
+        from .account_data import account_lifecycle_lock, clear_account_deletion_marker
+
+        if locks_held:
+            await clear_account_deletion_marker(user_id)
+            await user_metrics_db.record_login(school_id, username)
+            return
+        lifecycle_lock = await account_lifecycle_lock(user_id)
+        async with lifecycle_lock:
+            await clear_account_deletion_marker(user_id)
+            await user_metrics_db.record_login(school_id, username)
     except Exception:
         logger.warning("Could not record admin login metric", exc_info=True)
 
 
 async def _record_admin_action(
-    actor_user_id: str, action: str, target_user_id: str = ""
+    actor_user_id: str,
+    action: str,
+    target_user_id: str = "",
+    *,
+    locks_held: bool = False,
 ) -> None:
     try:
-        await user_metrics_db.record_admin_action(actor_user_id, action, target_user_id)
+        from .account_data import account_deletion_is_recent
+
+        if locks_held:
+            if not await account_deletion_is_recent(actor_user_id):
+                await user_metrics_db.record_admin_action(
+                    actor_user_id, action, target_user_id
+                )
+            return
+        async with _admin_account_access(actor_user_id):
+            if await account_deletion_is_recent(actor_user_id):
+                return
+            await user_metrics_db.record_admin_action(
+                actor_user_id, action, target_user_id
+            )
     except Exception:
         logger.warning("Could not persist admin audit event", exc_info=True)
 
@@ -229,22 +331,32 @@ async def admin_login(payload: AdminLoginRequest) -> AdminTokenResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid admin credentials",
         )
-    if not await _verify_sph_credentials(school_id, payload.username, payload.password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid admin credentials",
+    from .account_data import account_lifecycle_lock
+
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock:
+        if not await _verify_sph_credentials(
+            school_id, payload.username, payload.password
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid admin credentials",
+            )
+        session_id = await create_admin_session(
+            user_id, _utcnow() + timedelta(minutes=ADMIN_TOKEN_EXPIRE_MINUTES),
         )
-    principal = AdminPrincipal(
-        user_id=user_id, school_id=school_id, username=normalize_username(username)
-    )
-    await _record_login(school_id, username)
-    await _record_admin_action(principal.user_id, "admin_login")
-    return AdminTokenResponse(
-        access_token=_issue_token(principal),
-        expires_in=ADMIN_TOKEN_EXPIRE_MINUTES * 60,
-        school_id=school_id,
-        username=normalize_username(username),
-    )
+        principal = AdminPrincipal(
+            user_id=user_id, school_id=school_id, username=normalize_username(username),
+            session_id=session_id,
+        )
+        await _record_login(school_id, username, locks_held=True)
+        await _record_admin_action(principal.user_id, "admin_login", locks_held=True)
+        return AdminTokenResponse(
+            access_token=_issue_token(principal),
+            expires_in=ADMIN_TOKEN_EXPIRE_MINUTES * 60,
+            school_id=school_id,
+            username=normalize_username(username),
+        )
 
 
 @router.get("/me")
@@ -272,7 +384,9 @@ async def admin_uptime_check(
     principal: AdminPrincipal = Depends(admin_dependency),
 ) -> dict[str, Any]:
     """Run an immediate authenticated Schulportal synthetic check."""
-    await run_uptime_check()
+    check = await run_uptime_check()
+    if check.get("status") in {"down", "degraded"}:
+        wake_uptime_scheduler()
     await _record_admin_action(principal.user_id, "uptime_check")
     return await get_uptime_status()
 
@@ -403,37 +517,40 @@ async def admin_user_detail(
     school_id, separator, username = user_id.partition(":")
     if not separator or not school_id or not username:
         raise HTTPException(status_code=404, detail="User not found")
-    row = await _metric_row(school_id, username)
-    if row is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    summary = _summary_from_row(row)
     storage_user_id = make_user_id(school_id, username)
-    await _record_admin_action(principal.user_id, "user_view", storage_user_id)
-    credentials = await get_refresh_token_by_user_id(storage_user_id)
-    preferences, _ = await get_user_preferences(storage_user_id)
-    return {
-        "success": True,
-        "user": summary.model_dump()
-        if hasattr(summary, "model_dump")
-        else summary.dict(),
-        "profile": _profile_from_row(row),
-        "credentials": {
-            "available": credentials is not None,
-            "created_at": credentials.get("created_at") if credentials else None,
-            "expires_at": credentials.get("expires_at") if credentials else None,
-        },
-        "state": {
-            "preferences": preferences,
-            "notification_preferences": await get_notification_preferences(
-                storage_user_id
-            ),
-            "custom_lessons": await get_custom_lessons(storage_user_id),
-            "class_links": await get_class_link_overrides(storage_user_id),
-            "push_subscription_count": len(
-                await get_push_subscriptions(storage_user_id)
-            ),
-        },
-    }
+    async with _admin_account_access(storage_user_id, principal.user_id):
+        row = await _metric_row(school_id, username)
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        summary = _summary_from_row(row)
+        await _record_admin_action(
+            principal.user_id, "user_view", storage_user_id, locks_held=True
+        )
+        credentials = await get_refresh_metadata_by_user_id(storage_user_id)
+        preferences, _ = await get_user_preferences(storage_user_id)
+        return {
+            "success": True,
+            "user": summary.model_dump()
+            if hasattr(summary, "model_dump")
+            else summary.dict(),
+            "profile": _profile_from_row(row),
+            "credentials": {
+                "available": credentials is not None,
+                "created_at": credentials.get("created_at") if credentials else None,
+                "expires_at": credentials.get("expires_at") if credentials else None,
+            },
+            "state": {
+                "preferences": preferences,
+                "notification_preferences": await get_notification_preferences(
+                    storage_user_id
+                ),
+                "custom_lessons": await get_custom_lessons(storage_user_id),
+                "class_links": await get_class_link_overrides(storage_user_id),
+                "push_subscription_count": len(
+                    await get_push_subscriptions(storage_user_id)
+                ),
+            },
+        }
 
 
 @router.get("/schools/{school_id:path}")
@@ -573,6 +690,48 @@ async def admin_audit(
         "limit": limit,
         "offset": offset,
     }
+
+
+@router.get("/feedback")
+async def admin_feedback(
+    status: Literal["open", "done", "all"] = Query("open"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    _: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    reports, total = await feedback_db.list_feedback(
+        status=None if status == "all" else status,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "success": True,
+        "reports": reports,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.patch("/feedback/{report_id}")
+async def update_admin_feedback(
+    report_id: int,
+    payload: FeedbackStatusRequest,
+    principal: AdminPrincipal = Depends(admin_dependency),
+) -> dict[str, Any]:
+    report = await feedback_db.update_feedback_status(
+        report_id,
+        payload.status,
+        principal.user_id,
+    )
+    if report is None:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    await _record_admin_action(
+        principal.user_id,
+        f"feedback_{payload.status}",
+        str(report_id),
+    )
+    return {"success": True, "report": report}
 
 
 @router.get("/metrics/overview")

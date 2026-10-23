@@ -92,10 +92,12 @@ def test_registration_rotation_and_account_cleanup(tmp_path, monkeypatch):
     monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
     monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
     monkeypatch.setattr(routes, 'android_push_configured', lambda: True)
-    auth = SimpleNamespace(user_id='5201:Student')
+    auth = SimpleNamespace(user_id='5201:Student', session_id='')
 
     async def scenario():
         await auth_db.initialize()
+        refresh_token = await auth_db.store_refresh_token(auth.user_id, '5201', 'Student', 'test-password')
+        auth.session_id = (await auth_db.get_refresh_token(refresh_token))['session_id']
         old = TOKEN + '-old'
         await routes.register_android_push(routes.AndroidPushRequest(token=old, binding=BINDING), auth)
         await routes.register_android_push(routes.AndroidPushRequest(token=TOKEN, binding=BINDING, previous_token=old), auth)
@@ -104,7 +106,10 @@ def test_registration_rotation_and_account_cleanup(tmp_path, monkeypatch):
         # Another account cannot unregister this user's device.
         await routes.unregister_android_push(routes.AndroidPushRequest(token=TOKEN, binding=BINDING), SimpleNamespace(user_id='other'))
         assert len(await auth_db.get_push_subscriptions(auth.user_id)) == 1
-        await auth_db.delete_user_push_subscriptions(auth.user_id)
+        await auth_db.delete_user_tokens(auth.user_id)
+        assert await auth_db.get_push_subscriptions(auth.user_id) == []
+        # A request authenticated before revocation cannot restore its device registration.
+        await routes.register_android_push(routes.AndroidPushRequest(token=TOKEN, binding=BINDING), auth)
         assert await auth_db.get_push_subscriptions(auth.user_id) == []
 
     asyncio.run(scenario())
