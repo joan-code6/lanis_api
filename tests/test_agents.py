@@ -474,7 +474,10 @@ def test_school_tool_holds_account_lifecycle_lease(environment, monkeypatch):
         ("unexpected", "SCHOOL_UNAVAILABLE"),
     ],
 )
-def test_school_tool_error_recovery(environment, monkeypatch, failure, expected_error):
+@pytest.mark.parametrize("write", [False, True])
+def test_school_tool_error_recovery(
+    environment, monkeypatch, failure, expected_error, write
+):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -503,8 +506,14 @@ def test_school_tool_error_recovery(environment, monkeypatch, failure, expected_
             else:
                 raise RuntimeError("private session internals")
 
-        result = await agent_mcp.run("timetable:write", fail)
+        result = await agent_mcp.run("timetable:write", fail, write=write)
         assert result["success"] is False
+        if write and expected_error == "SCHOOL_UNAVAILABLE":
+            assert result["error"] == "OUTCOME_UNKNOWN"
+            assert "Check the result in LANIS before retrying" in result["next_step"]
+            assert "Do not automatically repeat" in result["next_step"]
+            assert "details" not in result
+            return
         assert result["error"] == expected_error
         if expected_error == "INVALID_REQUEST":
             assert result["next_step"] == (
@@ -1028,6 +1037,19 @@ def test_token_rate_limits_isolate_clients_and_guard_missing_peer(environment):
                 json={"client_name": "No peer", "redirect_uris": [CALLBACK]},
             )
             assert registration.status_code == 201
+            authorization = await c.get(
+                "/oauth/authorize",
+                params={
+                    "client_id": registration.json()["client_id"],
+                    "redirect_uri": CALLBACK,
+                    "code_challenge": CHALLENGE,
+                    "state": "no-peer-state",
+                    "scope": "schoolwork:read",
+                    "resource": "http://localhost:8000/mcp",
+                },
+            )
+            assert authorization.status_code == 303, authorization.text
+
             for _ in range(120):
                 assert await store.rate_limit(
                     "token-client:" + store.digest("busy-client"), 120, 60

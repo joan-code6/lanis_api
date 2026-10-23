@@ -291,7 +291,8 @@ async def authorize(
     scope: str = DEFAULT_SCOPES,
     resource: str = "",
 ):
-    if not await store.rate_limit("authorize:" + request.client.host, 120, 3600):
+    host = request.client.host if request.client else "unknown"
+    if not await store.rate_limit("authorize:" + host, 120, 3600):
         return oauth_error(
             "slow_down", "Too many authorization requests. Try again later.", 429
         )

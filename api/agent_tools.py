@@ -165,6 +165,7 @@ def register_tools(tool, run):
             lambda auth: get_conversation(
                 conversation_id=conversation_id, last=0, auth=auth
             ),
+            write=True,
         )
 
     @tool("messages:write", title="Find message recipients")
@@ -192,6 +193,7 @@ def register_tools(tool, run):
             lambda auth: send_message(
                 recipients=recipients, subject=subject, body=body, auth=auth
             ),
+            write=True,
         )
 
     @tool("messages:write", write=True, title="Reply to a message")
@@ -204,6 +206,7 @@ def register_tools(tool, run):
             lambda auth: reply_message(
                 conversation_id=conversation_id, body=body, to="all", auth=auth
             ),
+            write=True,
         )
 
     @tool("schoolwork:write", write=True, title="Change homework completion")
@@ -218,6 +221,7 @@ def register_tools(tool, run):
             lambda auth: meinunterricht_homework_done(
                 course_id=course_id, entry_id=entry_id, done=done, auth=auth
             ),
+            write=True,
         )
 
     @tool("files:read", title="Browse files")
@@ -322,7 +326,7 @@ def register_tools(tool, run):
                 auth=auth,
             )
 
-        return await run("submissions:write", upload)
+        return await run("submissions:write", upload, write=True)
 
     @tool(
         "submissions:write",
@@ -349,6 +353,7 @@ def register_tools(tool, run):
                 password=None,
                 auth=auth,
             ),
+            write=True,
         )
 
     @tool("elections:read", title="List elections")
@@ -388,6 +393,7 @@ def register_tools(tool, run):
             lambda auth: submit_wahlen(
                 election_id=election_id, payload=payload, auth=auth
             ),
+            write=True,
         )
 
     @tool("preferences:read", title="Read LANIS preferences")
@@ -408,6 +414,7 @@ def register_tools(tool, run):
         return await run(
             "preferences:write",
             lambda auth: update_account_preferences(payload=payload, auth=auth),
+            write=True,
         )
 
     @tool("timetable:write", write=True, title="Edit a recurring weekly lesson")
@@ -467,4 +474,4 @@ def register_tools(tool, run):
             await sessions.invalidate_endpoint_cache(auth.user_id, "/stundenplan")
             return {"success": True, "lesson": saved}
 
-        return await run("timetable:write", update)
+        return await run("timetable:write", update, write=True)

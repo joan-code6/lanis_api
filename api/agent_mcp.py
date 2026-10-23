@@ -97,7 +97,16 @@ async def identity(scope=None):
     return grant
 
 
-async def run(scope, fn):
+def write_outcome_unknown():
+    """An upstream failure cannot prove that a requested mutation did not happen."""
+    return {
+        "success": False,
+        "error": "OUTCOME_UNKNOWN",
+        "next_step": "Check the result in LANIS before retrying. Do not automatically repeat this write; it may already have succeeded.",
+    }
+
+
+async def run(scope, fn, *, write=False):
     grant = await identity(scope)
     if not await store.rate_limit("tool:" + grant["id"], 120, 60):
         return {
@@ -148,12 +157,16 @@ async def run(scope, fn):
                     "details": exc.detail,
                     "next_step": "Correct the request using these details. Do not retry unchanged.",
                 }
+            if write:
+                return write_outcome_unknown()
             return {
                 "success": False,
                 "error": "SCHOOL_UNAVAILABLE",
                 "next_step": "School data could not be loaded. Retry later; do not infer that there are no entries.",
             }
         except Exception:  # noqa: BLE001 -- upstream failures must not expose session internals
+            if write:
+                return write_outcome_unknown()
             return {
                 "success": False,
                 "error": "SCHOOL_UNAVAILABLE",
