@@ -88,6 +88,12 @@ def main():
         parser.error(
             "Deployed authorization metadata must advertise this issuer’s dynamic registration endpoint."
         )
+    for field, path in (
+        ("authorization_endpoint", "/oauth/authorize"),
+        ("token_endpoint", "/oauth/token"),
+    ):
+        if metadata.get(field) != issuer + path:
+            parser.error(f"Deployed authorization metadata has an invalid {field}.")
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "plugins/lanis/plugin.json").read_text())
     assert (

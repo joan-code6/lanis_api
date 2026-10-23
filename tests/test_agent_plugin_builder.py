@@ -24,6 +24,8 @@ import pytest
         "metadata-list",
         "null-servers",
         "null-pkce",
+        "missing-authorize",
+        "foreign-token",
     ],
 )
 def test_source_archive_has_rooted_brand_assets_and_explains_installation(
@@ -39,6 +41,8 @@ def test_source_archive_has_rooted_brand_assets_and_explains_installation(
     resource = {"resource": issuer + "/mcp", "authorization_servers": [issuer]}
     metadata = {
         "issuer": issuer,
+        "authorization_endpoint": issuer + "/oauth/authorize",
+        "token_endpoint": issuer + "/oauth/token",
         "code_challenge_methods_supported": ["S256"],
         "scopes_supported": ["schoolwork:read"],
     }
@@ -66,6 +70,10 @@ def test_source_archive_has_rooted_brand_assets_and_explains_installation(
         resource["authorization_servers"] = None
     elif registration == "null-pkce":
         metadata["code_challenge_methods_supported"] = None
+    if registration == "missing-authorize":
+        del metadata["authorization_endpoint"]
+    elif registration == "foreign-token":
+        metadata["token_endpoint"] = "https://other.example/oauth/token"
     calls = []
 
     def get(url, **kwargs):
