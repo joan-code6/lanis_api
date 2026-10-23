@@ -6,6 +6,7 @@ import hashlib
 import os
 import secrets
 import time
+from urllib.parse import urlsplit
 
 import aiosqlite
 from fastapi import HTTPException
@@ -18,7 +19,6 @@ LAUNCH_SECONDS = 45
 SESSION_SECONDS = 15 * 60
 # Explicit allowlist: new routes are unavailable until reviewed for side effects.
 READ_PATHS = {
-    "/apps",
     "/modules",
     "/benutzer",
     "/kalender",
@@ -34,7 +34,6 @@ READ_PATHS = {
     "/lerngruppen",
     "/meinunterricht",
     "/meinunterricht/attendance",
-    "/meinunterricht/entry",
     "/meinunterricht/weekly",
     "/dateispeicher",
     "/dateispeicher/search",
@@ -45,6 +44,68 @@ READ_PATHS = {
     "/notifications/vertretungsplan/options",
     "/cache/status",
 }
+
+
+# Only canonical native module paths can be returned as navigational hints.
+# External app names remain visible, but no launch URL/capability is exposed.
+_NATIVE_MODULE_PATHS = frozenset(
+    {
+        "/kalender.php",
+        "/nachrichten.php",
+        "/meinunterricht.php",
+        "/vertretungsplan.php",
+        "/stundenplan.php",
+        "/dateispeicher.php",
+        "/dateiverteilung.php",
+        "/lerngruppen.php",
+        "/benutzerverwaltung.php",
+        "/oberstufenwahl.php",
+        "/videokonferenz.php",
+    }
+)
+
+
+def fetch_modules(client) -> dict:
+    """Build fresh preview metadata without resolving or caching launch links."""
+    apps = client.get_apps()
+    if not apps.get("success"):
+        # Upstream errors may contain authenticated URLs. Do not reflect them.
+        return {
+            "success": False,
+            "error": "Preview modules are unavailable",
+            "modules": [],
+        }
+    modules = client.get_available_modules(apps, resolve_links=False)
+    base = urlsplit(client.BASE_START_URL)
+    safe_modules = []
+    for module in modules:
+        link = urlsplit(module.get("url") or "")
+        native_path = "/" + link.path.lstrip("/")
+        native = (
+            link.scheme == base.scheme
+            and link.netloc == base.netloc
+            and native_path in _NATIVE_MODULE_PATHS
+        )
+        url = f"{base.scheme}://{base.netloc}{native_path}" if native else ""
+        safe_modules.append(
+            {
+                "name": module.get("name") or "",
+                "url": url,
+                "direct_url": "",
+                "proxy_app": False,
+                "color": module.get("color") or "",
+                "logo": module.get("logo") or "",
+                "folders": [
+                    folder
+                    for folder in module.get("folders", [])
+                    if isinstance(folder, str)
+                ],
+                "target": "_self",
+                "usable": bool(native and module.get("usable")),
+                "usage": module.get("usage", []) if native else [],
+            }
+        )
+    return {"success": True, "modules": safe_modules}
 
 
 def enabled() -> bool:

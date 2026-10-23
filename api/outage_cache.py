@@ -261,6 +261,12 @@ class OutageCacheRoute(APIRoute):
                 return await original(request)
             identity = await local_auth_dependency(token)
             request.state.lanis_auth = identity
+            if getattr(identity, 'impersonation_id', ''):
+                # Normal snapshots may contain external login capabilities.
+                # Preview responses must neither consume nor replace them.
+                response = await original(request)
+                response.headers['Cache-Control'] = 'private, no-store'
+                return response
             key = (
                 identity.user_id,
                 request.url.path,

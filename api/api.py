@@ -1960,6 +1960,9 @@ async def get_apps(
 async def get_modules(
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
+    if auth.impersonation_id:
+        # Never resolve login callbacks, read normal caches or enqueue their refresh.
+        return await run_in_threadpool(impersonation.fetch_modules, auth.client)
     cached_data, needs_revalidation = await sessions.get_cached_with_revalidate(
         auth.user_id, "/modules"
     )

@@ -83,7 +83,12 @@ route dispatch, including routes bypassing ordinary account middleware.
 New routes default to denied. Normal account reads remain available, including
 school modules, profile, timetable, calendar, course overview, attendance,
 preferences and file listings. Writes, exports, downloads, election forms,
-video joins and message bodies are denied. Message headers remain visible;
+video joins and message bodies are denied. Raw `/apps` and arbitrary `/meinunterricht/entry` page fetches are also denied.
+Module discovery builds fresh metadata without following or probing launch links;
+it returns only canonical native module paths and no external launch URLs. Both
+normal module caches and outage snapshots are bypassed for previews so existing
+OAuth callbacks cannot leak and preview responses cannot replace normal snapshots.
+Message headers remain visible;
 message bodies are excluded because reading can mark a message as read.
 Dashboard notification aggregation is excluded because it updates persisted
 notification state. Some panels therefore intentionally report unavailability.
