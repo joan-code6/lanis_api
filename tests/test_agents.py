@@ -2053,3 +2053,26 @@ def test_distributed_file_download_uses_bounded_file_pipeline(environment, monke
         assert stream.closed
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "link,allowed",
+    [
+        ("https://START.SCHULPORTAL.HESSEN.DE/videokonferenz.php", True),
+        ("https://start.schulportal.hessen.de:444/videokonferenz.php", False),
+        ("https://user@start.schulportal.hessen.de/videokonferenz.php", False),
+        ("https://start.schulportal.hessen.de.evil.example/videokonferenz.php", False),
+    ],
+)
+def test_module_origin_ignores_host_case_but_not_userinfo_or_port(link, allowed):
+    from types import SimpleNamespace
+
+    from api.agent_mcp import fetch_module_access, module_methods
+
+    portal = SimpleNamespace(
+        BASE_START_URL="https://start.schulportal.hessen.de",
+        get_apps=lambda: {"success": True, "data": {"entrys": [{"link": link}]}},
+    )
+    assert module_methods(fetch_module_access(portal)) == (
+        {"videokonferenz_get_rooms"} if allowed else set()
+    )

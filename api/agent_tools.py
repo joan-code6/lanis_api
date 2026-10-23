@@ -130,7 +130,8 @@ def register_tools(tool, run):
                 link = urlsplit(entry.get("link") or "")
                 local = (
                     not link.netloc
-                    or link.netloc == urlsplit(client.BASE_START_URL).netloc
+                    or link.netloc.lower()
+                    == urlsplit(client.BASE_START_URL).netloc.lower()
                 )
                 path = link.path.rsplit("/", 1)[-1].lower()
                 modules.append(

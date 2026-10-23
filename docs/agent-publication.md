@@ -8,7 +8,7 @@ do not create a duplicate just to upload this package.
 
 - `plugins/lanis/plugin.json`: listing, starter prompts, five positive and three
   negative review cases, initial release notes.
-- `plugins/lanis/assets/icon.png`: existing ruby LANIS mark, 512 × 512 PNG.
+- `plugins/lanis/assets/icon.png`: canonical cyan LANIS mark, 512 × 512 PNG.
 - `scripts/build_agent_plugin.py`: verifies live discovery and builds the ZIP.
 - `tests/test_agent_plugin_builder.py`: validates metadata failure paths, archive
   inventory, icon references and review-case inventory with fake discovery.

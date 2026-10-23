@@ -156,7 +156,10 @@ def fetch_module_access(client):
         # string, or an external app that happens to have the same filename.
         if link.scheme and link.scheme not in ("http", "https"):
             continue
-        if link.netloc and link.netloc != urlsplit(client.BASE_START_URL).netloc:
+        if (
+            link.netloc
+            and link.netloc.lower() != urlsplit(client.BASE_START_URL).netloc.lower()
+        ):
             continue
         module = PORTAL_MODULES.get(link.path.rsplit("/", 1)[-1].lower())
         if module:
