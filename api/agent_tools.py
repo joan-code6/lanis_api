@@ -5,13 +5,64 @@ import binascii
 from io import BytesIO
 from typing import Annotated
 
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import Field
 from starlette.datastructures import Headers
 
 Identifier = Annotated[str, Field(min_length=1, max_length=200)]
 Text = Annotated[str, Field(min_length=1, max_length=5000)]
+
+
+def portal_lesson_defaults(plan, lesson_date, period):
+    """Seed a new override from one unambiguous lesson in the user's raw plan."""
+    from datetime import date
+
+    from .user_overrides import _same_period
+
+    try:
+        weekday = date.fromisoformat(lesson_date).weekday()
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid lesson date") from exc
+    if not plan.get("success"):
+        raise HTTPException(503, "Timetable unavailable; no lesson was changed")
+    days = plan.get("plan_for_own", plan.get("plan_for_all", []))
+    lessons = days[weekday] if isinstance(days, list) and weekday < len(days) else []
+    matches = (
+        [
+            lesson
+            for lesson in lessons
+            if isinstance(lesson, dict) and _same_period(lesson, period)
+        ]
+        if isinstance(lessons, list)
+        else []
+    )
+    if len(matches) > 1:
+        raise HTTPException(
+            422, "Multiple lessons occupy this period. Edit this lesson in LANIS."
+        )
+    if not matches:
+        return {}
+    lesson = matches[0]
+
+    def clock(value):
+        if isinstance(value, dict):
+            return f"{int(value['hour']):02d}:{int(value['minute']):02d}"
+        return str(value or "")
+
+    return {
+        "subject": lesson.get("name") or "",
+        **{
+            key: lesson.get(key) or ""
+            for key in ("teacher", "room", "class_name", "info")
+        },
+        "start_time": clock(lesson.get("start_time")),
+        "end_time": clock(lesson.get("end_time")),
+        "duration": lesson.get("duration") or 1,
+        "week_type": lesson.get("badge") or None,
+        "course_id": lesson.get("course_id") or None,
+        "removed": False,
+    }
 
 
 def download_file(client, file_id):
@@ -370,7 +421,7 @@ def register_tools(tool, run):
         import re
 
         from .api import CustomLessonRequest, _validate_custom_lesson, sessions
-        from .auth_db import save_custom_lesson
+        from .auth_db import get_custom_lessons, save_custom_lesson
 
         async def update(auth):
             # Match the storage key after normalizing period ranges.
@@ -380,6 +431,13 @@ def register_tools(tool, run):
                 start = int(match.group(1))
                 end = int(match.group(2) or start)
                 key = str(start) if start == end else f"{start}–{end}"
+            defaults = {}
+            if not any(
+                lesson["date"] == date and lesson["period"] == key
+                for lesson in await get_custom_lessons(auth.user_id)
+            ):
+                plan = await run_in_threadpool(auth.client.stundenplan_get_plan)
+                defaults = portal_lesson_defaults(plan, date, key)
             changes = {
                 name: value
                 for name, value in {
@@ -393,6 +451,7 @@ def register_tools(tool, run):
             saved = await save_custom_lesson(
                 auth.user_id,
                 {"date": date, "period": key, **changes},
+                defaults=defaults,
                 merge_and_validate=lambda values: _validate_custom_lesson(
                     CustomLessonRequest(**values)
                 ),

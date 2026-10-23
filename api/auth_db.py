@@ -2063,7 +2063,11 @@ async def get_custom_lessons(user_id: str) -> List[Dict[str, Any]]:
 
 
 async def save_custom_lesson(
-    user_id: str, lesson: Dict[str, Any], *, merge_and_validate=None
+    user_id: str,
+    lesson: Dict[str, Any],
+    *,
+    merge_and_validate=None,
+    defaults=None,
 ) -> Dict[str, Any]:
     """Save an override; an optional synchronous validator merges a patch atomically.
 
@@ -2081,7 +2085,7 @@ async def save_custom_lesson(
                     (user_id, lesson["date"], lesson["period"]),
                 ) as cursor:
                     row = await cursor.fetchone()
-                existing = _custom_lesson_from_row(row) if row else {}
+                existing = _custom_lesson_from_row(row) if row else (defaults or {})
                 lesson = merge_and_validate({**existing, **lesson})
             values = {
                 "date": str(lesson.get("date") or ""),

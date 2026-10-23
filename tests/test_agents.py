@@ -1152,3 +1152,67 @@ assert 'https://dotenv-api.example/.well-known/oauth-protected-resource/mcp' in 
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_first_agent_lesson_edit_preserves_portal_details(environment, monkeypatch):
+    from types import SimpleNamespace
+
+    from api import agent_mcp
+
+    async def scenario():
+        async def identity(scope=None):
+            return {
+                "id": "first-edit",
+                "user_id": "5201:alice",
+                "scopes": ["timetable:write"],
+            }
+
+        original = {
+            "stunde": 1,
+            "name": "Math",
+            "teacher": "Teacher",
+            "room": "Old",
+            "duration": 2,
+            "start_time": {"hour": 8, "minute": 0},
+            "end_time": {"hour": 9, "minute": 30},
+            "info": "Notes",
+            "class_name": "9A",
+            "course_id": "42",
+            "badge": "A",
+        }
+        plan = {"success": True, "plan_for_own": [[original]]}
+
+        async def session(_user):
+            return SimpleNamespace(
+                client=SimpleNamespace(stundenplan_get_plan=lambda: plan)
+            )
+
+        monkeypatch.setattr(agent_mcp, "identity", identity)
+        monkeypatch.setattr(
+            api_module.sessions, "_get_or_create_schulportal_client", session
+        )
+        edit = mcp._tool_manager.get_tool("lanis_update_lesson")
+        result = await edit.fn(date="2026-10-19", period="1", room="New")
+        assert result["success"] is True, result
+        saved = result["lesson"]
+        for key, expected in {
+            "subject": "Math",
+            "teacher": "Teacher",
+            "room": "New",
+            "duration": 2,
+            "start_time": "08:00",
+            "end_time": "09:30",
+            "course_id": "42",
+            "info": "Notes",
+            "week_type": "A",
+        }.items():
+            assert saved[key] == expected
+        assert original["room"] == "Old"
+        # The same first-time edit is safe for another user; no overrides are shared.
+        assert await auth_db.get_custom_lessons("5201:bob") == []
+        plan["plan_for_own"] = [[original, dict(original, name="Other")]]
+        ambiguous = await edit.fn(date="2026-10-26", period="1", teacher="Changed")
+        assert ambiguous["error"] == "INVALID_REQUEST"
+        assert len(await auth_db.get_custom_lessons("5201:alice")) == 1
+
+    asyncio.run(scenario())
