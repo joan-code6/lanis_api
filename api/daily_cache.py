@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import re
 from contextvars import ContextVar
 from datetime import datetime, time, timedelta
 from urllib.parse import quote, urlsplit
@@ -38,10 +40,16 @@ BASE_PATHS = (
 
 
 def next_run(now):
-    """Return the next 03:00 Berlin wall-clock run, including DST changes."""
-    target = datetime.combine(now.date(), time(3), ZONE)
+    """Return the next configured Berlin wall-clock run, including DST changes."""
+    configured = os.getenv("LANIS_DAILY_CACHE_TIME", "03:00").strip()
+    if not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", configured):
+        logger.warning("Invalid LANIS_DAILY_CACHE_TIME; expected HH:MM, using 03:00")
+        configured = "03:00"
+    hour, minute = map(int, configured.split(":"))
+    scheduled = time(hour, minute)
+    target = datetime.combine(now.date(), scheduled, ZONE)
     if target <= now:
-        target = datetime.combine(now.date() + timedelta(days=1), time(3), ZONE)
+        target = datetime.combine(now.date() + timedelta(days=1), scheduled, ZONE)
     return target
 
 
@@ -294,4 +302,6 @@ async def run_daily_cache():
             if attempt + 1 < MAX_BATCH_ATTEMPTS:
                 await asyncio.sleep(15 * 60)
         else:
-            logger.warning("Daily cache retry budget exhausted; resuming at next 03:00")
+            logger.warning(
+                "Daily cache retry budget exhausted; resuming at next scheduled run"
+            )

@@ -6,8 +6,9 @@ import pytest
 from api import daily_cache, outage_cache
 
 
-def test_next_run_uses_berlin_wall_clock_across_dst():
+def test_next_run_uses_berlin_wall_clock_across_dst(monkeypatch):
     """Verify next run uses berlin wall clock across dst."""
+    monkeypatch.delenv("LANIS_DAILY_CACHE_TIME", raising=False)
     for day in (
         datetime(2026, 3, 28, 4, tzinfo=daily_cache.ZONE),
         datetime(2026, 10, 24, 4, tzinfo=daily_cache.ZONE),
@@ -16,6 +17,30 @@ def test_next_run_uses_berlin_wall_clock_across_dst():
         assert target.date() == day.date() + timedelta(days=1)
         assert target.hour == 3
         assert target.timestamp() > day.timestamp()
+
+
+@pytest.mark.parametrize("configured", ["00:00", "04:45", "23:59"])
+def test_daily_schedule_uses_configured_time(monkeypatch, configured):
+    """Honor configured hours and minutes and advance after today's run."""
+    monkeypatch.setenv("LANIS_DAILY_CACHE_TIME", configured)
+    hour, minute = map(int, configured.split(":"))
+    before = datetime(2026, 10, 23, tzinfo=daily_cache.ZONE)
+    expected = before.replace(hour=hour, minute=minute)
+    if expected == before:
+        expected += timedelta(days=1)
+    assert daily_cache.next_run(before) == expected
+    assert daily_cache.next_run(expected) == expected + timedelta(days=1)
+
+
+@pytest.mark.parametrize("configured", ["24:00", "03:60", "3:00", "", "noon"])
+def test_invalid_daily_schedule_falls_back_with_warning(
+    monkeypatch, caplog, configured
+):
+    """Keep sync scheduled with a visible warning for malformed configuration."""
+    monkeypatch.setenv("LANIS_DAILY_CACHE_TIME", configured)
+    now = datetime(2026, 10, 23, tzinfo=daily_cache.ZONE)
+    assert daily_cache.next_run(now) == now.replace(hour=3)
+    assert "Invalid LANIS_DAILY_CACHE_TIME" in caplog.text
 
 
 def test_outage_or_unknown_status_skips_all_users(monkeypatch):

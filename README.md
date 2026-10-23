@@ -199,8 +199,12 @@ latest successful cached read; it is not a complete account synchronization.
 
 ### Daily outage snapshots
 
-The API warms read-only user views daily starting at **03:00 Europe/Berlin**
-(including daylight saving changes). It processes one valid stored session per
+The API warms read-only user views daily starting at **03:00 Europe/Berlin** by default.
+Set `LANIS_DAILY_CACHE_TIME=04:30` in `.env` to choose another start time
+(24-hour `HH:MM`, always Europe/Berlin). Restart the API after changing `.env`.
+Invalid values log a warning and fall back to `03:00`.
+
+The schedule follows daylight saving changes. It processes one valid stored session per
 user, sequentially, and refreshes the standard profile, modules, calendar,
 substitution plan, timetable, courses, attendance, homework/submissions and
 message headers. Supported file-storage folder trees, file-distribution lists,
