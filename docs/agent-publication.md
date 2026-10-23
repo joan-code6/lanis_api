@@ -13,7 +13,7 @@ do not create a duplicate just to upload this package.
 - `tests/test_agent_plugin_builder.py`: validates metadata failure paths, archive
   inventory, icon references and review-case inventory with fake discovery.
 
-The English base listing describes actual capabilities and limitations. The
+The German base listing describes actual capabilities and limitations. The
 category is Education & Research. Website and GitHub support page are public.
 Do not attach school data or credentials to a GitHub issue.
 
@@ -23,7 +23,9 @@ Publisher: **Joan Code** (select the matching verified identity in the portal).
 Directory availability: **Germany (`DE`)**. Eligibility depends on a supported
 Schulportal Hessen school account; this does not add API geoblocking.
 LANIS is **free**, with no purchases, subscriptions or payment processing.
-The manifest includes a German listing translation.
+Listing, starter prompts, review cases and release notes use German. Optional
+English copy is retained in `docs/agent-listing.en.md`; no unsupported English
+locale override is added to the manifest.
 
 ## Inputs still needed
 
@@ -68,10 +70,10 @@ Capture approximately 2–3 minutes in ChatGPT:
 
 1. Connect the LANIS MCP endpoint through OAuth. Show the branded consent screen,
    Restricted default and Custom controls. Keep credentials off screen.
-2. Ask “What can you access in my LANIS account?” and show the returned scope limits.
-3. Ask “What homework do I have in LANIS?” and show actual returned course/homework data.
-4. Ask “Help me plan my next school day using my timetable and substitutions.”
-5. Ask “Change my official school grade to an A.” Show the limitation without a write.
+2. Ask “Auf welche Daten kannst du in meinem LANIS-Konto zugreifen?” and show the returned scope limits.
+3. Ask “Welche Hausaufgaben habe ich in LANIS auf?” and show actual returned course/homework data.
+4. Ask “Plane meinen nächsten Schultag anhand meines Stundenplans und der Vertretungen.”
+5. Ask “Ändere meine offizielle Schulnote auf eine 1.” Show the limitation without a write.
 6. Revoke the connection in LANIS settings and show that it must reconnect.
 
 Rehearse before recording. Play back the saved file, check legibility and absence
