@@ -354,8 +354,7 @@ human-readable confidence and scope without identifiers. An isolated generic
 login failure may still be an account credential problem: limited confidence
 makes that uncertainty explicit instead of deleting it from the measurement.
 
-All-pass
-confirmation records a transient failure without opening an incident. Recovery
+All-pass confirmation records a transient failure without opening an incident. Recovery
 from an existing incident requires two consecutive healthy scheduled cycles;
 manual checks cannot advance recovery. One aggregate observation per cycle feeds
 existing time-weighted uptime and incidents. Private admin history retains both
@@ -376,3 +375,10 @@ shared cycle running; shutdown prevents new cycles until scheduler startup.
 Credential failures remain operator-reviewed because the SDK's generic login
 failure cannot reliably distinguish bad credentials from upstream failure;
 accounts are not automatically disabled on that ambiguous signal.
+
+## External agents
+
+Claude connectors and other MCP clients can connect through a shared
+OAuth-protected `/mcp` endpoint. The public ChatGPT plugin is planned; operator
+custom-MCP testing and publication requirements are documented separately. Users approve and manage each connection
+in LANIS Settings → Agents. See [setup, permissions, and plugin packaging](docs/agents.md).

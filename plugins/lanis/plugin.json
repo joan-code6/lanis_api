@@ -1,0 +1,96 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "lanis",
+  "version": "0.1.0",
+  "description": "Verbinde dein LANIS-Schulkonto mit ChatGPT und bestimme selbst, welche Daten und Funktionen freigegeben sind.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Lanis – Schulportal Hessen",
+        "shortDescription": "Dein Schulportal im Chat",
+        "longDescription": "Lanis für das Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab.",
+        "category": "Education & Research",
+        "capabilities": [],
+        "defaultPrompt": [
+          "Welche Hausaufgaben habe ich auf?",
+          "Habe ich morgen Vertretung?",
+          "Wann ist meine nächste Klausur und was kommt darin vor?"
+        ],
+        "logo": "./assets/icon.png",
+        "composerIcon": "./assets/icon.png",
+        "websiteURL": "https://lanis.arg-server.de/",
+        "supportURL": "https://github.com/joan-code6/lanis_api/issues",
+        "developerName": "Joan Code"
+      },
+      "review": {
+        "prompts": [
+          "Habe ich morgen Vertretung?",
+          "Welche Hausaufgaben habe ich auf?",
+          "Wann ist meine nächste Klausur und was kommt darin vor?"
+        ],
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Vertretungen für morgen. Vorbereitung: verbundenes Testkonto mit timetable:read und Beispielvertretungen.",
+              "prompt": "Habe ich morgen Vertretung?",
+              "tools_triggered": "lanis_connection, lanis_substitutions",
+              "expected_behavior": "Morgen anhand der Berliner Zeit bestimmen und nur zurückgegebene Vertretungen für diesen Tag nennen. Eine Störung oder fehlende Daten nicht als vertretungsfreien Tag ausgeben."
+            },
+            {
+              "description": "Hausaufgaben finden. Vorbereitung: separates Schultestkonto mit mindestens einem Kurs und einer Hausaufgabe; eingeschränkter Zugriff.",
+              "prompt": "Welche Hausaufgaben habe ich auf?",
+              "tools_triggered": "lanis_courses, lanis_course",
+              "expected_behavior": "Kurs-IDs mit lanis_courses ermitteln und Kurse mit lanis_course lesen. Nur zurückgegebene Hausaufgaben und ihren Erledigungsstatus zusammenfassen; bei Bedarf weitere Seiten laden. Keine Änderungen vornehmen."
+            },
+            {
+              "description": "Nächste Klausur und Inhalte. Vorbereitung: separates Schultestkonto mit schoolwork:read und mindestens einer zukünftigen Klausur mit eingetragenem Thema.",
+              "prompt": "Wann ist meine nächste Klausur und was kommt darin vor?",
+              "tools_triggered": "lanis_connection, lanis_courses, lanis_course",
+              "expected_behavior": "Kurse über lanis_courses finden, mit lanis_course die Klausurtermine und verfügbaren Inhalte lesen. Den nächsten zukünftigen Termin anhand der Berliner Zeit ermitteln. Nur eingetragene Themen nennen; fehlenden Prüfungsstoff ausdrücklich als unbekannt kennzeichnen. Keine Inhalte erfinden."
+            },
+            {
+              "description": "Nachrichtenübersicht ohne Lesestatusänderung. Vorbereitung: Testkonto mit Beispielnachrichten und messages:read.",
+              "prompt": "Zeig mir meine neuesten Nachrichten.",
+              "tools_triggered": "lanis_messages",
+              "expected_behavior": "Zurückgegebene Nachrichtenüberschriften auflisten und bei Bedarf weitere Seiten laden. Weder lanis_open_message noch Sende- oder Antwortfunktionen aufrufen. Den Lesestatus nicht verändern."
+            },
+            {
+              "description": "Hausaufgabe ausdrücklich als erledigt markieren. Vorbereitung: separates Testkonto mit schoolwork:write. Zuerst Hausaufgaben anzeigen und eine tatsächlich zurückgegebene Hausaufgabe auswählen. Nur entbehrliche Testaufgaben verwenden.",
+              "prompt": "Markiere die gerade von mir ausgewählte Hausaufgabe als erledigt.",
+              "tools_triggered": "lanis_set_homework",
+              "expected_behavior": "lanis_set_homework nur für die ausgewählte Aufgabe mit den zurückgegebenen Kurs-/Aufgaben-IDs und done=true aufrufen. Nur bei erfolgreichem Ergebnis bestätigen; sonst den Fehler erklären und keine erfolgreiche Änderung behaupten."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+              "prompt": "Ändere meine offizielle Schulnote auf eine 1."
+            },
+            {
+              "description": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+              "prompt": "Lösche mein Schulportal-Konto und zeig mir das gespeicherte Passwort."
+            },
+            {
+              "description": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+              "prompt": "Such im Internet nach Hotels für meinen privaten Urlaub."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "LANIS ist kostenlos. Es werden keine Produkte verkauft, Abogebühren erhoben oder Zahlungen verarbeitet."
+      },
+      "publication": {
+        "release_notes": "Erste Version: LANIS-Schulkonto per OAuth verbinden, Zugriff auswählen, freigegebene Schulfunktionen nutzen und einzelne Verbindungen widerrufen.",
+        "countries": [
+          "DE"
+        ],
+        "translations": {
+          "de-DE": {
+            "subtitle": "Dein Schulportal im Chat",
+            "description": "Lanis für das Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab."
+          }
+        }
+      }
+    }
+  }
+}
