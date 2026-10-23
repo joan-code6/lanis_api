@@ -362,8 +362,12 @@ async def initialize() -> None:
         await db.execute(
             "CREATE TABLE IF NOT EXISTS message_body_receipts ("
             "user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, body_hash TEXT NOT NULL, "
+            "observed_hash TEXT, "
             "PRIMARY KEY (user_id, conversation_id))"
         )
+        receipt_columns = await (await db.execute("PRAGMA table_info(message_body_receipts)")).fetchall()
+        if "observed_hash" not in {row[1] for row in receipt_columns}:
+            await db.execute("ALTER TABLE message_body_receipts ADD COLUMN observed_hash TEXT")
         await db.execute(
             "CREATE TABLE IF NOT EXISTS outage_snapshot_revocations ("
             "user_id TEXT PRIMARY KEY, revoked_at TEXT NOT NULL)"
@@ -1636,7 +1640,7 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
             (user_id,),
         )).fetchall()]
         body_receipts = [dict(row) for row in await (await db.execute(
-            "SELECT conversation_id, body_hash FROM message_body_receipts WHERE user_id = ?",
+            "SELECT conversation_id, body_hash, observed_hash FROM message_body_receipts WHERE user_id = ?",
             (user_id,),
         )).fetchall()]
     return {

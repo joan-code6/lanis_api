@@ -106,13 +106,31 @@ async def record_body(user_id, identifier, result, *, background, activity):
                 )
         else:
             await db.execute(
-                "INSERT OR REPLACE INTO message_body_receipts VALUES (?, ?, ?)",
+                "INSERT INTO message_body_receipts (user_id, conversation_id, body_hash) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id, conversation_id) DO UPDATE SET body_hash = excluded.body_hash",
                 (user_id, identifier, digest),
             )
+        await db.execute(
+            "INSERT INTO message_body_receipts VALUES (?, ?, '', ?) "
+            "ON CONFLICT(user_id, conversation_id) DO UPDATE SET observed_hash = excluded.observed_hash",
+            (user_id, identifier, digest),
+        )
         await db.commit()
 
 
-async def mark_opened(user_id, identifier, *, expected_activity=...):
+async def observed_body(user_id, identifier):
+    """Capture the last synchronized body eligible for an explicit acknowledgement."""
+    async with auth_db._lock, aiosqlite.connect(auth_db.DB_PATH) as db:
+        row = await (
+            await db.execute(
+                "SELECT observed_hash FROM message_body_receipts WHERE user_id = ? AND conversation_id = ?",
+                (user_id, identifier),
+            )
+        ).fetchone()
+    return row[0] if row else None
+
+
+async def mark_opened(user_id, identifier, *, expected_activity=..., body_hash=None):
     """Clear a preserved unread flag only for an interactive LANIS read."""
     async with auth_db._lock, aiosqlite.connect(auth_db.DB_PATH) as db:
         sql = "UPDATE message_read_overrides SET unread = 0 WHERE user_id = ? AND conversation_id = ?"
@@ -120,5 +138,10 @@ async def mark_opened(user_id, identifier, *, expected_activity=...):
         if expected_activity is not ...:
             sql += " AND signature = ?"
             params += (expected_activity,)
-        await db.execute(sql, params)
+        updated = await db.execute(sql, params)
+        if body_hash is not None and updated.rowcount:
+            await db.execute(
+                "UPDATE message_body_receipts SET body_hash = ? WHERE user_id = ? AND conversation_id = ?",
+                (body_hash, user_id, identifier),
+            )
         await db.commit()

@@ -201,6 +201,40 @@ def test_reply_arriving_inside_body_fetch_is_preserved_without_header_change(sta
     asyncio.run(scenario())
 
 
+def test_explicit_mark_read_acknowledges_synchronized_body(state):
+    async def scenario():
+        headers = {"success": True, "conversations": [{"id": "c", "unread": 1}]}
+        body = {"success": True, "messages": [{"content": "synchronized"}]}
+        await message_read_state.overlay_headers("a", headers, preserve=True)
+        await message_read_state.record_body(
+            "a", "c", body, background=True, activity=None
+        )
+        auth = SimpleNamespace(
+            user_id="a",
+            client=SimpleNamespace(nachrichten_mark_read=lambda _: {"success": True}),
+        )
+        assert (await api_module.mark_read("c", auth=auth))["success"]
+        for _ in range(2):
+            await message_read_state.record_body(
+                "a", "c", body, background=True, activity=None
+            )
+            assert (await message_read_state.overlay_headers("a", headers))[
+                "conversations"
+            ][0]["unread"] == 0
+        changed = {
+            "success": True,
+            "messages": [{"content": "synchronized"}, {"content": "reply"}],
+        }
+        await message_read_state.record_body(
+            "a", "c", changed, background=True, activity=None
+        )
+        assert (await message_read_state.overlay_headers("a", headers))[
+            "conversations"
+        ][0]["unread"] == 1
+
+    asyncio.run(scenario())
+
+
 def test_successful_sync_recovers_despite_lifetime_evictions(state, monkeypatch):
     store = outage_cache.SnapshotStore()
     store.user_evictions["a"] = 3

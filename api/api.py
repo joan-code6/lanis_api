@@ -137,7 +137,7 @@ from .auth_db import (
     whatsapp_link_matches_sync,
 )
 from .daily_cache import run_daily_cache, warming
-from .message_read_state import current_activity, mark_opened, overlay_headers, record_body
+from .message_read_state import current_activity, mark_opened, overlay_headers, record_body, observed_body
 from .outage_cache import OutageCacheRoute, snapshots
 from .account_data import (
     AccountDeletionCleanupError,
@@ -3265,11 +3265,14 @@ async def mark_read(
     conversation_id: str = Body(..., description="Conversation uniqid to mark read"),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
+    activity = await current_activity(auth.user_id, conversation_id)
+    body_hash = await observed_body(auth.user_id, conversation_id)
     result = await run_in_threadpool(
         auth.client.nachrichten_mark_read, conversation_id
     )
     if result.get('success'):
-        await mark_opened(auth.user_id, conversation_id)
+        await mark_opened(auth.user_id, conversation_id,
+                          expected_activity=activity, body_hash=body_hash)
     return result
 
 
