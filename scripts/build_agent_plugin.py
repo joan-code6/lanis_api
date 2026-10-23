@@ -67,6 +67,10 @@ def main():
         parser.error(
             "Deployed authorization metadata must advertise this issuer and S256 PKCE."
         )
+    if metadata.get("registration_endpoint") != issuer + "/oauth/register":
+        parser.error(
+            "Deployed authorization metadata must advertise this issuer’s dynamic registration endpoint."
+        )
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "plugins/lanis/plugin.json").read_text())
     assert (

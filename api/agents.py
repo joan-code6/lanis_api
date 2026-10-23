@@ -257,7 +257,13 @@ async def register(body: Registration, request: Request):
     data["client_name"] = body.client_name.strip() or "External agent"
     if any(len(uri) > 2048 for uri in body.redirect_uris):
         return oauth_error("invalid_redirect_uri", "Redirect URI is too long.")
-    data["redirect_uris"] = [validate_redirect(uri) for uri in body.redirect_uris]
+    try:
+        data["redirect_uris"] = [validate_redirect(uri) for uri in body.redirect_uris]
+    except (HTTPException, ValueError):
+        return oauth_error(
+            "invalid_redirect_uri",
+            "Redirect URI must use HTTPS (HTTP is only allowed on loopback).",
+        )
     client_id = secrets.token_urlsafe(24)
     async with store.database(True) as db:
         await store.prune(db)

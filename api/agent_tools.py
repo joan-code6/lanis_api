@@ -385,13 +385,14 @@ def register_tools(tool, run):
             return {"success": False, "error": "CONFIRMATION_REQUIRED"}
         from .api import WahlenSubmissionRequest, submit_wahlen
 
-        payload = WahlenSubmissionRequest(
-            fields=fields, selections=selections, confirm=True
-        )
         return await run(
             "elections:write",
             lambda auth: submit_wahlen(
-                election_id=election_id, payload=payload, auth=auth
+                election_id=election_id,
+                payload=WahlenSubmissionRequest(
+                    fields=fields, selections=selections, confirm=True
+                ),
+                auth=auth,
             ),
             write=True,
         )
@@ -410,10 +411,11 @@ def register_tools(tool, run):
         """Patch personal display preferences using the groups returned by lanis_preferences. Does not change account security or other agents."""
         from .api import UserPreferencesRequest, update_account_preferences
 
-        payload = UserPreferencesRequest(**updates)
         return await run(
             "preferences:write",
-            lambda auth: update_account_preferences(payload=payload, auth=auth),
+            lambda auth: update_account_preferences(
+                payload=UserPreferencesRequest(**updates), auth=auth
+            ),
             write=True,
         )
 

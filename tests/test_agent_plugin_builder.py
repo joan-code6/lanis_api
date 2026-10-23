@@ -6,9 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+import pytest
 
+
+@pytest.mark.parametrize("registration", ["valid", "missing", "foreign"])
 def test_source_archive_has_rooted_brand_assets_and_explains_installation(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, capsys, registration
 ):
     root = Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location(
@@ -23,6 +26,12 @@ def test_source_archive_has_rooted_brand_assets_and_explains_installation(
         "code_challenge_methods_supported": ["S256"],
         "scopes_supported": ["schoolwork:read"],
     }
+    if registration != "missing":
+        metadata["registration_endpoint"] = (
+            issuer + "/oauth/register"
+            if registration == "valid"
+            else "https://other.example/oauth/register"
+        )
     calls = []
 
     def get(url, **kwargs):
@@ -38,6 +47,11 @@ def test_source_archive_has_rooted_brand_assets_and_explains_installation(
     monkeypatch.setattr(
         "sys.argv", ["builder", "--issuer", issuer, "--output", str(output)]
     )
+    if registration != "valid":
+        with pytest.raises(SystemExit):
+            builder.main()
+        assert not output.exists()
+        return
     builder.main()
     assert len(calls) == 2
     with ZipFile(output) as archive:

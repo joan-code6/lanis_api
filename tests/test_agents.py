@@ -1066,8 +1066,11 @@ def test_token_rate_limits_isolate_clients_and_guard_missing_peer(environment):
             request["client_id"] = "other-client"
             assert (await c.post("/oauth/token", data=request)).status_code == 400
             # The independent IP bucket still stops callers rotating client IDs.
-            for _ in range(1998):
-                assert await store.rate_limit("token-ip:unknown", 2000, 60)
+            async with store.database(True) as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO agent_rate_limits VALUES (?,?,?)",
+                    (store.digest("token-ip:unknown"), 2000, time.time() + 60),
+                )
             request["client_id"] = "third-client"
             assert (await c.post("/oauth/token", data=request)).status_code == 429
 
@@ -1118,9 +1121,14 @@ def test_invalid_token_requests_cannot_charge_another_clients_limit(environment)
             )
             assert refresh.status_code == 200
             # Authenticated traffic is still bounded and rejection consumes no code.
-            for _ in range(118):
-                assert await store.rate_limit(
-                    "token-client:" + store.digest(cid), 120, 60
+            async with store.database(True) as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO agent_rate_limits VALUES (?,?,?)",
+                    (
+                        store.digest("token-client:" + store.digest(cid)),
+                        120,
+                        time.time() + 60,
+                    ),
                 )
             retry = await c.post(
                 "/oauth/token",
@@ -1439,5 +1447,81 @@ def test_recurring_lesson_exact_match_and_ambiguous_fallback(environment):
             )
         assert error.value.status_code == 422
         assert await auth_db.get_custom_lessons("5201:alice") == before
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "redirect",
+    [
+        "http://school.example/callback",
+        "javascript:alert(1)",
+        "https://user:pass@example.com/cb",
+        "https://[broken",
+    ],
+)
+def test_registration_invalid_redirect_has_oauth_error(environment, redirect):
+    async def scenario():
+        async with client() as c:
+            result = await c.post("/oauth/register", json={"redirect_uris": [redirect]})
+            assert result.status_code == 400
+            assert result.json()["error"] == "invalid_redirect_uri"
+            assert result.headers["cache-control"] == "no-store"
+
+    asyncio.run(scenario())
+
+
+def test_preferences_validation_runs_after_permission_check(environment, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        identity = AsyncMock(return_value={"id": "test", "user_id": "5201:alice"})
+        monkeypatch.setattr(agent_mcp, "identity", identity)
+        monkeypatch.setattr(
+            api_module.sessions,
+            "_get_or_create_schulportal_client",
+            AsyncMock(return_value=SimpleNamespace(client=None)),
+        )
+        tool = mcp._tool_manager.get_tool("lanis_update_preferences")
+        result = await tool.fn(updates={"appearance": {"theme_mode": "invalid"}})
+        assert result["error"] == "INVALID_REQUEST"
+        identity.assert_awaited_with("preferences:write")
+        identity.side_effect = HTTPException(403, "Not permitted")
+        with pytest.raises(HTTPException) as error:
+            await tool.fn(updates={"appearance": {"theme_mode": "invalid"}})
+        assert error.value.status_code == 403
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_concurrent_credential_redemption_has_single_winner(environment, refresh):
+    async def scenario():
+        async with client() as c:
+            cid, code, _ = await request_grant(c)
+            if refresh:
+                tokens = (await exchange(c, cid, code)).json()
+
+                async def redeem():
+                    return await c.post(
+                        "/oauth/token",
+                        data={
+                            "grant_type": "refresh_token",
+                            "client_id": cid,
+                            "refresh_token": tokens["refresh_token"],
+                        },
+                    )
+            else:
+
+                async def redeem():
+                    return await exchange(c, cid, code)
+
+            responses = await asyncio.gather(redeem(), redeem())
+            assert sorted(r.status_code for r in responses) == [200, 400]
+            winner = next(r for r in responses if r.status_code == 200)
+            assert await agents.authenticate(winner.json()["access_token"]) is None
 
     asyncio.run(scenario())
