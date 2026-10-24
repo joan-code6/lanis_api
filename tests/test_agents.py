@@ -2186,3 +2186,43 @@ def test_module_catalog_recovers_expired_session(environment, monkeypatch):
         invalidate.assert_awaited_once_with("5201:alice", portal)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "status,body,expected",
+    [
+        (302, "", "authentication"),
+        (
+            200,
+            '<form action="/login.php"><input type="password"></form>',
+            "authentication",
+        ),
+        (200, "<h1>Temporary maintenance</h1>", "upstream"),
+    ],
+)
+def test_apps_login_redirect_and_html_are_classified(status, body, expected):
+    from unittest.mock import Mock
+
+    import requests
+
+    from schulportal_hessen.base import SchulportalHessenAPI
+
+    portal = SchulportalHessenAPI()
+    portal.logged_in = True
+    response = requests.Response()
+    response.status_code = status
+    response.url = "https://start.schulportal.hessen.de/startseite.php?a=ajax&f=apps"
+    response.headers["Content-Type"] = "text/html"
+    response.headers["Location"] = "https://login.schulportal.hessen.de/"
+    response._content = body.encode()
+    response.close = Mock()
+    portal.session.get = Mock(return_value=response)
+    try:
+        result = portal.get_apps()
+        assert result["error_kind"] == expected
+        portal.session.get.assert_called_once_with(
+            response.url, allow_redirects=False, timeout=(10, 30)
+        )
+        response.close.assert_called_once()
+    finally:
+        portal.close()

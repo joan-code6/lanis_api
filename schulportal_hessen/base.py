@@ -134,11 +134,38 @@ class SchulportalHessenAPI:
                 "error_kind": "authentication",
             }
 
+        response = None
         try:
             apps_url = f"{self.BASE_START_URL}/startseite.php?a=ajax&f=apps"
 
-            response = self.session.get(apps_url)
+            response = self.session.get(
+                apps_url, allow_redirects=False, timeout=(10, 30)
+            )
+            if 300 <= response.status_code < 400:
+                return {
+                    "success": False,
+                    "error": "Schulportal session redirected",
+                    "error_kind": "authentication",
+                }
             response.raise_for_status()
+            # The apps endpoint returns JSON. Recognize a sign-in response even
+            # if an upstream proxy serves it directly with HTTP 200.
+            from urllib.parse import urlsplit
+
+            from bs4 import BeautifulSoup
+
+            host = (urlsplit(response.url or apps_url).hostname or "").lower()
+            html = "text/html" in response.headers.get("Content-Type", "").lower()
+            if host == "login.schulportal.hessen.de" or (
+                html and BeautifulSoup(response.text, "html.parser").select_one(
+                    "form[action*='login'], input[type='password']"
+                )
+            ):
+                return {
+                    "success": False,
+                    "error": "Schulportal session expired",
+                    "error_kind": "authentication",
+                }
 
             data = response.json()
             return {"success": True, "data": data}
@@ -152,7 +179,14 @@ class SchulportalHessenAPI:
                 else "upstream",
             }
         except json.JSONDecodeError as e:
-            return {"success": False, "error": f"Failed to parse response: {str(e)}"}
+            return {
+                "success": False,
+                "error": f"Failed to parse response: {str(e)}",
+                "error_kind": "upstream",
+            }
+        finally:
+            if response is not None:
+                response.close()
 
     def _resolve_direct_url(self, url: str, timeout: int = 5) -> str:
         """Follow redirects for a URL and return the final destination.
