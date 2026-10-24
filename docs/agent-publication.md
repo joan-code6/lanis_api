@@ -8,7 +8,7 @@ do not create a duplicate just to upload this package.
 
 - `plugins/lanis/plugin.json`: listing, starter prompts, five positive and three
   negative review cases, initial release notes.
-- `plugins/lanis/assets/icon.png`: existing ruby LANIS mark, 512 × 512 PNG.
+- `plugins/lanis/assets/icon.png`: canonical red LANIS mark, 512 × 512 PNG.
 - `scripts/build_agent_plugin.py`: verifies live discovery and builds the ZIP.
 - `tests/test_agent_plugin_builder.py`: validates metadata failure paths, archive
   inventory, icon references and review-case inventory with fake discovery.
@@ -112,3 +112,69 @@ Official references:
 - https://developers.openai.com/plugins/deploy/submission
 - https://developers.openai.com/plugins/deploy/submission-errors
 - https://developers.openai.com/plugins/deploy/app-review
+
+## Connector identity and account capabilities
+
+The MCP server advertises the canonical red LANIS icon from `/agent-icon.png`,
+with a same-origin `/favicon.ico` fallback and the configured LANIS UI website.
+The package uses the same icon. A connector client may cache favicons or ignore
+MCP icons; publishing the metadata does not certify a provider or force a client
+UI refresh. Reconnect/recreate a cached connector when checking new branding.
+
+OAuth dynamic registration supplies a display name; it does not verify ownership
+of that name. Consent always shows the actual callback host. Operators may
+explicitly pin independently verified client identities with
+`LANIS_AGENT_TRUSTED_CLIENTS`, a JSON object keyed by registered client ID:
+
+```json
+{"independently-verified-client-id":{"name":"Claude","redirect_uris":["https://claude.ai/the-exact-registered-callback"]}}
+```
+
+Use the real registered callback, not the illustrative URL above. Verify the
+provider and client ID independently before configuring it. Exact client ID and
+full callback URI must both match; a familiar name or hostname alone never
+establishes verification. Unconfigured clients remain usable without a false
+verification claim. Custom backend operators control their own trust pins.
+
+MCP discovery intersects OAuth scopes with a fresh account app manifest. Each
+portal tool declares its specific module dependency, including different modules
+sharing a scope (e.g. timetable/substitutions and courses/Lerngruppen). Calls
+check the same dependency again under the account lifecycle lease, so cached
+client tool lists cannot bypass access checks. Module discovery failures hide
+portal tools and report unavailable data, rather than implying empty results.
+The manifest is read without opening external apps or following SSO redirects.
+
+`lanis_exams` is the first-choice source for personal Klausuren, Klassenarbeiten
+and Lernkontrollen. It reads the structured Lerngruppen exam list, labels its
+source and sorts by date. The general calendar is not a complete exam schedule;
+missing dates and incomplete coverage must not be replaced with guesses.
+
+### Module coverage
+
+| Account module | Agent integration |
+| --- | --- |
+| Mein Unterricht | Courses, homework, completion, grades/attendance with separate scopes, submissions |
+| Lerngruppen | Study groups and dedicated structured exam list |
+| Stundenplan | Timetable and personal recurring lesson edits |
+| Vertretungsplan | Portal substitutions |
+| DSBmobile | School-configured plan, only for the configured school |
+| Kalender | Views, events and individual event details |
+| Nachrichten | Headers, cached reads, explicit opening/mark-read, recipients, send/reply |
+| Dateispeicher | Browse, search and bounded file reads |
+| Dateiverteilung | Overview and bounded download reads |
+| Oberstufenwahl | Election overview, forms and explicit submissions |
+| Videokonferenz | Fresh rooms and personal join links under `meetings:read`; no automatic joining |
+| Benutzerverwaltung | Own-account profile; never operator/admin functions |
+
+`lanis_modules` lists the account's portal app names without opening apps or
+returning potentially signed external URLs. `integrated` describes server support,
+not an OAuth grant: use `lanis_connection.available_tools` for the actual callable
+capabilities. External school apps such as Moodle are listed as accessible but
+without a dedicated integration. This must not be described as missing account
+access. The regression suite compares the backend's supported module registry
+with MCP coverage so a new backend module cannot silently be omitted.
+
+Existing connections must reconnect to approve the new `meetings:read` permission;
+an existing grant never acquires extra permissions automatically. Personal meeting
+join links are sensitive: `meetings:read` is available through Full or an explicit
+Custom selection, and is excluded from Restricted.

@@ -1124,6 +1124,21 @@ app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
 app.router.route_class = OutageCacheRoute
 
 
+@app.get("/agent-icon.png", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+async def agent_icon():
+    """Same-origin LANIS identity for connector clients and favicon discovery."""
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        Path(__file__).resolve().parent / "static/agent-icon.png",
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+
 MAX_DATEISPEICHER_DOWNLOAD_BYTES = 256 * 1024 * 1024
 
 
