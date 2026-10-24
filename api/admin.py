@@ -948,3 +948,49 @@ async def admin_metrics_schools_map(
         },
         "schools": sorted(schools.values(), key=lambda entry: entry["known_users"], reverse=True),
     }
+
+
+@router.get('/analytics/accounts/{account_ref}')
+async def analytics_account_lookup(account_ref: str, principal: AdminPrincipal = Depends(admin_dependency)):
+    from . import analytics_store
+    from fastapi.responses import JSONResponse
+    user_id = await analytics_store.resolve_account(account_ref)
+    if not user_id:
+        raise HTTPException(404, 'Analytics account not found')
+    async with _admin_account_access(principal.user_id, user_id):
+        if await analytics_store.resolve_account(account_ref) != user_id:
+            raise HTTPException(404, 'Analytics account not found')
+        await _record_admin_action(principal.user_id, 'analytics.account.resolve', user_id)
+        return JSONResponse({'account_ref': account_ref, 'user_id': user_id}, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/analytics/diagnostics/{diagnostic_id}')
+async def analytics_diagnostic_lookup(diagnostic_id: str, principal: AdminPrincipal = Depends(admin_dependency)):
+    from . import analytics_store
+    from fastapi.responses import JSONResponse
+    user_id = await analytics_store.diagnostic_owner(diagnostic_id)
+    if not user_id:
+        raise HTTPException(404, 'Diagnostic not found or expired')
+    async with _admin_account_access(principal.user_id, user_id):
+        record = await analytics_store.read_diagnostic(diagnostic_id)
+        if not record:
+            raise HTTPException(404, 'Diagnostic not found or expired')
+        await _record_admin_action(principal.user_id, 'analytics.diagnostic.read', user_id)
+        return JSONResponse(record, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/analytics/requests/{request_id}')
+async def analytics_request_lookup(request_id: str, principal: AdminPrincipal = Depends(admin_dependency)):
+    from . import analytics_store
+    from fastapi.responses import JSONResponse
+    rows = await analytics_store.diagnostics_for_request(request_id)
+    if not rows:
+        raise HTTPException(404, 'Request diagnostic not found or expired')
+    records = []
+    async with _admin_account_access(principal.user_id, *(row['user_id'] for row in rows)):
+        for row in rows:
+            record = await analytics_store.read_diagnostic(row['diagnostic_id'])
+            if record:
+                await _record_admin_action(principal.user_id, 'analytics.request.read', row['user_id'])
+                records.append(record)
+    return JSONResponse({'request_id': request_id, 'diagnostics': records}, headers={'Cache-Control': 'no-store'})
