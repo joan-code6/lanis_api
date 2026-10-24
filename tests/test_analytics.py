@@ -122,6 +122,11 @@ def test_admin_diagnostics_are_authorized_audited_and_request_correlated(tmp_pat
             resolved = await client.get('/admin/analytics/accounts/' + account, headers=headers)
             assert resolved.status_code == 200
             assert resolved.json()['user_id'] == '5201:student'
+            investigated = await client.get('/admin/analytics/users/5201:student', headers=headers)
+            assert investigated.status_code == 200 and 'PRIVATE' not in investigated.text
+            assert investigated.json()['account_ref'] == account
+            quality = await client.get('/admin/analytics/quality', headers=headers)
+            assert quality.status_code == 200 and quality.headers['cache-control'] == 'no-store'
             details = await client.get('/admin/analytics/diagnostics/' + diagnostic, headers=headers)
             assert details.status_code == 200 and details.headers['cache-control'] == 'no-store'
             assert 'PRIVATE' in details.text
