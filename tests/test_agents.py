@@ -659,6 +659,7 @@ def test_presets_are_enforced_on_server_and_custom_is_exact(environment, mode):
                 s in details["presets"]["restricted"]
                 for s in [
                     "grades:read",
+                    "profile:personal:read",
                     "meetings:read",
                     "attendance:read",
                     "messages:mark-read",
@@ -743,6 +744,41 @@ def test_restricted_message_read_never_fetches_or_marks_conversation(
         result = await agent_mcp.lanis_message("conversation-1")
         assert result["error"] == "MESSAGE_NOT_CACHED"
 
+    asyncio.run(scenario())
+
+
+def test_personal_profile_requires_fresh_sensitive_permission(environment, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        # Existing profile:read grants permit module discovery, not personal data.
+        allowed = set(agents.RESTRICTED_SCOPES) | {"profile:read"}
+
+        async def identity(scope=None):
+            if scope and scope not in allowed:
+                raise ValueError("PERMISSION_REQUIRED")
+            return {"id": "test", "user_id": "5201:alice", "scopes": list(allowed)}
+
+        monkeypatch.setattr(agent_mcp, "identity", identity)
+        profile = AsyncMock(return_value={"success": True, "name": "Alice"})
+        monkeypatch.setattr(api_module, "get_user_data", profile)
+        names = {t.name for t in await agent_mcp.permitted_tools()}
+        assert "lanis_modules" in names
+        assert "lanis_profile" not in names
+        tool = mcp._tool_manager.get_tool("lanis_profile")
+        with pytest.raises(ValueError, match="PERMISSION_REQUIRED"):
+            await tool.fn()
+        profile.assert_not_called()
+
+        allowed.add("profile:personal:read")
+        assert "lanis_profile" in {t.name for t in await agent_mcp.permitted_tools()}
+        assert (await tool.fn())["name"] == "Alice"
+        profile.assert_awaited_once()
+
+    assert agents.SCOPES["profile:personal:read"]["sensitive"]
+    assert "profile:personal:read" not in agents.RESTRICTED_SCOPES
     asyncio.run(scenario())
 
 

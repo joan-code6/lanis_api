@@ -220,12 +220,12 @@ def register_tools(tool, run):
             ),
         )
 
-    @tool("profile:read", title="Read school profile")
+    @tool("profile:personal:read", title="Read personal school profile")
     async def lanis_profile() -> dict:
         """Signed-in user’s Schulportal profile, identity and class information. Use to establish which student or class school-wide data applies to. Returns own-account profile data."""
         from .api import get_user_data
 
-        return await run("profile:read", lambda auth: get_user_data(auth=auth))
+        return await run("profile:personal:read", lambda auth: get_user_data(auth=auth))
 
     @tool("schoolwork:read", title="Read study groups")
     async def lanis_study_groups() -> dict:

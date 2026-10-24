@@ -93,9 +93,15 @@ SCOPES = {
         "group": "Wahlen",
     },
     "profile:read": {
-        "title": "Profil lesen",
-        "description": "Schulprofil und Module",
-        "group": "Profil",
+        "title": "Module anzeigen",
+        "description": "Verfügbare Schulmodule",
+        "group": "Module",
+    },
+    "profile:personal:read": {
+        "title": "Persönliches Profil lesen",
+        "description": "Persönliche Schulprofil-, Identitäts- und Klassendaten",
+        "group": "Sensible Daten",
+        "sensitive": True,
     },
     "grades:read": {
         "title": "Noten lesen",

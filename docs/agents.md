@@ -116,9 +116,15 @@ receive more than that set; Full is disabled until the full catalog is requested
 | Files | `files:read` | Browse/search Dateispeicher, read files up to 2 MiB, list distributed files |
 | Submissions | `submissions:read`, `submissions:write` | List/detail, upload files up to 2 MiB, delete submitted files |
 | Elections | `elections:read`, `elections:write` | Discover forms/options; submit confirmed selections |
-| Profile | `profile:read` | School profile |
+| Modules | `profile:read` | Available school modules |
+| Personal profile | `profile:personal:read` | Sensitive school profile, identity and class data; Full or explicit Custom access |
 | Sensitive records | `grades:read`, `attendance:read` | Course marks and attendance (separate opt-ins) |
 | Preferences | `preferences:read`, `preferences:write` | Read/patch personal display preferences |
+
+Personal profile access requires the new `profile:personal:read` scope. Existing
+connections with `profile:read` retain module discovery only and must reconnect
+and approve Full or explicitly select the personal profile permission in Custom
+to read personal profile data. Restricted access excludes this permission.
 
 Schoolwork responses always exclude grades and attendance, even under Full;
 these have their own tools and grants. Timetable reads do not use homework
