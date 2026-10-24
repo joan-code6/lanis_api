@@ -2077,3 +2077,112 @@ def test_module_origin_ignores_host_case_but_not_userinfo_or_port(link, allowed)
     assert module_methods(fetch_module_access(portal)) == (
         {"videokonferenz_get_rooms"} if allowed else set()
     )
+
+
+@pytest.mark.parametrize(
+    "kind,expected,status",
+    [
+        ("authentication", "SCHOOL_SESSION_EXPIRED", 401),
+        ("upstream", "SCHOOL_UNAVAILABLE", 503),
+    ],
+)
+def test_manifest_failure_preserves_session_recovery(
+    environment, monkeypatch, kind, expected, status
+):
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": ["timetable:read"],
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            agent_mcp,
+            "fetch_module_access",
+            lambda _: {"success": False, "error_kind": kind},
+        )
+        invalidate = AsyncMock()
+        monkeypatch.setattr(
+            api_module.sessions, "invalidate_schulportal_client", invalidate
+        )
+        result = await mcp._tool_manager.get_tool("lanis_timetable").fn()
+        assert result["error"] == expected
+        assert invalidate.await_count == (1 if status == 401 else 0)
+        tools, availability = await agent_mcp.available_tools(
+            await agent_mcp.identity()
+        )
+        assert {t.name for t in tools} == {"lanis_connection"}
+        assert availability["error"] == expected
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [(401, "authentication"), (403, "authentication"), (503, "upstream")],
+)
+def test_apps_client_classifies_http_failure(status, expected):
+    from unittest.mock import Mock
+
+    import requests
+
+    from api.agent_mcp import fetch_module_access
+    from schulportal_hessen.base import SchulportalHessenAPI
+
+    portal = SchulportalHessenAPI()
+    portal.logged_in = True
+    response = requests.Response()
+    response.status_code = status
+    portal.session.get = Mock(side_effect=requests.HTTPError(response=response))
+    try:
+        assert fetch_module_access(portal)["error_kind"] == expected
+        portal.logged_in = False
+        assert fetch_module_access(portal)["error_kind"] == "authentication"
+    finally:
+        portal.close()
+
+
+def test_module_catalog_recovers_expired_session(environment, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": ["profile:read"],
+                }
+            ),
+        )
+        portal = SimpleNamespace(
+            get_apps=lambda: {"success": False, "error_kind": "authentication"}
+        )
+        monkeypatch.setattr(
+            api_module.sessions,
+            "_get_or_create_schulportal_client",
+            AsyncMock(return_value=SimpleNamespace(client=portal)),
+        )
+        invalidate = AsyncMock()
+        monkeypatch.setattr(
+            api_module.sessions, "invalidate_schulportal_client", invalidate
+        )
+        result = await mcp._tool_manager.get_tool("lanis_modules").fn()
+        assert result["error"] == "SCHOOL_SESSION_EXPIRED"
+        invalidate.assert_awaited_once_with("5201:alice", portal)
+
+    asyncio.run(scenario())

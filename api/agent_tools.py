@@ -124,7 +124,11 @@ def register_tools(tool, run):
         def read_manifest(client):
             result = client.get_apps()
             if not result.get("success"):
-                return {"success": False, "error": "MODULES_UNAVAILABLE"}
+                return {
+                    "success": False,
+                    "error": "MODULES_UNAVAILABLE",
+                    "error_kind": result.get("error_kind"),
+                }
             modules = []
             for entry in result.get("data", {}).get("entrys", []):
                 link = urlsplit(entry.get("link") or "")

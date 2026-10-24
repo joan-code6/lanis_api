@@ -128,7 +128,11 @@ class SchulportalHessenAPI:
         }}
         """
         if not self.logged_in:
-            return {"success": False, "error": "Not logged in. Please login first."}
+            return {
+                "success": False,
+                "error": "Not logged in. Please login first.",
+                "error_kind": "authentication",
+            }
 
         try:
             apps_url = f"{self.BASE_START_URL}/startseite.php?a=ajax&f=apps"
@@ -140,7 +144,13 @@ class SchulportalHessenAPI:
             return {"success": True, "data": data}
 
         except requests.RequestException as e:
-            return {"success": False, "error": f"Failed to retrieve apps: {str(e)}"}
+            return {
+                "success": False,
+                "error": f"Failed to retrieve apps: {str(e)}",
+                "error_kind": "authentication"
+                if getattr(e.response, "status_code", None) in (401, 403)
+                else "upstream",
+            }
         except json.JSONDecodeError as e:
             return {"success": False, "error": f"Failed to parse response: {str(e)}"}
 

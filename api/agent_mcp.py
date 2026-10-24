@@ -148,7 +148,7 @@ def fetch_module_access(client):
     """Read the account's app manifest without opening every app/SSO redirect."""
     result = client.get_apps()
     if not result.get("success"):
-        return {"success": False}
+        return {"success": False, "error_kind": result.get("error_kind")}
     methods = set()
     for entry in result.get("data", {}).get("entrys", []):
         link = urlsplit(entry.get("link") or "")
@@ -171,7 +171,13 @@ async def account_modules(auth):
     from fastapi.concurrency import run_in_threadpool
 
     # Do not authorize from the dashboard stale-while-revalidate cache.
-    methods = module_methods(await run_in_threadpool(fetch_module_access, auth.client))
+    result = await run_in_threadpool(fetch_module_access, auth.client)
+    if not result.get("success") and result.get("error_kind") == "authentication":
+        from .api import sessions
+
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(401)
+    methods = module_methods(result)
     from .api import _school_dsb_credentials
 
     if _school_dsb_credentials(auth.school_id) is not None:
@@ -270,6 +276,13 @@ async def run(scope, fn, *, write=False):
                 }
             started = True
             result = await fn(auth)
+            if (
+                isinstance(result, dict)
+                and not result.get("success")
+                and result.get("error_kind") == "authentication"
+            ):
+                await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+                raise HTTPException(401)
         except ValidationError as exc:
             return {
                 "success": False,
