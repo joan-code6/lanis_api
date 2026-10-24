@@ -209,3 +209,38 @@ def test_backend_events_require_consent_and_strip_request_contents(tmp_path, mon
             assert props['status'] == 200
 
     asyncio.run(scenario())
+
+
+def test_request_ledger_retention_quality_and_feedback_ownership(tmp_path, monkeypatch):
+    from api import feedback_db
+    monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+    monkeypatch.setattr(feedback_db, 'DB_PATH', tmp_path / 'feedback.db')
+
+    async def scenario():
+        await auth_db.initialize()
+        ids = []
+        for index in range(25):
+            ref = str(__import__('uuid').uuid4()); ids.append(ref)
+            await analytics_store.record_request(f'5201:student{index % 3}', ref, '/messages/{id}', 'GET', 500 if index < 10 else 200, 25)
+        summary = await analytics_store.quality_summary()
+        assert summary['requests'] == 25 and summary['server_failures'] == 10
+        assert summary['affected_accounts'] == 3
+        assert summary['alerts'][0]['kind'] == 'server_failure_rate'
+        context = await analytics_store.validate_support_context('5201:student0', {'release': 'abcdef0', 'page': '/messages', 'request_ids': ids[:3]})
+        assert context['request_ids'] == [ids[0]]
+        report = await feedback_db.create_feedback(category='bug', title='Test', details='Example', page='/messages', submitter_user_id='5201:student0', support_context=context)
+        assert report['support_context'] == context
+        exported = await analytics_store.export_metadata('5201:student0')
+        assert exported['recent_requests'] and 'student' not in str(exported['recent_requests'])
+        async with aiosqlite.connect(auth_db.DB_PATH) as db:
+            await db.execute('UPDATE analytics_requests SET created_at = ?', (int(time.time()) - analytics_store.RETENTION_SECONDS - 1,))
+            await db.commit()
+        assert not await analytics_store.recent_requests('5201:student0')
+        await analytics_store.purge_expired()
+        assert (await analytics_store.quality_summary())['requests'] == 0
+        await analytics_store.record_request('5201:student0', ids[0], '/messages', 'GET', 200, 5)
+        counts = await auth_db.delete_user_data('5201:student0')
+        assert counts['analytics_requests'] == 1
+        assert not await analytics_store.recent_requests('5201:student0')
+
+    asyncio.run(scenario())

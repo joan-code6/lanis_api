@@ -18,6 +18,12 @@ from .identity import canonicalize_user_id
 
 RETENTION_SECONDS = 7 * 24 * 60 * 60
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS analytics_requests (
+    request_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, endpoint TEXT NOT NULL,
+    method TEXT NOT NULL, status INTEGER NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS analytics_requests_owner ON analytics_requests(user_id, created_at);
+CREATE INDEX IF NOT EXISTS analytics_requests_time ON analytics_requests(created_at);
 CREATE TABLE IF NOT EXISTS analytics_accounts (
     user_id TEXT PRIMARY KEY,
     account_ref TEXT NOT NULL UNIQUE,
@@ -81,6 +87,7 @@ async def purge_expired():
     async with auth_db._lock:
         async with aiosqlite.connect(auth_db.DB_PATH) as db:
             await db.execute('DELETE FROM analytics_diagnostics WHERE expires_at <= ?', (int(time.time()),))
+            await db.execute('DELETE FROM analytics_requests WHERE created_at <= ?', (int(time.time()) - RETENTION_SECONDS,))
             await db.commit()
 
 
@@ -129,7 +136,7 @@ async def export_metadata(user_id):
     async with aiosqlite.connect(auth_db.DB_PATH) as db:
         async with db.execute('SELECT account_ref FROM analytics_accounts WHERE user_id = ?', (canonicalize_user_id(user_id),)) as cursor:
             row = await cursor.fetchone()
-    return {'account_ref': row[0] if row else None, 'diagnostics': await diagnostic_metadata(user_id)}
+    return {'account_ref': row[0] if row else None, 'diagnostics': await diagnostic_metadata(user_id), 'recent_requests': await recent_requests(user_id)}
 
 
 async def diagnostic_owner(diagnostic_id):
@@ -143,3 +150,49 @@ async def diagnostics_for_request(request_id):
     async with aiosqlite.connect(auth_db.DB_PATH) as db:
         async with db.execute('SELECT diagnostic_id, user_id FROM analytics_diagnostics WHERE request_id = ? AND expires_at > ? ORDER BY created_at', (request_id, int(time.time()))) as cursor:
             return [dict(diagnostic_id=row[0], user_id=row[1]) for row in await cursor.fetchall()]
+
+
+async def record_request(user_id, request_id, route, method, status, duration_ms):
+    """Bounded seven-day technical ledger for support; never store request contents."""
+    now = int(time.time())
+    async with auth_db._lock:
+        async with aiosqlite.connect(auth_db.DB_PATH) as db:
+            await db.execute('BEGIN IMMEDIATE')
+            await db.execute('DELETE FROM analytics_requests WHERE created_at <= ?', (now - RETENTION_SECONDS,))
+            await db.execute('DELETE FROM analytics_requests WHERE request_id IN (SELECT request_id FROM analytics_requests WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 499)', (canonicalize_user_id(user_id),))
+            await db.execute('DELETE FROM analytics_requests WHERE request_id IN (SELECT request_id FROM analytics_requests ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 49999)')
+            await db.execute('INSERT OR IGNORE INTO analytics_requests VALUES (?, ?, ?, ?, ?, ?, ?)', (request_id, canonicalize_user_id(user_id), route, method, status, duration_ms, now))
+            await db.commit()
+
+
+async def recent_requests(user_id):
+    async with aiosqlite.connect(auth_db.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute('SELECT request_id, endpoint, method, status, duration_ms, created_at FROM analytics_requests WHERE user_id = ? AND created_at > ? ORDER BY created_at DESC, rowid DESC LIMIT 100', (canonicalize_user_id(user_id), int(time.time()) - RETENTION_SECONDS)) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def quality_summary():
+    now = int(time.time())
+    async with aiosqlite.connect(auth_db.DB_PATH) as db:
+        async with db.execute('SELECT COUNT(*), COALESCE(SUM(status >= 500), 0), COUNT(DISTINCT CASE WHEN status >= 500 THEN user_id END) FROM analytics_requests WHERE created_at > ?', (now - 300,)) as cursor:
+            requests, failures, affected = await cursor.fetchone()
+        async with db.execute('SELECT COUNT(*), COUNT(DISTINCT user_id) FROM analytics_diagnostics WHERE created_at > ? AND expires_at > ?', (now - 300, now)) as cursor:
+            diagnostics, diagnostic_accounts = await cursor.fetchone()
+        async with db.execute('SELECT COUNT(*) FROM analytics_accounts') as cursor:
+            linked_accounts = (await cursor.fetchone())[0]
+    alerts = []
+    if requests >= 20 and affected >= 3 and failures / requests >= 0.2:
+        alerts.append({'kind': 'server_failure_rate', 'severity': 'high', 'message': 'Mindestens 20 % der erfassten Anfragen schlagen bei mindestens drei Konten fehl.'})
+    if diagnostics >= 10 and diagnostic_accounts >= 3:
+        alerts.append({'kind': 'diagnostic_burst', 'severity': 'high', 'message': 'Mindestens zehn Fehlerberichte von mindestens drei Konten in fünf Minuten.'})
+    return {'window_seconds': 300, 'requests': requests, 'server_failures': failures, 'affected_accounts': affected,
+            'diagnostics': diagnostics, 'diagnostic_accounts': diagnostic_accounts, 'linked_accounts': linked_accounts,
+            'alerts': alerts, 'coverage': 'Nur einwilligende, authentifizierte Konten; keine Aussage über alle Nutzenden.'}
+
+
+async def validate_support_context(user_id, context):
+    # A user cannot attach references belonging to another account.
+    known = {row['request_id'] for row in await recent_requests(user_id)}
+    return {'release': context['release'], 'page': context['page'],
+            'request_ids': [reference for reference in context['request_ids'] if reference in known]}

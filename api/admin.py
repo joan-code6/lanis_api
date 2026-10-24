@@ -994,3 +994,37 @@ async def analytics_request_lookup(request_id: str, principal: AdminPrincipal = 
                 await _record_admin_action(principal.user_id, 'analytics.request.read', row['user_id'])
                 records.append(record)
     return JSONResponse({'request_id': request_id, 'diagnostics': records}, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/analytics/investigate/{account_ref}')
+async def analytics_investigation(account_ref: str, principal: AdminPrincipal = Depends(admin_dependency)):
+    from . import analytics_store
+    from fastapi.responses import JSONResponse
+    user_id = await analytics_store.resolve_account(account_ref)
+    if not user_id:
+        raise HTTPException(404, 'Analytics account not found')
+    async with _admin_account_access(principal.user_id, user_id):
+        if await analytics_store.resolve_account(account_ref) != user_id:
+            raise HTTPException(404, 'Analytics account not found')
+        await _record_admin_action(principal.user_id, 'analytics.account.investigate', user_id)
+        return JSONResponse({'user_id': user_id, **await analytics_store.export_metadata(user_id)}, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/analytics/quality')
+async def analytics_quality(principal: AdminPrincipal = Depends(admin_dependency)):
+    from . import analytics_store
+    from fastapi.responses import JSONResponse
+    await _record_admin_action(principal.user_id, 'analytics.quality.read')
+    return JSONResponse(await analytics_store.quality_summary(), headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/analytics/users/{user_id:path}')
+async def analytics_user_investigation(user_id: str, principal: AdminPrincipal = Depends(admin_dependency)):
+    from . import analytics_store
+    from fastapi.responses import JSONResponse
+    async with _admin_account_access(principal.user_id, user_id):
+        metadata = await analytics_store.export_metadata(user_id)
+        if not metadata['account_ref'] and not metadata['recent_requests'] and not metadata['diagnostics']:
+            raise HTTPException(404, 'No consenting analytics data found for this account')
+        await _record_admin_action(principal.user_id, 'analytics.account.investigate', user_id)
+        return JSONResponse({'user_id': user_id, **metadata}, headers={'Cache-Control': 'no-store'})

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+import json
 import aiosqlite
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "feedback.db"
@@ -40,6 +41,10 @@ async def initialize() -> None:
             )
             """
         )
+        async with db.execute('PRAGMA table_info(feedback_reports)') as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if 'support_context' not in columns:
+            await db.execute("ALTER TABLE feedback_reports ADD COLUMN support_context TEXT")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_feedback_status_created "
             "ON feedback_reports(status, created_at DESC)"
@@ -52,7 +57,9 @@ async def initialize() -> None:
 
 
 def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
-    return dict(row)
+    result = dict(row)
+    result['support_context'] = json.loads(result['support_context']) if result.get('support_context') else None
+    return result
 
 
 async def create_feedback(
@@ -62,6 +69,7 @@ async def create_feedback(
     details: str,
     page: str | None,
     submitter_user_id: str,
+    support_context: dict | None = None,
 ) -> dict[str, Any]:
     await initialize()
     created_at = _now()
@@ -81,10 +89,10 @@ async def create_feedback(
         cursor = await db.execute(
             """
             INSERT INTO feedback_reports (
-                category, title, details, page, submitter_user_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                category, title, details, page, submitter_user_id, created_at, support_context
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (category, title, details, page, submitter_user_id, created_at.isoformat()),
+            (category, title, details, page, submitter_user_id, created_at.isoformat(), json.dumps(support_context) if support_context else None),
         )
         report_id = cursor.lastrowid
         await db.commit()

@@ -493,11 +493,27 @@ class SidebarPreferencesRequest(BaseModel):
         return value
 
 
+class FeedbackSupportContext(BaseModel):
+    release: str = Field(pattern=r'^(?:local|[a-f0-9]{7,40})$')
+    page: str = Field(max_length=100, pattern=r'^/[a-zA-Z0-9_:/-]*$')
+    request_ids: List[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator('request_ids')
+    @classmethod
+    def validate_request_ids(cls, value):
+        import uuid
+        try:
+            return [str(uuid.UUID(item)) for item in value]
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError('Invalid request reference')
+
+
 class FeedbackSubmissionRequest(BaseModel):
     category: Literal["feature", "bug", "general"]
     title: str = Field(..., min_length=1, max_length=120)
     details: str = Field(..., min_length=1, max_length=5000)
     page: Optional[str] = Field(None, max_length=300)
+    support_context: Optional[FeedbackSupportContext] = None
 
 
 class TimetablePreferencesRequest(BaseModel):
@@ -2378,6 +2394,7 @@ async def submit_feedback(
     background_tasks: BackgroundTasks,
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
+    from .analytics_store import validate_support_context
     title = payload.title.strip()
     details = payload.details.strip()
     if not title or not details:
@@ -2394,6 +2411,7 @@ async def submit_feedback(
             details=details,
             page=page,
             submitter_user_id=auth.user_id,
+            **({'support_context': await validate_support_context(auth.user_id, payload.support_context.model_dump())} if payload.support_context else {}),
         )
     except FeedbackRateLimitError as error:
         raise HTTPException(

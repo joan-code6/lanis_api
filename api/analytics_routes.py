@@ -116,6 +116,16 @@ def register_request_diagnostics(app):
         route = getattr(request.scope.get('route'), 'path', '/unmatched')
         duration = min(3_600_000, max(0, round((time.monotonic() - started) * 1000)))
         response.headers['X-LANIS-Request-ID'] = request_id
+        if (request.headers.get('X-LANIS-Analytics-Consent') == 'account-v2'
+                and request.headers.get('X-Session-Token') and not route.startswith('/admin')):
+            try:
+                from .api import local_auth_dependency
+                identity = await local_auth_dependency(request.headers['X-Session-Token'])
+                async with (await account_lifecycle_lock(identity.user_id)).shared():
+                    await local_auth_dependency(request.headers['X-Session-Token'])
+                    await analytics_store.record_request(identity.user_id, request_id, route, request.method, response.status_code, duration)
+            except Exception:
+                logger.debug('Technical request ledger unavailable')
         if response.status_code >= 400:
             logger.warning('request_id=%s method=%s route=%s status=%s duration_ms=%s',
                            request_id, request.method, route, response.status_code, duration)

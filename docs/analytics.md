@@ -42,3 +42,13 @@ When configured, background `backend_request_completed` events use `app=lanis_ap
 Vault records expire after seven days, are filtered immediately on reads and purged during startup, hourly cleanup and writes. Limits: 20 writes/minute/account, newest 100 records/account, newest 5,000 globally. Limits can evict records before seven days. Diagnostics contain exception messages/stack traces, which may include sensitive context, and remain sensitive even encrypted. Request UUIDs and ownership metadata are indexed without encryption for correlation; error details are encrypted.
 
 Account export includes analytics reference/diagnostic metadata, not decrypted error details. Account deletion atomically removes mapping and vault rows alongside other local account data. Sending and reads take shared account lifecycle leases so deletion cannot race an in-flight backend operation. Deleting local data or withdrawing consent does not automatically delete historical PostHog events. PostHog deletion requires a separate authorized project operation.
+
+## Request investigation and health thresholds
+
+`GET /admin/analytics/investigate/{account_ref}` returns the account mapping, diagnostic metadata and the latest 100 technical requests. `GET /admin/analytics/quality` returns five-minute observed request/failure/diagnostic counts, linked-account count, coverage text and internal warning thresholds. Both require normal admin authentication and audit successful access. No raw diagnostic details are returned by investigation.
+
+The request ledger stores only live-session, consented traffic using static route templates. It retains up to 500 rows/account, 50,000 globally and seven days, with expiry on reads/cleanup and atomic account deletion. Requests already sent before withdrawal may complete. Five-minute warnings require sufficient volume: at least 20 requests, three affected accounts and 20% 5xx responses; or ten diagnostics from three accounts. They are internal operator warnings, not PostHog lifecycle alerts or a full incident detector.
+
+Feedback accepts an optional `support_context` with release, safe page and at most ten request UUIDs. Ownership is checked against the submitting user's recent request ledger. The context is stored with feedback and shown to operators; it contains no automatic message/body capture. Existing feedback retention/deletion rules continue to apply.
+
+`GET /admin/analytics/users/{school_id:username}` performs the same audited investigation by LANIS account identity, without creating an analytics reference for a nonconsenting account. Missing data returns 404 rather than implying the account is healthy.

@@ -1696,6 +1696,7 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     """Atomically delete all user-owned rows from the authentication database."""
     user_id = _canonical_user_id(user_id)
     tables = (
+        "analytics_requests",
         "analytics_diagnostics",
         "analytics_accounts",
         "refresh_tokens",
