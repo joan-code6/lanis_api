@@ -67,6 +67,7 @@ load_dotenv()
 
 from schulportal_hessen.base import SchulportalHessenAPI
 
+from .analytics_routes import router as analytics_router, register_request_diagnostics
 from .agents import router as agents_router
 from .agent_mcp import mcp, mcp_app
 from .queue import task_queue, Task, TaskPriority
@@ -492,11 +493,27 @@ class SidebarPreferencesRequest(BaseModel):
         return value
 
 
+class FeedbackSupportContext(BaseModel):
+    release: str = Field(pattern=r'^(?:local|[a-f0-9]{7,40})$')
+    page: str = Field(max_length=100, pattern=r'^/[a-zA-Z0-9_:/-]*$')
+    request_ids: List[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator('request_ids')
+    @classmethod
+    def validate_request_ids(cls, value):
+        import uuid
+        try:
+            return [str(uuid.UUID(item)) for item in value]
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError('Invalid request reference')
+
+
 class FeedbackSubmissionRequest(BaseModel):
     category: Literal["feature", "bug", "general"]
     title: str = Field(..., min_length=1, max_length=120)
     details: str = Field(..., min_length=1, max_length=5000)
     page: Optional[str] = Field(None, max_length=300)
+    support_context: Optional[FeedbackSupportContext] = None
 
 
 class TimetablePreferencesRequest(BaseModel):
@@ -1049,6 +1066,8 @@ async def clear_account_export_state(user_id: str) -> None:
 async def _run_whatsapp_history_cleanup() -> None:
     while True:
         try:
+            from .analytics_store import purge_expired as purge_analytics_diagnostics
+            await purge_analytics_diagnostics()
             await purge_expired_whatsapp_ai_history()
             await purge_expired_whatsapp_rate_limits()
             await purge_expired_account_deletion_markers()
@@ -1122,6 +1141,7 @@ async def notify_new_user_if_account_active(
 
 app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
 app.router.route_class = OutageCacheRoute
+register_request_diagnostics(app)
 
 
 @app.get("/agent-icon.png", include_in_schema=False)
@@ -1405,7 +1425,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At"],
+    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At", "X-LANIS-Request-ID"],
 )
 
 # The MCP SDK owns its task group for the complete ASGI lifespan.
@@ -1424,6 +1444,7 @@ app.include_router(agents_router)
 # A path route preserves /mcp without a trailing-slash redirect on POST.
 app.router.routes.append(Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]))
 
+app.include_router(analytics_router)
 app.include_router(documentation_router)
 app.include_router(admin_router)
 app.include_router(homepage_router)
@@ -2373,6 +2394,7 @@ async def submit_feedback(
     background_tasks: BackgroundTasks,
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
+    from .analytics_store import validate_support_context
     title = payload.title.strip()
     details = payload.details.strip()
     if not title or not details:
@@ -2389,6 +2411,7 @@ async def submit_feedback(
             details=details,
             page=page,
             submitter_user_id=auth.user_id,
+            **({'support_context': await validate_support_context(auth.user_id, payload.support_context.model_dump())} if payload.support_context else {}),
         )
     except FeedbackRateLimitError as error:
         raise HTTPException(

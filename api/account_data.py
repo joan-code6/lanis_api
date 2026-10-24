@@ -175,6 +175,7 @@ async def build_account_export(user_id: str) -> dict:
         "cached_data": cached_data,
         "cached_file_references": persisted["cached_file_references"],
         "activity": activity,
+        "analytics": persisted["analytics"],
         "excluded_secrets": [
             "SPH password",
             "refresh tokens",
