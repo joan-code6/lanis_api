@@ -119,10 +119,10 @@ def register_tools(tool, run):
         """Account-specific Schulportal app catalog. Use for available modules and integration coverage. integrated=true identifies server-supported apps; available_tools from lanis_connection identifies granted callable tools. integrated=false identifies an accessible app to open in the portal. Returns app names and support status."""
         from urllib.parse import urlsplit
 
-        from .agent_mcp import PORTAL_MODULES
+        from .agent_mcp import PORTAL_MODULES, normalized_manifest
 
         def read_manifest(client):
-            result = client.get_apps()
+            result = normalized_manifest(client.get_apps())
             if not result.get("success"):
                 return {
                     "success": False,
@@ -130,8 +130,8 @@ def register_tools(tool, run):
                     "error_kind": result.get("error_kind"),
                 }
             modules = []
-            for entry in result.get("data", {}).get("entrys", []):
-                link = urlsplit(entry.get("link") or "")
+            for entry in result["entries"]:
+                link = entry["link"]
                 local = (
                     not link.netloc
                     or link.netloc.lower()
@@ -140,7 +140,7 @@ def register_tools(tool, run):
                 path = link.path.rsplit("/", 1)[-1].lower()
                 modules.append(
                     {
-                        "name": entry.get("Name") or "Unbenannt",
+                        "name": entry["name"],
                         "integrated": local
                         and (not link.scheme or link.scheme in ("http", "https"))
                         and (

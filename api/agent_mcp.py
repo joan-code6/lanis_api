@@ -144,14 +144,44 @@ PORTAL_MODULES = {
 }
 
 
-def fetch_module_access(client):
-    """Read the account's app manifest without opening every app/SSO redirect."""
-    result = client.get_apps()
+def normalized_manifest(result):
+    """Validate the app-list envelope and retain well-formed individual apps."""
+    if not isinstance(result, dict):
+        return {"success": False, "error_kind": "upstream"}
     if not result.get("success"):
         return {"success": False, "error_kind": result.get("error_kind")}
+    data = result.get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("entrys"), list):
+        return {"success": False, "error_kind": "upstream"}
+    entries = []
+    for entry in data["entrys"]:
+        if not isinstance(entry, dict):
+            continue
+        raw_link = entry.get("link")
+        if not isinstance(raw_link, str) or not raw_link.strip():
+            continue
+        try:
+            link = urlsplit(raw_link)
+        except ValueError:
+            continue
+        name = entry.get("Name")
+        entries.append(
+            {
+                "name": name if isinstance(name, str) and name.strip() else "Unbenannt",
+                "link": link,
+            }
+        )
+    return {"success": True, "entries": entries}
+
+
+def fetch_module_access(client):
+    """Read the account's app manifest without opening every app/SSO redirect."""
+    result = normalized_manifest(client.get_apps())
+    if not result["success"]:
+        return result
     methods = set()
-    for entry in result.get("data", {}).get("entrys", []):
-        link = urlsplit(entry.get("link") or "")
+    for entry in result["entries"]:
+        link = entry["link"]
         # Only actual portal module paths count, never a display name, query
         # string, or an external app that happens to have the same filename.
         if link.scheme and link.scheme not in ("http", "https"):

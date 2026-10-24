@@ -2295,3 +2295,95 @@ def test_authorization_details_returns_operator_pinned_identity(
             assert response.json()["verified"] is True
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        None,
+        [],
+        {"success": True, "data": None},
+        {"success": True, "data": {"entrys": {}}},
+        {"success": True, "data": {}},
+    ],
+)
+def test_invalid_manifest_envelope_is_unavailable(manifest):
+    from api.agent_mcp import normalized_manifest
+
+    assert normalized_manifest(manifest) == {"success": False, "error_kind": "upstream"}
+
+
+def test_malformed_apps_do_not_hide_valid_modules(environment, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api import agent_mcp
+
+    async def scenario():
+        portal = SimpleNamespace(
+            BASE_START_URL="https://start.schulportal.hessen.de",
+            get_apps=lambda: {
+                "success": True,
+                "data": {
+                    "entrys": [
+                        None,
+                        [],
+                        {"link": []},
+                        {"link": "https://[broken"},
+                        {"link": ""},
+                        {"Name": "Stundenplan", "link": "stundenplan.php"},
+                        {"Name": "Moodle", "link": "https://school.example/moodle"},
+                    ]
+                },
+            },
+        )
+        # Exercise the real reader, independently of the fixture's access stub.
+        manifest = agent_mcp.normalized_manifest(portal.get_apps())
+        assert manifest["success"] is True
+        assert [e["name"] for e in manifest["entries"]] == ["Stundenplan", "Moodle"]
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": ["profile:read"],
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            api_module.sessions,
+            "_get_or_create_schulportal_client",
+            AsyncMock(return_value=SimpleNamespace(client=portal)),
+        )
+        result = await mcp._tool_manager.get_tool("lanis_modules").fn()
+        assert result["modules"] == [
+            {"name": "Stundenplan", "integrated": True},
+            {"name": "Moodle", "integrated": False},
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_access_manifest_skips_bad_entries_and_excludes_external_apps():
+    from types import SimpleNamespace
+
+    from api.agent_mcp import fetch_module_access, module_methods
+
+    portal = SimpleNamespace(
+        BASE_START_URL="https://start.schulportal.hessen.de",
+        get_apps=lambda: {
+            "success": True,
+            "data": {
+                "entrys": [
+                    {"link": 42},
+                    None,
+                    {"link": "https://[bad"},
+                    {"link": "stundenplan.php"},
+                    {"link": "https://external.example/vertretungsplan.php"},
+                ]
+            },
+        },
+    )
+    assert module_methods(fetch_module_access(portal)) == {"stundenplan_get_plan"}
