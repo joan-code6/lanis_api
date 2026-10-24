@@ -8,6 +8,17 @@ from api import api as api_module
 from api.api import app, sessions
 
 
+@pytest.fixture(autouse=True)
+def isolated_binary_cache(tmp_path, monkeypatch):
+    """ASGI tests bypass startup, so initialize their private download-cache database."""
+    from api import auth_db, file_cache
+
+    monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+    monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+    monkeypatch.setattr(file_cache, 'FILE_CACHE_DIR', tmp_path / 'files')
+    asyncio.run(auth_db.initialize())
+
+
 def _full_route(path: str, method: str = "GET"):
     scope = {"type": "http", "method": method, "path": path, "root_path": ""}
     return next(route for route in app.routes if route.matches(scope)[0] is Match.FULL)
