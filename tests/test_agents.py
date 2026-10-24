@@ -2239,6 +2239,8 @@ def test_apps_login_redirect_and_html_are_classified(status, body, expected):
         ("/new-app-manifest", "upstream"),
         ("https://login.schulportal.hessen.de.evil.example/", "upstream"),
         ("", "upstream"),
+        ("https://[bad", "upstream"),
+        ("https://example.com／invalid", "upstream"),
     ],
 )
 def test_apps_redirect_destination_controls_session_classification(location, expected):

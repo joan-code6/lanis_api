@@ -196,6 +196,12 @@ class SchulportalHessenAPI:
                 "error": f"Failed to parse response: {str(e)}",
                 "error_kind": "upstream",
             }
+        except ValueError:
+            return {
+                "success": False,
+                "error": "Invalid apps response URL",
+                "error_kind": "upstream",
+            }
         finally:
             if response is not None:
                 response.close()
