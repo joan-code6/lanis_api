@@ -2387,3 +2387,59 @@ def test_access_manifest_skips_bad_entries_and_excludes_external_apps():
         },
     )
     assert module_methods(fetch_module_access(portal)) == {"stundenplan_get_plan"}
+
+
+@pytest.mark.parametrize(
+    "kind,expected",
+    [
+        ("authentication", "SCHOOL_SESSION_EXPIRED"),
+        ("upstream", "FILE_UNAVAILABLE"),
+        ("validation", "FILE_UNAVAILABLE"),
+    ],
+)
+def test_distributed_download_failure_preserves_authentication(
+    environment, monkeypatch, kind, expected
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(
+            agent_mcp,
+            "identity",
+            AsyncMock(
+                return_value={
+                    "id": "test",
+                    "user_id": "5201:alice",
+                    "scopes": ["files:read"],
+                }
+            ),
+        )
+        portal = SimpleNamespace(
+            dateiverteilung_download_file=Mock(
+                return_value={
+                    "success": False,
+                    "error_kind": kind,
+                    "error": "private upstream details",
+                }
+            )
+        )
+        monkeypatch.setattr(
+            api_module.sessions,
+            "_get_or_create_schulportal_client",
+            AsyncMock(return_value=SimpleNamespace(client=portal)),
+        )
+        invalidate = AsyncMock()
+        monkeypatch.setattr(
+            api_module.sessions, "invalidate_schulportal_client", invalidate
+        )
+        result = await mcp._tool_manager.get_tool("lanis_distributed_file").fn(
+            url="dateiverteilung.php?a=download&id=42"
+        )
+        assert result["error"] == expected
+        assert "private upstream details" not in str(result)
+        assert invalidate.await_count == (1 if kind == "authentication" else 0)
+
+    asyncio.run(scenario())

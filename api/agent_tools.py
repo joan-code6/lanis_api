@@ -71,7 +71,10 @@ def download_file(client, file_id, *, loader=None):
     """Read an authenticated file with a bounded buffer, closing its stream."""
     result = loader() if loader else client.dateispeicher_download_file(file_id)
     if not result.get("success"):
-        return {"success": False, "error": "FILE_UNAVAILABLE"}
+        failure = {"success": False, "error": "FILE_UNAVAILABLE"}
+        if result.get("error_kind") == "authentication":
+            failure["error_kind"] = "authentication"
+        return failure
     stream = result.get("stream")
     content = result.get("content", b"")
     limit = 2 * 1024 * 1024
