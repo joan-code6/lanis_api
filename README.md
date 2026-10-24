@@ -206,6 +206,14 @@ Web Push requires these environment variables on the API server:
 
 The `pywebpush` dependency is included in `requirements.txt`. Users can configure notification categories, Vertretungsplan class scope, the active window, interval, timezone, and whether message previews contain the sender and subject in **Settings → Benachrichtigungen**.
 
+Subscriptions, category baselines and pending delivery retries live in `data/auth.db`. Normal process restarts preserve them and restart the polling worker. Keep that directory persistent (the supplied Docker Compose file mounts a named volume), use a stable working directory for a service installation, and preserve the `JWT_SECRET`/credential encryption key and VAPID key pair across deployments. Replacing these files or keys is not an ordinary restart.
+
+An upgrade introducing per-login session ownership intentionally removes legacy subscriptions that cannot be safely attributed to a login. The browser must register its existing subscription again; updated frontends do this on authenticated page visits and periodically while visible. Do not retain unowned endpoints or attach them arbitrarily to another session to bypass that migration.
+
+Push-service acceptance is not a device delivery receipt. Messages are retained by the push service for up to 24 hours while a device is unavailable; time-sensitive plan updates for one hour, and test pushes for ten minutes. The library's default is zero seconds, which discards offline messages. Only explicit push-service 404/410 responses expire a stored endpoint. Temporary network, signing or server configuration failures preserve subscriptions for retry.
+
+Polling remains subject to each account's active time window, interval, unread-message status, class scope and live login session. A newly enabled category first records a baseline. A successful test push does not test these automatic polling conditions. Real push delivery and deployment configuration must be checked separately; regression tests use temporary databases and an isolated simulated push service.
+
 ## WhatsApp assistant
 
 The hosted API can optionally expose a WhatsApp assistant. Users link
