@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from bs4 import BeautifulSoup
 from fastapi.concurrency import run_in_threadpool
 
 from schulportal_hessen.base import SchulportalHessenAPI
@@ -24,6 +25,7 @@ logger = logging.getLogger("uptime")
 
 UPTIME_SERVICE_NAME = "Schulportal Hessen"
 DEFAULT_UPTIME_URL = "https://login.schulportal.hessen.de/"
+PORTAL_START_URL = "https://start.schulportal.hessen.de/"
 DEFAULT_UPTIME_INTERVAL_SECONDS = 5 * 60
 DEFAULT_UPTIME_TIMEOUT_SECONDS = 15
 INCIDENT_UPTIME_INTERVAL_SECONDS = 15
@@ -415,6 +417,16 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
         await user_metrics_db.set_uptime_alert_state(is_issue)
 
 
+def _is_maintenance_page(html: str) -> bool:
+    """Recognize the SPH maintenance document without matching footer links."""
+    soup = BeautifulSoup(html, "html.parser")
+    return any(
+        marker in element.get_text(" ", strip=True).casefold()
+        for element in soup.find_all(["title", "h1"])
+        for marker in ("wartungsarbeiten", "wartungsmodus")
+    )
+
+
 def _probe_portal() -> dict[str, Any]:
     """Log in and open the configured account's available modules."""
     checked_at = _utcnow().isoformat()
@@ -455,6 +467,32 @@ def _probe_portal() -> dict[str, Any]:
     _install_request_timeout(client)
     features: list[dict[str, Any]] = []
     try:
+        # The portal serves its maintenance page with HTTP 200. Check the
+        # page heading/title rather than treating a successful GET as healthy.
+        # A failed preflight must not replace the authenticated checks.
+        maintenance_response = None
+        try:
+            maintenance_response = client.session.get(PORTAL_START_URL)
+            maintenance = _is_maintenance_page(maintenance_response.text)
+        except requests.RequestException:
+            maintenance = False
+        finally:
+            if maintenance_response is not None:
+                maintenance_response.close()
+        if maintenance:
+            return {
+                "checked_at": checked_at,
+                "url": get_uptime_url(),
+                "status": "down",
+                "is_available": False,
+                "status_code": maintenance_response.status_code,
+                "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
+                "error": "maintenance",
+                "features": [
+                    _feature("login", "down", overall_started, error="maintenance"),
+                    _feature("modules", "skipped", overall_started, error="maintenance"),
+                ],
+            }
         login_started = time.perf_counter()
         try:
             # The client currently prints encryption setup diagnostics. Keep
