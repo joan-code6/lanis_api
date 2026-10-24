@@ -2865,7 +2865,6 @@ async def _update_message_cache_task(
             method = {
                 '/nachrichten/headers': 'nachrichten_get_headers',
                 '/nachrichten/search': 'nachrichten_search_recipients',
-                '/nachrichten/conversation': 'nachrichten_get_conversation',
             }[endpoint]
             fresh_data = await run_in_threadpool(getattr(session_data.client, method), **params)
             if endpoint == '/nachrichten/headers':
@@ -3200,6 +3199,8 @@ async def get_conversation(
     last: int = 0,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
+    if warming.get():
+        return {"success": False, "error": "Background conversation reads are disabled"}
     endpoint = "/nachrichten/conversation"
     params = {"conversation_id": conversation_id, "last": last}
     cache_params = _make_param_key(params)
@@ -3207,12 +3208,6 @@ async def get_conversation(
     # Cached bodies can predate the latest unread headers. Only a live body
     # fetch may acknowledge the activity observed before this request.
     activity = await current_activity(auth.user_id, conversation_id)
-    if warming.get():
-        # Metadata traversal can take a long time. Capture replies arriving
-        # since the batch's initial header read immediately before opening.
-        headers = await get_message_headers(get_type="All", last=0, auth=auth)
-        if not headers.get("success"):
-            return {"success": False, "error": "Cannot preserve current unread state"}
     result = await run_in_threadpool(
         auth.client.nachrichten_get_conversation, conversation_id, last
     )

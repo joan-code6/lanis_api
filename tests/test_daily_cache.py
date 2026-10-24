@@ -260,16 +260,9 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
         "/dateiverteilung/file",
         "url=https%3A%2F%2Fportal.example%2Ffile",
     ) in requested
-    if failed in {"headers", "stale_headers"}:
-        assert not any(
-            path in {"/nachrichten/123", "/nachrichten/private"}
-            for path, _ in requested
-        )
-    else:
-        assert requested.index(("/nachrichten/headers", "")) < requested.index(
-            ("/nachrichten/123", "")
-        )
-        assert requested.count(("/nachrichten/123", "")) == 1
+    assert not any(
+        path in {"/nachrichten/123", "/nachrichten/private"} for path, _ in requested
+    )
     assert len([path for path, _ in requested if path == "/dateispeicher"]) == 3
     assert ("/kalender/event/new-event", "") in requested
     assert ("/kalender/event/new-event", "view_id=second") in requested

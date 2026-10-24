@@ -68,13 +68,6 @@ def discover_metadata(path, params, data):
             for method in module.get("usage", []):
                 if method in routes:
                     targets.add((routes[method], ()))
-    if path == "/nachrichten/headers":
-        from .message_read_state import conversation_id
-
-        for row in data.get("conversations", []):
-            identifier = conversation_id(row)
-            if identifier:
-                targets.add(("/nachrichten/" + quote(identifier, safe=""), ()))
     if path == "/wahlen":
         for election in data.get("elections", []):
             if election.get("id"):
@@ -221,10 +214,14 @@ async def warm_users():
             )
             reset = warming.set(True)
             try:
-                # Body reads mark conversations read upstream. Preserve the current
-                # header flags before replaying even previously saved bodies.
-                pending = [("/nachrichten/headers", ())] + sorted(targets)
-                headers_preserved = False
+                # Conversation reads mark messages read upstream. Never replay
+                # those snapshots, even if an earlier user request cached them.
+                pending = sorted(
+                    target
+                    for target in targets
+                    if not target[0].startswith("/nachrichten/")
+                    or target[0] == "/nachrichten/headers"
+                )
                 seen = set()
                 while pending:
                     path, params = pending.pop(0)
@@ -232,13 +229,6 @@ async def warm_users():
                         continue
                     seen.add((path, params))
                     attempted += 1
-                    if (
-                        path.startswith("/nachrichten/")
-                        and path != "/nachrichten/headers"
-                        and not headers_preserved
-                    ):
-                        failed += 1
-                        continue
                     read_failed = False
                     try:
                         # Long file traversals can outlast a token's lifetime.
@@ -268,8 +258,6 @@ async def warm_users():
                                 sorted(discover_metadata(path, params, data))
                             )
                             pending.extend(sorted(discover_files(path, data)))
-                            if path == "/nachrichten/headers" and not read_failed:
-                                headers_preserved = True
                     except Exception:  # noqa: BLE001 - isolate per-user endpoint failures
                         read_failed = True
                         logger.warning("Daily cache read failed for %s", path)

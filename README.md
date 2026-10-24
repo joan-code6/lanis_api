@@ -216,15 +216,11 @@ previously requested parameter variants are refreshed too. Snapshot keys normali
 explicit route defaults, allowing a default UI request to use a view warmed
 without redundant query parameters.
 
-Conversation bodies are proactively fetched. This marks them read in Schulportal;
-LANIS persists the pre-sync unread flags separately and overlays them on message
-headers and notification polling until the user opens the conversation in LANIS
-and a fresh full body is fetched successfully. Older outage snapshots remain
-viewable but do not clear unread flags for potentially newer messages.
-Background-fetched bodies are compared with a persisted hash of the last body
-delivered interactively. Changed bodies remain unread even if a reply arrived
-between the header and body requests. On first synchronization, bodies without
-such a receipt are conservatively shown as unread until opened in LANIS.
+Message headers are cached without opening conversations. Nightly sync never
+fetches conversation bodies, including previously cached bodies, because
+Schulportal marks them read when fetched. Bodies are fetched only when the user
+opens a conversation; successful interactive reads can still supply outage
+snapshots. Messages never opened in LANIS have headers only during an outage.
 
 Files advertised by file-storage trees, file distributions, course entries, and
 submission details are downloaded sequentially through authenticated API routes.

@@ -369,12 +369,12 @@ def test_binary_files_are_content_deduplicated_but_privately_authorized(state):
     asyncio.run(scenario())
 
 
-def test_files_and_message_bodies_are_discovered_without_external_link_crawling():
+def test_files_are_discovered_but_message_bodies_are_not():
     assert discover_metadata(
         "/nachrichten/headers",
         (),
         {"success": True, "conversations": [{"id": "message"}]},
-    ) == {("/nachrichten/message", ())}
+    ) == set()
     assert discover_files(
         "/dateispeicher", {"success": True, "files": [{"id": 1}]}
     ) == {("/dateispeicher/file/1", ())}
@@ -432,103 +432,31 @@ def test_files_and_message_bodies_are_discovered_without_external_link_crawling(
     }
 
 
-def test_message_warmup_body_read_preserves_flags_until_user_opens(state, monkeypatch):
-    """Exercise normal routes while sync's upstream read changes the portal flag."""
-    app = FastAPI()
-    app.router.route_class = outage_cache.OutageCacheRoute
-    unread = False
-    online = True
-    content = "saved body"
-
-    def headers(*_):
-        return {
-            "success": True,
-            "conversations": [{"id": "c", "unread": int(unread), "date": "first"}],
-        }
+def test_background_conversation_reads_never_touch_portal(state, monkeypatch):
+    calls = []
 
     def conversation(*_):
-        nonlocal unread
-        if not online:
-            outage_cache.observation.get().unavailable = True
-            return {"success": False}
-        unread = False
-        return {"success": True, "messages": [{"content": content}]}
+        calls.append("body")
+        return {"success": True, "messages": [{"content": "opened interactively"}]}
 
     auth = SimpleNamespace(
         user_id="a",
         session_id="a",
-        client=SimpleNamespace(
-            nachrichten_get_headers=headers, nachrichten_get_conversation=conversation
-        ),
+        client=SimpleNamespace(nachrichten_get_conversation=conversation),
     )
-    app.dependency_overrides[api_module.client_dependency] = lambda: auth
-    app.add_api_route("/nachrichten/headers", api_module.get_message_headers)
-    app.add_api_route("/nachrichten/{conversation_id}", api_module.get_conversation)
     monkeypatch.setattr(api_module, "sessions", api_module.AuthManager())
-    monkeypatch.setattr(outage_cache, "snapshots", outage_cache.SnapshotStore())
-
-    async def no_task(_):
-        pass
-
-    monkeypatch.setattr(api_module.task_queue, "add_task", no_task)
 
     async def scenario():
-        nonlocal online, content, unread
         reset = warming.set(True)
         try:
-            await asgi_request(
-                app, "GET", "/nachrichten/headers", {"X-Session-Token": "a"}
-            )
-            # A reply arrives after the initial batch headers. The body route
-            # must preserve it immediately before its destructive upstream read.
-            unread = True
-            body = await asgi_request(
-                app, "GET", "/nachrichten/c", {"X-Session-Token": "a"}
-            )
-            assert body.json()["messages"][0]["content"] == "saved body"
+            result = await api_module.get_conversation("c", auth=auth)
+            assert result["success"] is False
+            assert calls == []
         finally:
             warming.reset(reset)
-        assert not unread  # Upstream changed, while LANIS must still report unread.
-        result = await asgi_request(
-            app, "GET", "/nachrichten/headers", {"X-Session-Token": "a"}
-        )
-        assert result.json()["conversations"][0]["unread"] == 1
-        # New headers can arrive while both live and persistent bodies are old.
-        await message_read_state.overlay_headers(
-            "a",
-            {
-                "success": True,
-                "conversations": [{"id": "c", "unread": 1, "date": "second"}],
-            },
-        )
-        online = False
-        stale = await asgi_request(
-            app, "GET", "/nachrichten/c", {"X-Session-Token": "a"}
-        )
-        assert stale.headers["x-lanis-cache"] == "stale"
-        assert stale.json()["messages"][0]["content"] == "saved body"
-        current = {
-            "success": True,
-            "conversations": [{"id": "c", "unread": 1, "date": "second"}],
-        }
-        assert (await message_read_state.overlay_headers("a", current))[
-            "conversations"
-        ][0]["unread"] == 1
-        # Leave the original nightly headers in the live cache to exercise
-        # rendering older unread metadata after acknowledging newer activity.
-        online = True
-        content = "new message body"
-        fresh = await asgi_request(
-            app, "GET", "/nachrichten/c", {"X-Session-Token": "a"}
-        )
-        assert fresh.json()["messages"][0]["content"] == content
-        assert (await message_read_state.overlay_headers("a", current))[
-            "conversations"
-        ][0]["unread"] == 0
-        result = await asgi_request(
-            app, "GET", "/nachrichten/headers", {"X-Session-Token": "a"}
-        )
-        assert result.json()["conversations"][0]["unread"] == 0
+        result = await api_module.get_conversation("c", auth=auth)
+        assert result["messages"][0]["content"] == "opened interactively"
+        assert calls == ["body"]
 
     asyncio.run(scenario())
 
