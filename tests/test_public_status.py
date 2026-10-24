@@ -118,8 +118,11 @@ def test_stale_and_disabled_current_do_not_rewrite_history(monitor, monkeypatch)
     asyncio.run(scenario())
 
 
-def test_unknown_results_and_duplicate_checks_do_not_inflate_coverage(monitor):
+def test_unknown_results_and_duplicate_checks_do_not_inflate_coverage(monitor, monkeypatch):
     db, now = monitor
+    # Avoid crossing a two-decimal rounding boundary as wall-clock time changes.
+    now = now.replace(hour=12, minute=0, second=0)
+    monkeypatch.setattr(uptime, "_utcnow", lambda: now)
 
     async def scenario():
         await record(db, now - timedelta(seconds=1), "not_configured")
@@ -212,5 +215,124 @@ def test_polling_coalesces_and_cache_expires_before_stale_transition(
         result = await public_status.get_public_status()
         assert builds == 2
         assert result["current"]["status"] == "unknown"
+
+    asyncio.run(scenario())
+
+
+def test_short_history_uses_real_intervals_and_preserves_gaps(monitor):
+    db, now = monitor
+
+    async def scenario():
+        # One brief incident must not turn the whole day/week red.
+        for minutes in range(120, -1, -5):
+            await record(db, now - timedelta(minutes=minutes))
+        await record(db, now - timedelta(minutes=42), "down", sample_interval_seconds=15)
+        await record(db, now - timedelta(minutes=41), "up", sample_interval_seconds=300)
+        result = await public_status._build_public_status()
+        hourly = result["history_windows"]["24h"]
+        weekly = result["history_windows"]["7d"]
+        assert len(hourly) == 48 and len(weekly) == 28
+        assert hourly[0]["status"] == "unknown"
+        assert hourly[-1]["status"] == "up"
+        assert hourly[-2]["status"] == "degraded"
+        assert 0 < hourly[-2]["uptime_percent"] < 100
+        assert sum(bucket["status"] == "degraded" for bucket in hourly) == 1
+        assert weekly[-1]["status"] == "degraded"
+        assert all(bucket["status"] == "unknown" for bucket in weekly[:-1])
+        for buckets, seconds in ((hourly, 1800), (weekly, 21600)):
+            for index, bucket in enumerate(buckets):
+                start = datetime.fromisoformat(bucket["start"].replace("Z", "+00:00"))
+                end = datetime.fromisoformat(bucket["end"].replace("Z", "+00:00"))
+                assert (end - start).total_seconds() == seconds
+                if index:
+                    assert buckets[index - 1]["end"] == bucket["start"]
+            assert buckets[-1]["end"] == result["generated_at"]
+
+    asyncio.run(scenario())
+
+
+def test_bucket_boundary_does_not_colour_preceding_interval(monitor):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now - timedelta(minutes=30), "down")
+        result = await public_status._build_public_status()
+        buckets = result["history_windows"]["24h"]
+        assert buckets[-2]["status"] == "unknown"
+        assert buckets[-2]["checks"] == 0
+        assert buckets[-1]["status"] == "down"
+        assert buckets[-1]["coverage_percent"] < 100
+
+    asyncio.run(scenario())
+
+
+def test_bucket_carries_previous_reading_only_until_cadence_limit(monitor):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now - timedelta(minutes=31), sample_interval_seconds=300)
+        result = await public_status._build_public_status()
+        last = result["history_windows"]["24h"][-1]
+        assert last["checks"] == 0
+        assert last["status"] == "up"
+        assert last["uptime_percent"] == 100
+        assert last["coverage_percent"] == 30  # 9 minutes carried, 21 unknown.
+
+    asyncio.run(scenario())
+
+
+def test_snapshot_observation_belongs_to_final_bucket(monitor):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now, "degraded")
+        result = await public_status._build_public_status()
+        for buckets in result["history_windows"].values():
+            assert buckets[-1]["checks"] == 1
+            assert buckets[-1]["status"] == "degraded"
+            assert all(bucket["status"] == "unknown" for bucket in buckets[:-1])
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("snapshot_status", ["down", "degraded"])
+def test_failed_snapshot_after_healthy_reading_is_not_green(monitor, snapshot_status):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now - timedelta(minutes=5), "up")
+        await record(db, now, snapshot_status)
+        result = await public_status._build_public_status()
+        for buckets in result["history_windows"].values():
+            assert buckets[-1]["status"] == "degraded"
+            assert buckets[-1]["uptime_percent"] == 100
+
+    asyncio.run(scenario())
+
+
+def test_expired_degraded_reading_does_not_change_down_bucket(monitor):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now - timedelta(minutes=31), "degraded", sample_interval_seconds=15)
+        await record(db, now - timedelta(minutes=30), "down", sample_interval_seconds=300)
+        result = await public_status._build_public_status()
+        assert result["history_windows"]["24h"][-1]["status"] == "down"
+
+    asyncio.run(scenario())
+
+
+
+def test_carried_legacy_incident_retains_original_cadence(monitor):
+    db, now = monitor
+
+    async def scenario():
+        await record(db, now - timedelta(minutes=31, seconds=15), "down")
+        await record(db, now - timedelta(minutes=31), "down")
+        result = await public_status._build_public_status()
+        last = result["history_windows"]["24h"][-1]
+        assert last["status"] == "unknown"
+        assert last["coverage_percent"] == 0
+        assert last["uptime_percent"] is None
 
     asyncio.run(scenario())
