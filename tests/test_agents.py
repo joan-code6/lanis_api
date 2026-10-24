@@ -20,6 +20,8 @@ from api.agent_mcp import mcp
 @pytest.fixture
 def environment(tmp_path, monkeypatch):
     monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "auth.db"))
+    for name in ("DSB_SCHOOL_ID", "DSB_USERNAME", "DSB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LANIS_AGENT_ISSUER", "http://localhost:8000")
     monkeypatch.setenv("LANIS_AGENT_UI_ORIGIN", "http://localhost:5173")
 
@@ -657,6 +659,7 @@ def test_presets_are_enforced_on_server_and_custom_is_exact(environment, mode):
                 s in details["presets"]["restricted"]
                 for s in [
                     "grades:read",
+                    "meetings:read",
                     "attendance:read",
                     "messages:mark-read",
                     "messages:write",
@@ -2226,3 +2229,69 @@ def test_apps_login_redirect_and_html_are_classified(status, body, expected):
         response.close.assert_called_once()
     finally:
         portal.close()
+
+
+@pytest.mark.parametrize(
+    "location,expected",
+    [
+        ("https://login.schulportal.hessen.de/", "authentication"),
+        ("/login.php", "authentication"),
+        ("/new-app-manifest", "upstream"),
+        ("https://login.schulportal.hessen.de.evil.example/", "upstream"),
+        ("", "upstream"),
+    ],
+)
+def test_apps_redirect_destination_controls_session_classification(location, expected):
+    from unittest.mock import Mock
+
+    import requests
+
+    from schulportal_hessen.base import SchulportalHessenAPI
+
+    portal = SchulportalHessenAPI()
+    portal.logged_in = True
+    response = requests.Response()
+    response.status_code = 302
+    response.headers["Location"] = location
+    response.close = Mock()
+    portal.session.get = Mock(return_value=response)
+    try:
+        assert portal.get_apps()["error_kind"] == expected
+        response.close.assert_called_once()
+    finally:
+        portal.close()
+
+
+def test_authorization_details_returns_operator_pinned_identity(
+    environment, monkeypatch
+):
+    import json
+
+    async def scenario():
+        async with client() as c:
+            cid, _, rid = await request_grant(c)
+            # Start a second consent request because request_grant consumed the first.
+            response = await c.get(
+                "/oauth/authorize",
+                params={
+                    "client_id": cid,
+                    "redirect_uri": CALLBACK,
+                    "code_challenge": CHALLENGE,
+                    "state": "test",
+                    "scope": "schoolwork:read",
+                    "resource": "http://localhost:8000/mcp",
+                },
+            )
+            rid = parse_qs(urlsplit(response.headers["location"]).query)["request"][0]
+            monkeypatch.setenv(
+                "LANIS_AGENT_TRUSTED_CLIENTS",
+                json.dumps(
+                    {cid: {"name": "Verified provider", "redirect_uris": [CALLBACK]}}
+                ),
+            )
+            response = await c.get("/agents/authorization/" + rid, headers=HEAD)
+            assert response.status_code == 200
+            assert response.json()["client_name"] == "Verified provider"
+            assert response.json()["verified"] is True
+
+    asyncio.run(scenario())

@@ -25,6 +25,7 @@ SCOPES = {
         "title": "Videokonferenzen lesen",
         "description": "Räume und persönliche Beitrittslinks",
         "group": "Videokonferenz",
+        "sensitive": True,
     },
     "schoolwork:read": {
         "title": "Unterricht lesen",

@@ -141,17 +141,29 @@ class SchulportalHessenAPI:
             response = self.session.get(
                 apps_url, allow_redirects=False, timeout=(10, 30)
             )
+            from urllib.parse import urljoin, urlsplit
+
             if 300 <= response.status_code < 400:
+                location = response.headers.get("Location", "")
+                destination = urlsplit(urljoin(apps_url, location))
+                login_host = (
+                    destination.hostname or ""
+                ).lower() == "login.schulportal.hessen.de"
+                local_login = (
+                    destination.netloc.lower()
+                    == urlsplit(self.BASE_START_URL).netloc.lower()
+                    and destination.path.rstrip("/").lower() in ("/login", "/login.php")
+                )
                 return {
                     "success": False,
-                    "error": "Schulportal session redirected",
-                    "error_kind": "authentication",
+                    "error": "Schulportal apps endpoint redirected",
+                    "error_kind": "authentication"
+                    if location and (login_host or local_login)
+                    else "upstream",
                 }
             response.raise_for_status()
             # The apps endpoint returns JSON. Recognize a sign-in response even
             # if an upstream proxy serves it directly with HTTP 200.
-            from urllib.parse import urlsplit
-
             from bs4 import BeautifulSoup
 
             host = (urlsplit(response.url or apps_url).hostname or "").lower()

@@ -175,4 +175,6 @@ access. The regression suite compares the backend's supported module registry
 with MCP coverage so a new backend module cannot silently be omitted.
 
 Existing connections must reconnect to approve the new `meetings:read` permission;
-an existing grant never acquires extra permissions automatically.
+an existing grant never acquires extra permissions automatically. Personal meeting
+join links are sensitive: `meetings:read` is available through Full or an explicit
+Custom selection, and is excluded from Restricted.
