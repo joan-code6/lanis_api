@@ -44,7 +44,12 @@ def _iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
+def _check(
+    row: dict[str, Any],
+    checked_at: datetime,
+    *,
+    recovery_after_isolated_account_issue: bool = False,
+) -> dict[str, Any]:
     # Never forward database dictionaries: legacy data may contain diagnostics,
     # module/account names, URLs, or other fields unsuitable for public access.
     features = row.get("features") or []
@@ -55,6 +60,32 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
         else "unknown",
         "features": [],
     }
+    evidence = row.get("monitoring")
+    isolated_account_failure = False
+    if isinstance(evidence, dict):
+        isolated_account_failure = (
+            evidence.get("classification") == "isolated"
+            and evidence.get("observed_status") == "degraded"
+            and evidence.get("scope") == "account"
+            and evidence.get("failed_accounts") == 1
+        )
+        isolated_account_recovery = (
+            recovery_after_isolated_account_issue
+            and evidence.get("classification") == "recovering"
+            and evidence.get("observed_status") == "up"
+            and evidence.get("failed_accounts") == 0
+        )
+        if isolated_account_failure or isolated_account_recovery:
+            # Older rows stored an account-local failure as global downtime.
+            # Normalize those observations at projection time too, so the
+            # current badge, history, and uptime summary all agree immediately.
+            result["status"] = "up"
+        if evidence.get("observed_status") in {"up", "down", "degraded", "unknown"}:
+            result["observed_status"] = evidence["observed_status"]
+        if evidence.get("confidence") in {"confirmed", "limited", "inconclusive"}:
+            result["confidence"] = evidence["confidence"]
+        if evidence.get("scope") in {"account", "school", "multiple_schools", "sampled_accounts", "unknown"}:
+            result["scope"] = evidence["scope"]
     if row.get("latency_ms") is not None:
         result["latency_ms"] = row["latency_ms"]
     if row.get("sample_interval_seconds") is not None:
@@ -68,8 +99,10 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
         ), None)
         feature = {
             "name": name,
-            "status": item.get("status") if item and item.get("status") in {"up", "down"} else "unknown",
+            "status": item.get("status") if item and item.get("status") in {"up", "down", "degraded"} else "unknown",
         }
+        if isinstance(evidence, dict) and isolated_account_failure:
+            feature["status"] = "up"
         if item and item.get("latency_ms") is not None:
             feature["latency_ms"] = item["latency_ms"]
         result["features"].append(feature)
@@ -227,7 +260,48 @@ async def _build_public_status() -> dict[str, Any]:
     for timestamp, row in checks:
         newest_by_timestamp.setdefault(timestamp, row)
     checks = list(newest_by_timestamp.items())
-    checks = [(timestamp, _check(row, timestamp)) for timestamp, row in checks]
+    checks.sort(key=lambda item: (item[0], row_id(item[1])))
+    projected_checks = []
+    preceding_isolated_account_issue = False
+    for timestamp, row in checks:
+        evidence = row.get("monitoring") or {}
+        recovery_after_isolated = (
+            preceding_isolated_account_issue
+            and evidence.get("classification") == "recovering"
+            and evidence.get("observed_status") == "up"
+            and evidence.get("failed_accounts") == 0
+        )
+        projected_checks.append(
+            (
+                timestamp,
+                _check(
+                    row,
+                    timestamp,
+                    recovery_after_isolated_account_issue=recovery_after_isolated,
+                ),
+            )
+        )
+        is_isolated_account_issue = (
+            evidence.get("classification") == "isolated"
+            and evidence.get("scope") == "account"
+        )
+        is_pending_unknown_after_isolated_issue = (
+            preceding_isolated_account_issue
+            and row.get("status") == "unknown"
+            and evidence.get("classification") == "inconclusive"
+            and evidence.get("observed_status") == "unknown"
+            and evidence.get("pending_status") in {"down", "degraded"}
+        )
+        if is_isolated_account_issue or is_pending_unknown_after_isolated_issue:
+            preceding_isolated_account_issue = True
+        elif recovery_after_isolated:
+            # Keep the source attribution across the one held-recovery sample
+            # written by earlier backend versions.
+            preceding_isolated_account_issue = True
+        else:
+            preceding_isolated_account_issue = False
+    checks = projected_checks
+    checks.sort(key=lambda item: item[0], reverse=True)
     latest = checks[0] if checks else None
     latest_status = latest[1]["status"] if latest else "unknown"
     if latest_status in {"down", "degraded"}:
@@ -259,6 +333,8 @@ async def _build_public_status() -> dict[str, Any]:
     )
     if stale or not uptime.uptime_is_configured():
         current["status"] = "unknown"
+        current["confidence"] = "inconclusive"
+        current["scope"] = "unknown"
         current["features"] = [
             {"name": name, "status": "unknown"} for name in ("login", "modules")
         ]
@@ -425,11 +501,11 @@ async def _build_public_status() -> dict[str, Any]:
         )[-uptime.UPTIME_INCIDENT_LIMIT :][::-1],
         "measurement": {
             "interval_seconds": interval,
-            "incident_interval_seconds": uptime.INCIDENT_UPTIME_INTERVAL_SECONDS,
+            "incident_interval_seconds": uptime.get_uptime_interval_seconds(),
             "stale_after_seconds": stale_after,
             "period_start": _iso(start),
             "period_end": _iso(now),
-            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit einem einzelnen Testkonto. Die Verfügbarkeit wird zeitgewichtet aus bestätigten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Ein fehlgeschlagener Versuch wird wiederholt; bei erfolgreichem Retry wird das Ergebnis als verfügbar gespeichert und kein Vorfall ausgelöst. Störungen fassen aufeinanderfolgende bestätigte Ausfälle zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
+            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit zwei zufällig ausgewählten registrierten Konten. Die Verfügbarkeit wird zeitgewichtet aus beobachteten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Bei einem Fehler werden beide Konten und bis zu zwei weitere Konten parallel geprüft. Ein isolierter Fehler eines einzelnen Kontos wird als kontobezogener Hinweis dokumentiert, zählt aber nicht als allgemeine Beeinträchtigung der Verfügbarkeit. Mehrere betroffene Konten werden entsprechend ihrer Stichprobe als teilweise Beeinträchtigung gewertet. Aussagekraft und beobachteter Umfang werden getrennt ausgewiesen. Unvollständige Prüfungen ohne beobachteten Funktionsfehler bleiben unbekannt. Eine Wiederherstellung benötigt zwei vollständig erfolgreiche reguläre Prüfrunden. Störungen fassen aufeinanderfolgende beobachtete Beeinträchtigungen zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
         },
     }
 

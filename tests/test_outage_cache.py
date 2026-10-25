@@ -42,6 +42,7 @@ async def asgi_request(app, method, target, headers=None):
     messages = []
 
     async def receive():
+        await asyncio.sleep(0)
         return {"type": "http.request", "body": b"", "more_body": False}
 
     async def send(message):
@@ -50,7 +51,7 @@ async def asgi_request(app, method, target, headers=None):
     await app(
         {
             "type": "http",
-            "asgi": {"version": "3.0"},
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
             "http_version": "1.1",
             "method": method,
             "scheme": "http",
@@ -259,11 +260,10 @@ def test_auth_parameters_user_isolation_revocation_and_write_invalidation(setup)
         assert (await asgi_request(app, "GET", "/kalender", headers)).status_code == 401
         state.revoked = False
         await manager.invalidate_endpoint_cache("5201:student", "/kalender")
-        assert not store.status("5201:student")["available"]
-        assert (
+        assert store.status("5201:student")["available"]
+        assert (await asgi_request(app, "GET", "/kalender", headers)).headers[
             "x-lanis-cache"
-            not in (await asgi_request(app, "GET", "/kalender", headers)).headers
-        )
+        ] == "stale"
 
     asyncio.run(scenario())
 
@@ -274,13 +274,13 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     key = ("a", "/kalender", ())
     version = store.version("a", "/kalender")
     store.put(key, b"{}", now - timedelta(hours=25), version)
-    assert store.get(key, version) is None
+    assert store.get(key, version) is not None
     store.put(key, b"{}", now, version)
     store.invalidate("a")
     store.put(key, b"{}", now, version)
     assert store.get(key, store.version("a", "/kalender")) is None
     monkeypatch.setattr(outage_cache, "MAX_USER_ENTRIES", 2)
-    monkeypatch.setattr(outage_cache, "MAX_TOTAL_BYTES", 6)
+    monkeypatch.setattr(outage_cache, "MAX_USER_BYTES", 6)
     monkeypatch.setattr(outage_cache, "MAX_BODY_BYTES", 3)
     version = store.version("a", "/kalender")
     for index in range(4):
@@ -289,9 +289,48 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     assert len(store.entries) == 2
     store.put(("b", "/x", ()), b"{}", now, store.version("b", "/x"))
     store.put(("c", "/x", ()), b"{}", now, store.version("c", "/x"))
-    assert store.total_bytes == 6
+    assert store.total_bytes == 8
     store.put(key, b"large", now, version)
     assert store.get(key, version) is None
+
+
+def test_large_response_survives_persistence_reload_and_outage(
+    setup, tmp_path, monkeypatch
+):
+    """Retain a response the size of the 10.24 MiB live message-header sample."""
+    import httpx
+
+    app, manager, store, state, headers = setup
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
+    database = str(tmp_path / "snapshots.db")
+    store.enable_persistence(database)
+    state.value = "x" * 10_739_936
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test.local"
+        ) as client:
+            fresh = await client.get("/kalender", headers=headers)
+            assert fresh.headers["x-lanis-cache"] == "fresh"
+            assert fresh.json()["value"] == state.value
+            await store.close()
+            restored = outage_cache.SnapshotStore()
+            restored.enable_persistence(database)
+            monkeypatch.setattr(outage_cache, "snapshots", restored)
+            monkeypatch.setattr(api_module, "snapshots", restored)
+            # A restart drops the live cache while retaining persisted snapshots.
+            manager._cache.clear()
+            state.mode = "timeout"
+            stale = await client.get("/kalender", headers=headers)
+            assert stale.headers["x-lanis-cache"] == "stale"
+            assert stale.content == fresh.content
+            assert (
+                restored.status("5201:student")["body_bytes"]
+                < outage_cache.MAX_USER_BYTES
+            )
+            await restored.close()
+
+    asyncio.run(scenario())
 
 
 def test_deleted_user_snapshot_generation_is_never_reused():
@@ -383,3 +422,89 @@ def test_old_metadata_does_not_age_timetable_snapshot(setup):
             observation.reset(token)
 
     asyncio.run(scenario())
+
+
+def test_default_query_parameters_share_proactively_warmed_snapshot(setup):
+    app, _manager, store, state, headers = setup
+
+    @app.get("/kalender/events")
+    async def events(
+        year: int = 0,
+        start: str = "year",
+        include_raw: bool = False,
+        auth=Depends(api_module.local_auth_dependency),  # noqa: B008
+    ):
+        try:
+            ObservedSession().get("https://example.invalid").raise_for_status()
+        except requests.RequestException:
+            return {"success": False}
+        return {
+            "success": True,
+            "year": year,
+            "start": start,
+            "include_raw": include_raw,
+        }
+
+    async def scenario():
+        fresh = await asgi_request(app, "GET", "/kalender/events", headers)
+        assert fresh.headers["x-lanis-cache"] == "fresh"
+        state.mode = "timeout"
+        stale = await asgi_request(
+            app, "GET", "/kalender/events?year=0&start=year&include_raw=no", headers
+        )
+        assert stale.headers["x-lanis-cache"] == "stale"
+        assert stale.json() == fresh.json()
+        assert len(store.entries) == 1
+        # FastAPI uses the last scalar value; dropping defaults must happen after that.
+        duplicate = await asgi_request(
+            app, "GET", "/kalender/events?year=1&year=0", headers
+        )
+        assert duplicate.headers["x-lanis-cache"] == "stale"
+        other = await asgi_request(app, "GET", "/kalender/events?year=1", headers)
+        assert "x-lanis-cache" not in other.headers
+        invalid = await asgi_request(
+            app, "GET", "/kalender/events?year=invalid", headers
+        )
+        assert invalid.status_code == 422
+
+    asyncio.run(scenario())
+
+
+def test_query_normalization_accepts_pydantic_v1_fields():
+    from starlette.datastructures import QueryParams
+
+    field = SimpleNamespace(
+        alias="year", required=False, default=0, outer_type_=int, shape=1
+    )
+    assert (
+        outage_cache.normalized_query_params([field], QueryParams("year=1&year=0"))
+        == ()
+    )
+    assert outage_cache.normalized_query_params(
+        [field], QueryParams("year=0&year=1")
+    ) == (("year", "1"),)
+
+
+def test_query_normalization_with_real_legacy_model_fields():
+    """Exercise the Pydantic v1 compatibility model bundled with Pydantic v2."""
+    from starlette.datastructures import QueryParams
+
+    try:
+        from pydantic.v1 import BaseModel
+    except ImportError:
+        from pydantic import BaseModel
+
+    class LegacyParameters(BaseModel):
+        year: int = 0
+        refresh: bool = False
+
+    fields = list(LegacyParameters.__fields__.values())
+    assert (
+        outage_cache.normalized_query_params(
+            fields, QueryParams("year=1&year=0&refresh=true")
+        )
+        == ()
+    )
+    assert outage_cache.normalized_query_params(
+        fields, QueryParams("year=0&year=1")
+    ) == (("year", "1"),)

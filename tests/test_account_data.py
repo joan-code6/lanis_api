@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import aiosqlite
+
 from api import account_data, auth_db
 from api.admin import router as admin_router
 from api.metrics.user_metrics_db import UserMetricsDB
@@ -22,6 +24,14 @@ def test_account_export_excludes_authentication_secrets(tmp_path, monkeypatch):
         )
         await auth_db.save_notification_preferences("5201:student", {"enabled": True})
         await metrics.upsert_user("5201", "student", {"name": "Student"})
+        async with aiosqlite.connect(auth_db.DB_PATH) as db:
+            for user, label in (("5201:student", "mine"), ("5201:other", "other")):
+                await db.execute("INSERT INTO message_read_overrides VALUES (?, ?, ?, ?)",
+                                 (user, label, "activity-signature", 1))
+                await db.execute("INSERT INTO cached_downloads VALUES (?, ?, ?, ?, ?)",
+                                 (user, "private-source-url", label, label + ".pdf", "application/pdf"))
+            await db.commit()
+        await auth_db.save_cache_sync_state("5201:student", 7, 0, 0)
 
         exported = await account_data.build_account_export("5201:student")
         serialized = json.dumps(exported)
@@ -29,6 +39,12 @@ def test_account_export_excludes_authentication_secrets(tmp_path, monkeypatch):
         assert exported["profile"] == {"name": "Student"}
         assert isinstance(exported["preferences"], dict)
         assert exported["notification_preferences"]["enabled"] is True
+        assert exported["message_read_overrides"] == [{"conversation_id": "mine", "unread": 1}]
+        assert exported["cached_downloads"] == [{"file_hash": "mine", "filename": "mine.pdf", "content_type": "application/pdf"}]
+        assert exported["cache_sync"]["complete"] is True
+        assert exported["cache_sync"]["attempted"] == 7
+        assert "private-source-url" not in serialized
+        assert "other.pdf" not in serialized
         assert "secret-password" not in serialized
         assert token not in serialized
         assert "refresh tokens" in exported["excluded_secrets"]

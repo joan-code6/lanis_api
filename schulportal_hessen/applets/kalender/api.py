@@ -280,7 +280,12 @@ def kalender_get_events(
             "u": selected_view,
         }
         response = self.session.post(
-            f"{self.BASE_START_URL}/kalender.php", data=post_data
+            f"{self.BASE_START_URL}/kalender.php",
+            data=post_data,
+            headers={
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"{self.BASE_START_URL}/kalender.php",
+            },
         )
         response.raise_for_status()
 
@@ -348,6 +353,10 @@ def kalender_get_event(
         response = self.session.post(
             f"{self.BASE_START_URL}/kalender.php",
             data={"f": "getEvent", "id": event_id, "u": selected_view},
+            headers={
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"{self.BASE_START_URL}/kalender.php",
+            },
         )
         response.raise_for_status()
 

@@ -46,7 +46,7 @@ from .metrics import user_metrics_db
 from .school_locations import city_coordinates as _city_coordinates
 from .school_locations import geocode_school as _geocode_school
 from .school_locations import get_school_directory as _get_school_directory
-from .uptime import get_uptime_status, run_uptime_check, wake_uptime_scheduler
+from .uptime import get_uptime_status, run_uptime_check
 
 logger = logging.getLogger("admin")
 _held_admin_leases: ContextVar[frozenset[str]] = ContextVar(
@@ -384,9 +384,11 @@ async def admin_uptime_check(
     principal: AdminPrincipal = Depends(admin_dependency),
 ) -> dict[str, Any]:
     """Run an immediate authenticated Schulportal synthetic check."""
-    check = await run_uptime_check()
-    if check.get("status") in {"down", "degraded"}:
-        wake_uptime_scheduler()
+    try:
+        # Return promptly through proxies while the shared cycle keeps running.
+        await asyncio.wait_for(run_uptime_check(), timeout=5)
+    except asyncio.TimeoutError:
+        pass
     await _record_admin_action(principal.user_id, "uptime_check")
     return await get_uptime_status()
 
