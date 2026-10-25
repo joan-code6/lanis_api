@@ -511,6 +511,52 @@ async def admin_users(
     )
 
 
+class ImpersonationLaunchRequest(BaseModel):
+    user_id: str = Field(min_length=3, max_length=300)
+
+
+@router.post("/impersonation/launch")
+async def launch_impersonation(
+    payload: ImpersonationLaunchRequest,
+    response: Response,
+    x_admin_token: str = Header(..., alias="X-Admin-Token"),
+    _: AdminPrincipal = Depends(admin_dependency),
+):
+    """Forward to the separately deployed local broker; never fall back to minting."""
+    from .impersonation import enabled
+
+    if not enabled():
+        raise HTTPException(503, "Private impersonation service is not configured")
+    import httpx
+
+    try:
+        transport = httpx.AsyncHTTPTransport(
+            uds=os.environ["LANIS_IMPERSONATION_SOCKET"]
+        )
+        async with httpx.AsyncClient(transport=transport, timeout=5) as client:
+            result = await client.post(
+                "http://broker/launch",
+                json={"user_id": payload.user_id},
+                headers={"X-Admin-Token": x_admin_token},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(
+            503, "Private impersonation service is unavailable"
+        ) from None
+    if result.status_code != 200:
+        detail = (
+            result.json().get("detail")
+            if result.status_code in {401, 403, 409, 429, 503}
+            else None
+        )
+        raise HTTPException(
+            result.status_code if detail else 503,
+            detail or "Preview could not be created",
+        )
+    response.headers["Cache-Control"] = "no-store"
+    return result.json()
+
+
 @router.get("/users/{user_id:path}")
 async def admin_user_detail(
     user_id: str,
