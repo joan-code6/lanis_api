@@ -100,8 +100,11 @@ received events, but do not provide a distributed Signal subscription coordinato
 
 ## Schedules and execution
 
-Ask in chat (e.g. “Summarize my homework weekdays at 07:00”) or create a five-field
-cron task under the connection's settings. The chat tool and API also accept
+Ask in chat (e.g. “Summarize my homework weekdays at 07:00”). The agent translates
+that request into a schedule and confirms the next run in everyday language.
+Settings only show tasks, their next run, and cancellation; no technical scheduling
+form or cron syntax is exposed. Internally, recurring tasks use five-field cron.
+The chat tool and API also accept
 one-time tasks with `at`, an ISO datetime containing a UTC offset. Cron tasks use
 an IANA timezone, default `Europe/Berlin`; croniter receives timezone-aware dates
 for daylight saving handling. `cron` and `at` are mutually exclusive. Recurring
