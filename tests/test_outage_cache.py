@@ -42,6 +42,7 @@ async def asgi_request(app, method, target, headers=None):
     messages = []
 
     async def receive():
+        await asyncio.sleep(0)
         return {"type": "http.request", "body": b"", "more_body": False}
 
     async def send(message):
@@ -50,7 +51,7 @@ async def asgi_request(app, method, target, headers=None):
     await app(
         {
             "type": "http",
-            "asgi": {"version": "3.0"},
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
             "http_version": "1.1",
             "method": method,
             "scheme": "http",
