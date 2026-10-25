@@ -238,8 +238,9 @@ Arbitrary search results, external websites and live conference join URLs are no
 bulk mirrored. Settings stored entirely in LANIS can be read with local auth.
 
 A fresh authenticated uptime check must report `up` before the batch starts.
-Configure `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME` and
-`LANIS_UPTIME_PASSWORD` (or the existing `LANIS_API_*` equivalents). Unknown,
+Configure at least two explicitly enrolled monitor accounts through
+`LANIS_UPTIME_ACCOUNTS_FILE` as described under Parallel SPH monitor below.
+Legacy single-account credentials alone cannot produce a healthy result. Unknown,
 unconfigured, degraded and down states defer the batch. Failed batches retry every
 15 minutes for up to 24 attempts, then resume at the next daily run.
 No credentials are copied into the scheduler or logs.
