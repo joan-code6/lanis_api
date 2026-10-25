@@ -11,7 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 
 def config():
     return (
-        os.getenv("SIGNAL_BRIDGE_URL", "").rstrip("/"),
+        os.getenv("SIGNAL_BRIDGE_URL", "http://127.0.0.1:8081").rstrip("/"),
         os.getenv("SIGNAL_BOT_NUMBER", "").strip(),
     )
 

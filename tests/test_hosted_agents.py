@@ -378,3 +378,17 @@ def test_account_export_and_deletion_include_hosted_state(environment):
                     ] == 0
 
     asyncio.run(scenario())
+
+
+def test_signal_env_enables_bundled_bridge(monkeypatch):
+    from api import signal
+
+    monkeypatch.delenv("SIGNAL_BRIDGE_URL", raising=False)
+    monkeypatch.delenv("SIGNAL_BOT_NUMBER", raising=False)
+    assert not signal.configured()
+    monkeypatch.setenv("SIGNAL_BOT_NUMBER", "+491234567890")
+    assert signal.configured()
+    assert signal.config()[0] == "http://127.0.0.1:8081"
+    monkeypatch.setenv("SIGNAL_BRIDGE_URL", "http://signal-bridge:8080")
+    assert signal.configured()
+    assert signal.config()[0] == "http://signal-bridge:8080"

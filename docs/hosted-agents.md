@@ -6,8 +6,8 @@ The endpoint must be an HTTPS OpenAI-compatible `/chat/completions` URL. The
 existing provider privacy settings (no data collection and ZDR) remain in effect.
 No user API keys or Schulportal passwords are sent to messaging transports or AI.
 
-This feature builds on the Agents/MCP development branches. Deploy the matching
-API and UI together after the Agents/MCP prerequisite changes are included.
+This feature builds on the existing Agents/MCP implementation on `origin/main`.
+Deploy the matching API and UI together.
 
 ## Connect and manage
 
@@ -45,16 +45,48 @@ See the [Meta messaging documentation](https://whatsappbusiness.com/policy/?faq=
 
 ## Signal bridge
 
-Run an operator-controlled [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)
-bridge in `MODE=json-rpc`, register or link the bot's Signal account according to
-its documentation, and persist its account state. Configure the backend:
+LANIS includes an optional [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)
+service in its Docker Compose deployment. Add the following to the backend's
+existing `.env` (alongside `JWT_SECRET` and the central AI configuration):
 
 ```dotenv
-SIGNAL_BRIDGE_URL=http://127.0.0.1:8080
+COMPOSE_PROFILES=signal
 SIGNAL_BOT_NUMBER=+491234567890
-# Optional bearer token for an authenticated reverse proxy in front of the bridge:
+# Docker uses http://signal-bridge:8080 automatically; omit SIGNAL_BRIDGE_URL.
+# Optional local provisioning port and pinned image override:
+# SIGNAL_BRIDGE_PORT=8081
+# SIGNAL_BRIDGE_IMAGE=bbernhard/signal-cli-rest-api:0.101
+```
+
+Then run the normal `docker compose up -d --build` or the existing Docker deploy
+script. Compose reads `COMPOSE_PROFILES` from `.env`, starts the bundled bridge
+in JSON-RPC mode, and connects LANIS over the private Compose network. Signal's
+account credentials and cryptographic keys persist in the `signal-data` volume.
+They are created by Signal registration/linking, rather than pasted into `.env`.
+
+For initial linking, open
+`http://127.0.0.1:8081/v1/qrcodelink?device_name=LANIS` on the backend host, then
+scan the QR code in the bot account's Signal app under **Settings → Linked devices**.
+Use an SSH tunnel to that loopback port if administering remotely. Set
+`SIGNAL_BOT_NUMBER` to this account's international number. Alternatively follow
+the bridge's registration/verification instructions for a dedicated bot account.
+Do not share the QR code or copy its account volume to external services.
+
+When the API runs directly as a user service, the same bundled bridge can be
+started with `docker compose --profile signal up -d signal-bridge`; the API's
+Signal client defaults to `http://127.0.0.1:8081`. For an existing bridge or a
+separate host, configure its URL instead:
+
+```dotenv
+SIGNAL_BRIDGE_URL=https://your-private-signal-bridge.example
+SIGNAL_BOT_NUMBER=+491234567890
+# Optional bearer token for an authenticated reverse proxy:
 SIGNAL_BRIDGE_TOKEN=replace-locally-if-required
 ```
+
+Leave `SIGNAL_BOT_NUMBER` unset to disable the Signal receiver. Leave
+`COMPOSE_PROFILES` unset to avoid starting the bundled bridge. No production
+service is started or reconfigured by this change itself.
 
 Keep the bridge private: loopback or a protected internal network; use HTTPS and
 an authenticated gateway across hosts. This backend does not expose a public
