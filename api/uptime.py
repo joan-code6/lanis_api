@@ -207,7 +207,7 @@ def _install_request_timeout(client: SchulportalHessenAPI) -> None:
 
 
 def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
-    """Fetch the account's modules and verify that each module can open."""
+    """Fetch the account's modules and verify at least one can open."""
     started = time.perf_counter()
     try:
         apps_result = client.get_apps()
@@ -262,11 +262,12 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
                 continue
 
         module_count = len(modules)
+        modules_available = opened_count > 0
         return _feature(
             "modules",
-            "up" if opened_count == module_count else "down",
+            "up" if modules_available else "down",
             started,
-            error=None if opened_count == module_count else "module_open_failed",
+            error=None if modules_available else "module_open_failed",
             module_count=module_count,
             opened_count=opened_count,
         )
@@ -1049,7 +1050,7 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
             _uptime_cycle_phase = "confirmation"
             results = await _probe_round(selected + replacements, labels)
             details["rounds"].append({"name": "confirmation", "results": results})
-        status, classification = _classify_round(results)
+        observed_status, classification = _classify_round(results)
         if classification == "healthy" and len(details["rounds"]) == 2:
             classification = "transient"
         details["classification"] = classification
@@ -1058,6 +1059,13 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
             initial if len(details["rounds"]) == 2 else [],
             4 if len(details["rounds"]) == 2 else 2,
         ))
+        # A single failing registered account is an account-scoped finding, not
+        # evidence that the portal is unavailable to users generally. Keep the
+        # observed failure and its scope in monitoring diagnostics, while the
+        # service-wide availability remains healthy for public status, uptime,
+        # and incident notifications.
+        details["observed_status"] = observed_status
+        status = "up" if classification == "isolated" else observed_status
         check["status"] = status
         check["error"] = None if status == "up" else classification
         for name in ("login", "modules"):
@@ -1081,6 +1089,8 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
                 if "down" in states
                 else "unknown"
             )
+            if classification == "isolated":
+                feature_status = "up"
             latencies = [
                 f["latency_ms"]
                 for r in results
@@ -1103,15 +1113,50 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
                     "error": None,
                 }
             )
-        previous = await user_metrics_db.get_uptime_checks(limit=1)
+        previous = await user_metrics_db.get_uptime_checks(limit=UPTIME_HISTORY_LIMIT)
         if previous:
             last = previous[0]
+            last_monitoring = last.get("monitoring") or {}
+            issue_classification = last_monitoring.get(
+                "pending_classification", last_monitoring.get("classification")
+            )
+            issue_scope = last_monitoring.get("pending_scope", last_monitoring.get("scope"))
+            # Older rows created by the previous recovery logic did not retain
+            # the incident's original scope. Recover it across pending-unknown
+            # rows when this is the first held recovery sample.
+            if (
+                last_monitoring.get("classification") == "recovering"
+                and not last_monitoring.get("pending_classification")
+            ):
+                for prior in previous[1:]:
+                    prior_monitoring = prior.get("monitoring") or {}
+                    if (
+                        prior_monitoring.get("classification") == "isolated"
+                        and prior_monitoring.get("scope") == "account"
+                    ):
+                        issue_classification = "isolated"
+                        issue_scope = "account"
+                        break
+                    if (
+                        prior.get("status") == "unknown"
+                        and prior_monitoring.get("classification") == "inconclusive"
+                        and prior_monitoring.get("observed_status") == "unknown"
+                        and prior_monitoring.get("pending_status") in {"down", "degraded"}
+                    ):
+                        continue
+                    issue_classification = prior_monitoring.get("classification")
+                    issue_scope = prior_monitoring.get("scope")
+                    break
             pending_status = (
                 last["status"]
                 if last["status"] in {"down", "degraded"}
-                else last.get("monitoring", {}).get("pending_status")
+                else last_monitoring.get("pending_status")
             )
-            recovering = pending_status in {"down", "degraded"}
+            previous_was_isolated = issue_classification == "isolated" and issue_scope == "account"
+            recovering = (
+                pending_status in {"down", "degraded"}
+                and not previous_was_isolated
+            )
             if status == "up" and recovering:
                 streak = (
                     (
@@ -1125,10 +1170,15 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
                 if streak < 2:
                     check["status"] = pending_status
                     details["classification"] = "recovering"
+                    details["pending_status"] = pending_status
+                    details["pending_classification"] = issue_classification
+                    details["pending_scope"] = issue_scope
                     check["error"] = "recovery_pending"
             elif status == "unknown" and recovering:
                 # Unknown evidence cannot close an incident, including across restarts.
                 details["pending_status"] = pending_status
+                details["pending_classification"] = issue_classification
+                details["pending_scope"] = issue_scope
         check["is_available"] = (
             True
             if check["status"] == "up"
@@ -1141,10 +1191,17 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
         previous = await user_metrics_db.get_uptime_checks(limit=1)
         if previous:
             last = previous[0]
+            last_monitoring = last.get("monitoring") or {}
             details["pending_status"] = (
                 last["status"]
                 if last["status"] in {"down", "degraded"}
-                else last.get("monitoring", {}).get("pending_status")
+                else last_monitoring.get("pending_status")
+            )
+            details["pending_classification"] = last_monitoring.get(
+                "pending_classification", last_monitoring.get("classification")
+            )
+            details["pending_scope"] = last_monitoring.get(
+                "pending_scope", last_monitoring.get("scope")
             )
     check["checked_at"] = _utcnow().isoformat()
     check["latency_ms"] = max(0, round((time.perf_counter() - started) * 1000))

@@ -303,7 +303,7 @@ def test_confidence_and_scope_are_separate_from_availability(
     assert evidence["repeated_failures"] == int(states[0] == "down")
 
 
-def test_isolated_failure_counts_towards_uptime_and_scoped_incident(
+def test_isolated_account_failure_does_not_count_as_service_downtime(
     monkeypatch, tmp_path
 ):
     from datetime import timedelta
@@ -321,6 +321,81 @@ def test_isolated_failure_counts_towards_uptime_and_scoped_incident(
         monkeypatch.setattr(uptime, "_schedule_discord_notification", alerts.append)
         state = "up"
         first_account = []
+
+        # Simulate a pre-fix production row: it was persisted as downtime even
+        # though the monitor had enough evidence to scope it to one account.
+        await database.record_uptime_check(
+            {
+                "checked_at": clock[0].isoformat(),
+                "status": "degraded",
+                "is_available": False,
+                "latency_ms": 1,
+                "sample_interval_seconds": 300,
+                "features": [
+                    {"name": "login", "status": "up"},
+                    {"name": "modules", "status": "degraded"},
+                ],
+                "monitoring": {
+                    "classification": "isolated",
+                    "observed_status": "degraded",
+                    "scope": "account",
+                    "confidence": "limited",
+                    "failed_accounts": 1,
+                },
+            }
+        )
+        await database.record_uptime_check(
+            {
+                "checked_at": (clock[0] + timedelta(seconds=300)).isoformat(),
+                "status": "unknown",
+                "is_available": None,
+                "latency_ms": 1,
+                "sample_interval_seconds": 300,
+                "features": [
+                    {"name": "login", "status": "unknown"},
+                    {"name": "modules", "status": "unknown"},
+                ],
+                "monitoring": {
+                    "classification": "inconclusive",
+                    "observed_status": "unknown",
+                    "scope": "unknown",
+                    "confidence": "inconclusive",
+                    "failed_accounts": 0,
+                    "pending_status": "degraded",
+                },
+            }
+        )
+        await database.record_uptime_check(
+            {
+                "checked_at": (clock[0] + timedelta(seconds=600)).isoformat(),
+                "status": "degraded",
+                "is_available": False,
+                "latency_ms": 1,
+                "sample_interval_seconds": 300,
+                "features": [
+                    {"name": "login", "status": "up"},
+                    {"name": "modules", "status": "up"},
+                ],
+                "monitoring": {
+                    "classification": "recovering",
+                    "observed_status": "up",
+                    "scope": "sampled_accounts",
+                    "confidence": "confirmed",
+                    "failed_accounts": 0,
+                    "recovery_streak": 1,
+                },
+            }
+        )
+
+        # The old code kept this clean sample degraded while waiting for a
+        # second full scheduled cycle, even though its preceding issue was
+        # isolated to one account.
+        clock[0] += timedelta(seconds=600)
+        recovering_public = await public_status._build_public_status()
+        assert recovering_public["current"]["status"] == "up"
+        assert recovering_public["summary"]["failed_checks"] == 0
+        assert recovering_public["summary"]["unknown_checks"] == 1
+        assert recovering_public["incidents"] == []
 
         async def fake_round(selected, labels):
             if not first_account:
@@ -349,32 +424,79 @@ def test_isolated_failure_counts_towards_uptime_and_scoped_incident(
 
         monkeypatch.setattr(uptime, "_probe_round", fake_round)
         monkeypatch.setattr(uptime.asyncio, "sleep", no_wait)
-        await uptime._run_uptime_cycle(True)
         clock[0] += timedelta(seconds=300)
         state = "down"
         check = await uptime._run_uptime_cycle(True)
-        assert check["status"] == "degraded"
-        assert check["is_available"] is False
+        assert check["status"] == "up"
+        assert check["is_available"] is True
         assert check["monitoring"]["confidence"] == "limited"
         assert check["monitoring"]["scope"] == "account"
+        assert check["monitoring"]["classification"] == "isolated"
+        assert check["monitoring"]["observed_status"] == "degraded"
         assert check["monitoring"]["repeated_failures"] == 1
-        assert check["features"][0]["status"] == "degraded"
-        assert alerts[-1]["status"] == "degraded"
+        assert all(feature["status"] == "up" for feature in check["features"])
+        assert alerts[-1]["status"] == "up"
         clock[0] += timedelta(seconds=300)
         public = await public_status._build_public_status()
-        assert public["summary"]["available_checks"] == 1
-        assert public["summary"]["failed_checks"] == 1
-        assert public["summary"]["uptime_percent"] == 50.0
+        assert public["summary"]["available_checks"] == 3
+        assert public["summary"]["failed_checks"] == 0
+        assert public["summary"]["uptime_percent"] == 100.0
+        assert public["current"]["status"] == "up"
+        assert public["current"]["observed_status"] == "degraded"
         assert public["current"]["confidence"] == "limited"
         assert public["current"]["scope"] == "account"
-        assert public["current"]["features"][0]["status"] == "degraded"
-        assert public["incidents"][0]["affected_features"] == ["login"]
-        assert public["incidents"][0]["scope"] == "account"
-        assert public["incidents"][0]["confidence"] == "limited"
+        assert all(feature["status"] == "up" for feature in public["current"]["features"])
+        assert public["incidents"] == []
         assert "Account 1" not in json.dumps(public)
         assert "monitor-" not in json.dumps(public)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("monitoring", "expected_status", "expected_feature_status"),
+    [
+        (
+            {
+                "classification": "isolated",
+                "observed_status": "degraded",
+                "scope": "account",
+                "failed_accounts": 1,
+            },
+            "up",
+            "up",
+        ),
+        (
+            {
+                "classification": "confirmed",
+                "observed_status": "degraded",
+                "scope": "multiple_schools",
+                "failed_accounts": 2,
+            },
+            "degraded",
+            "degraded",
+        ),
+    ],
+)
+def test_public_projection_only_normalizes_isolated_account_failures(
+    monitoring, expected_status, expected_feature_status
+):
+    from api import public_status
+
+    projected = public_status._check(
+        {
+            "status": "degraded",
+            "features": [
+                {"name": "login", "status": "up"},
+                {"name": "modules", "status": "degraded"},
+            ],
+            "monitoring": monitoring,
+        },
+        datetime.fromisoformat("2026-10-25T09:00:00"),
+    )
+
+    assert projected["status"] == expected_status
+    assert projected["features"][1]["status"] == expected_feature_status
 
 
 def test_public_evidence_projection_rejects_private_or_invalid_values():

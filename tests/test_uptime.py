@@ -15,14 +15,20 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, module_status: int = 200):
+    def __init__(self, module_status: int | list[int] = 200):
         self.module_status = module_status
+        self.module_requests = 0
 
     def request(self, method, url, **kwargs):
         return FakeResponse(200)
 
     def get(self, url, **kwargs):
-        return FakeResponse(self.module_status)
+        if isinstance(self.module_status, list):
+            status = self.module_status[self.module_requests]
+        else:
+            status = self.module_status
+        self.module_requests += 1
+        return FakeResponse(status)
 
 
 class FakeClient:
@@ -70,7 +76,24 @@ def test_probe_runs_login_and_opens_all_modules(monkeypatch):
     assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
 
 
-def test_probe_reports_module_open_failure_without_exposing_credentials(monkeypatch):
+def test_one_open_module_is_enough_for_modules_to_be_healthy(monkeypatch):
+    configure_monitor(monkeypatch)
+    FakeClient.module_status = [200, 503]
+    monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
+
+    try:
+        result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
+    finally:
+        FakeClient.module_status = 200
+
+    assert result["status"] == "up"
+    assert result["features"][1]["status"] == "up"
+    assert result["features"][1]["module_count"] == 2
+    assert result["features"][1]["opened_count"] == 1
+    assert result["features"][1]["error"] is None
+
+
+def test_probe_reports_module_failure_when_none_open_without_exposing_credentials(monkeypatch):
     configure_monitor(monkeypatch)
     FakeClient.module_status = 503
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
