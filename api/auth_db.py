@@ -328,6 +328,14 @@ async def initialize() -> None:
     """Create the database and tables if they don't exist."""
     os.makedirs("data", exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
+        from .analytics_store import SCHEMA as ANALYTICS_SCHEMA
+        await db.executescript(ANALYTICS_SCHEMA)
+        async with db.execute("PRAGMA table_info(analytics_diagnostics)") as cursor:
+            analytics_columns = {row[1] for row in await cursor.fetchall()}
+        if 'request_id' not in analytics_columns:
+            await db.execute("ALTER TABLE analytics_diagnostics ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
+        await db.execute("CREATE INDEX IF NOT EXISTS analytics_diagnostics_request ON analytics_diagnostics(request_id)")
+        await db.execute("DELETE FROM analytics_diagnostics WHERE expires_at <= ?", (int(time.time()),))
         from .agent_store import SCHEMA
         await db.executescript(SCHEMA)
         await db.execute(
@@ -1617,6 +1625,7 @@ async def get_refresh_metadata_by_user_id(user_id: str) -> Optional[dict]:
 
 async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     """Return user-owned persisted data without exposing authentication secrets."""
+    from .analytics_store import export_metadata
     user_id = _canonical_user_id(user_id)
     credential = await get_refresh_metadata_by_user_id(user_id)
     preferences, _ = await get_user_preferences(user_id)
@@ -1670,6 +1679,7 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
             "dashboard_notifications": dashboard_notifications,
         },
         "cached_file_references": cached_file_references,
+        "analytics": await export_metadata(user_id),
         "message_read_overrides": unread_overrides,
         "message_body_receipts": body_receipts,
         "cached_downloads": downloads,
@@ -1762,6 +1772,9 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     """Atomically delete all user-owned rows from the authentication database."""
     user_id = _canonical_user_id(user_id)
     tables = (
+        "analytics_requests",
+        "analytics_diagnostics",
+        "analytics_accounts",
         "refresh_tokens",
         "cache_sync_state",
         "cached_downloads",
