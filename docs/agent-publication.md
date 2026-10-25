@@ -28,24 +28,55 @@ Listing, starter prompts, review cases and release notes use German. Optional
 English copy is retained in `docs/agent-listing.en.md`; no unsupported English
 locale override is added to the manifest.
 
-## Inputs still needed
+## Submission preparation, 25 October 2026
 
-Before building the submission version, fill these confirmed values under
-`extensions.com.openai` in the manifest:
+The upload artifact is `artifacts/chatgpt/lanis-chatgpt-draft.zip`. It contains
+only the portable manifest, OAuth MCP configuration, and canonical icon.
+It is a **draft**, not a submission-ready release. Production deployment was
+explicitly left pending by the owner.
 
-| Field | Needed value |
-| --- | --- |
-| `interface.privacyPolicyURL` | Published policy covering external agent access |
-| `interface.termsOfServiceURL` | Published applicable terms; an imprint is not a substitute |
-| `review.demo_recording_url` | Verified reviewer-accessible recording |
+Completed locally:
+- German listing, supported capabilities, publisher metadata and release notes.
+- Exactly five positive and three negative review cases; exam discovery now uses
+  `lanis_exams` as its first-choice source.
+- Privacy and terms URLs in the manifest. The terms page and clearer agent
+  privacy disclosures are prepared in the `lanis_ui` worktree
+  `/home/bennet/projects/lanis-ui-app-submission`, branch `polish/chatgpt-submission`.
+- All 38 tools declare object output schemas and return structured JSON through
+  the MCP SDK. The schemas deliberately allow module-specific result fields.
+- Optional domain-challenge endpoint. Set `LANIS_OPENAI_APPS_CHALLENGE` to the
+  exact public challenge shown by OpenAI, then deploy. It returns plain text,
+  no newline, with `Cache-Control: no-store`; unset configuration returns 404.
+- Approved irreversible-message annotations set on both sending tools.
+- Auxiliary `chatgpt-app-submission.json` includes all 38 tools, annotation
+  justifications, listing information and the five positive/three negative cases.
+- Live OAuth discovery verified at `https://lanis-backend.joancode.dev`.
 
-Do not invent publisher verification or attestations. Optional dark icons and
-brand colors are omitted; the supplied existing mark works on both themes.
+Still required:
+1. Deploy the reviewed API and UI changes and inspect the live legal pages.
+2. Run all eight cases in ChatGPT using a dedicated, permitted school account
+   containing sample data. Existing local test credentials are not automatically
+   suitable for public-directory reviewers and must never enter the ZIP.
+3. Record and host a real ChatGPT walkthrough. Set its verified URL in
+   `extensions.com.openai.review.demo_recording_url` and rebuild.
+4. In OpenAI's portal, confirm publisher verification, enter reviewer credentials
+   privately, complete domain verification and OAuth connection/tool scanning,
+   and make the required legal attestations. Approval precedes a separate Publish
+   action. Existing availability remains Germany (`DE`).
 
-On 23 October 2026, the live UI privacy and imprint pages rendered correctly in
-a real browser, but agent-specific privacy coverage is still a deployment check.
-No terms page was found in the source. Do not call that field complete by guessing
-a URL. The public API discovery URL returned HTTP 404 during preparation.
+The generated ZIP includes the future terms URL; uploading it now does not make
+the undeployed legal page available. Do not submit it as a finished release.
+
+Source review: tool inputs do not request passwords, tokens, MFA codes or payment
+identifiers. Sensitive profile/grade/attendance/meeting-link tools have separate
+permissions. Messages, file contents and submissions can contain personal school
+data and are transmitted to the connected agent on request; the privacy copy
+now names these categories. The integration has no ChatGPT widget resources,
+so there is no widget CSP to configure. The two send annotation findings have been corrected in source. No outputSchema is missing in the prepared source.
+
+Verification: 138 API/MCP/builder tests passed. UI TypeScript check passed.
+The local browser executable cannot launch on this host because it targets
+x86_64 while the host is aarch64; no browser/ChatGPT visual result is claimed.
 
 ## Deployment gate
 
@@ -92,7 +123,7 @@ Once the inputs and deployment gate are complete:
 ```sh
 python scripts/build_agent_plugin.py \
   --issuer https://lanis-backend.joancode.dev \
-  --output /tmp/lanis-plugin.zip
+  --output /tmp/lanis-plugin.zip --submission
 python -m zipfile -l /tmp/lanis-plugin.zip
 ```
 

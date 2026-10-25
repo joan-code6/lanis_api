@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from . import agent_store as store
@@ -213,6 +213,15 @@ async def owner(request: Request):
     if not token:
         raise HTTPException(401, "Log in to LANIS to manage agent connections.")
     return await local_auth_dependency(token)
+
+
+@router.get("/.well-known/openai-apps-challenge", include_in_schema=False)
+async def openai_apps_challenge():
+    """Serve the public domain-verification challenge supplied by OpenAI's portal."""
+    challenge = os.environ.get("LANIS_OPENAI_APPS_CHALLENGE", "")
+    if not challenge or len(challenge) > 4096 or any(c in challenge for c in "\r\n"):
+        raise HTTPException(404, "Domain verification is not configured")
+    return PlainTextResponse(challenge, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/.well-known/oauth-protected-resource")

@@ -38,3 +38,6 @@ pg*.py
 build/
 dist/
 *.egg-info/
+
+# Local ChatGPT submission build artifacts
+artifacts/chatgpt/

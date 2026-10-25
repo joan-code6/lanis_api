@@ -4,7 +4,7 @@ import logging
 import time
 from contextvars import ContextVar
 from functools import wraps
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import HTTPException
@@ -363,7 +363,7 @@ async def run(scope, fn, *, write=False):
 
 
 @tool(title="Your LANIS connection")
-async def lanis_connection() -> dict:
+async def lanis_connection() -> dict[str, Any]:
     """Start here to discover this connection’s permissions, available account tools, current Europe/Berlin time and settings link. Use available_tools to choose the next supported operation."""
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -405,7 +405,7 @@ async def lanis_connection() -> dict:
 
 
 @tool("schoolwork:read", title="Find courses and homework")
-async def lanis_courses() -> dict:
+async def lanis_courses() -> dict[str, Any]:
     """Mein Unterricht course and homework overview. Use for current homework across subjects and to discover book_id values for lanis_course. Returns the user’s courses and current schoolwork."""
     from .api import meinunterricht_overview
 
@@ -471,7 +471,7 @@ async def lanis_course(
     limit: Annotated[
         int, Field(ge=1, le=50, description="Maximum lesson entries per response.")
     ] = 20,
-) -> dict:
+) -> dict[str, Any]:
     """Mein Unterricht lesson history and homework for one course. Use for a subject’s assignments, lesson topics, materials and returned exam records. Pass a book_id from lanis_courses and paginate with next_offset. Preserve supplied dates and describe missing due dates as unspecified."""
     from .api import meinunterricht_course
 
@@ -483,7 +483,7 @@ async def lanis_course(
 
 
 @tool("timetable:read", title="Read your timetable")
-async def lanis_timetable() -> dict:
+async def lanis_timetable() -> dict[str, Any]:
     """Stundenplan weekly timetable with the user’s personal recurring lesson overrides. Use for lesson times, subjects, teachers and rooms. Combine available substitution tools with the requested class and date to describe changes to the regular school day."""
     from fastapi.concurrency import run_in_threadpool
 
@@ -500,7 +500,7 @@ async def lanis_timetable() -> dict:
 
 
 @tool("timetable:read", title="Check substitutions")
-async def lanis_substitutions() -> dict:
+async def lanis_substitutions() -> dict[str, Any]:
     """Schulportal Vertretungsplan: current cancellations, substitute teachers, room changes and replacement lessons. Use for changes to the regular timetable. Select entries for the user’s class and requested date from the returned school-wide plan."""
     from .api import get_vertretungsplan
 
@@ -520,7 +520,7 @@ async def lanis_calendar(
             description="Calendar year. Resolve relative dates using lanis_connection.",
         ),
     ],
-) -> dict:
+) -> dict[str, Any]:
     """Schulportal Kalender events for a selected year. Use for school events, holidays, appointments and scheduled activities. Filter returned dates for the requested range and preserve event times. Discover calendar views with lanis_calendar_views and expand an event with lanis_calendar_event."""
     from .api import get_calendar_events
 
@@ -543,7 +543,7 @@ async def lanis_messages(
     offset: Annotated[
         int, Field(ge=0, le=100000, description="Pagination last value; start with 0.")
     ] = 0,
-) -> dict:
+) -> dict[str, Any]:
     """Nachrichten inbox headers, conversation IDs and unread status. Use for recent messages, unread counts and discovering conversations. Pass a returned conversation ID to lanis_message for previously loaded contents or lanis_open_message for an explicit opening."""
     from .api import get_message_headers
 
@@ -563,7 +563,7 @@ async def lanis_message(
             description="Conversation ID returned by lanis_messages.",
         ),
     ],
-) -> dict:
+) -> dict[str, Any]:
     """Previously loaded Nachrichten conversation contents, preserving unread status. Use to read a cached conversation ID from lanis_messages. MESSAGE_NOT_CACHED means fresh contents require lanis_open_message, whose separate permission allows opening and marking the conversation read."""
     from .api import _make_param_key, sessions
 
