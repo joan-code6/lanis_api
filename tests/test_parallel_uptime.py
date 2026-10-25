@@ -8,7 +8,6 @@ from datetime import datetime
 import pytest
 
 from api import uptime
-from api.auth_db import _encrypt_password
 from api.metrics.user_metrics_db import UserMetricsDB
 
 
@@ -24,27 +23,6 @@ def result(status):
             {"name": "modules", "status": "up" if status == "up" else "down"},
         ],
     }
-
-
-def test_encrypted_pool_deduplicates_and_requires_private_file(monkeypatch, tmp_path):
-    path = tmp_path / "accounts.json"
-    data = [
-        {"school_id": school, "username": user, "password": _encrypt_password(password)}
-        for school, user, password in accounts(4)
-    ]
-    data.append(dict(data[0]))
-    data.append({**data[1], "enabled": False})
-    path.write_text(json.dumps(data))
-    path.chmod(0o600)
-    monkeypatch.setenv("LANIS_UPTIME_ACCOUNTS_FILE", str(path))
-    assert len(uptime._monitor_accounts()) == 4
-    assert uptime.uptime_is_configured()
-    path.chmod(0o644)
-    assert uptime._monitor_accounts() == []
-    path.chmod(0o600)
-    data[0]["password"] = "plaintext-must-not-work"
-    path.write_text(json.dumps(data))
-    assert uptime._monitor_accounts() == []
 
 
 def test_selection_is_distinct_and_prefers_school_diversity():
@@ -80,6 +58,10 @@ def test_round_really_runs_concurrently(monkeypatch):
         barrier.wait()
         return result("up")
 
+    async def credentials(account):
+        return account
+
+    monkeypatch.setattr(uptime, "_registered_credentials", credentials)
     monkeypatch.setattr(uptime, "_isolated_probe", fake_probe)
     pool = accounts(2)
     results = asyncio.run(
@@ -280,28 +262,6 @@ def test_monitoring_diagnostics_are_not_in_public_projection():
     assert "private-account" not in json.dumps(projected)
 
 
-def test_encrypted_provisioning_command_does_not_overwrite(monkeypatch, tmp_path):
-    import io
-    import sys
-
-    from api import uptime_accounts
-
-    path = tmp_path / "pool.json"
-    payload = json.dumps(
-        [{"school_id": s, "username": u, "password": p} for s, u, p in accounts(2)]
-    )
-    monkeypatch.setattr(sys, "argv", ["uptime_accounts", str(path)])
-    monkeypatch.setattr(sys, "stdin", io.StringIO(payload))
-    uptime_accounts.main()
-    assert path.stat().st_mode & 0o777 == 0o600
-    assert "private-password" not in path.read_text()
-    original = path.read_bytes()
-    monkeypatch.setattr(sys, "stdin", io.StringIO(payload))
-    with pytest.raises(SystemExit):
-        uptime_accounts.main()
-    assert path.read_bytes() == original
-
-
 @pytest.mark.parametrize(
     "states,schools,expected,confidence,scope",
     [
@@ -465,70 +425,6 @@ def test_scoped_discord_alert_explains_limited_confidence(monkeypatch):
     assert "private-account" not in calls[0]
 
 
-@pytest.mark.parametrize("field", ["school_id", "username"])
-@pytest.mark.parametrize("invalid", [None, True, False, [], {}, 1.5, "", "   "])
-def test_provisioning_rejects_malformed_identities_without_writing(
-    monkeypatch, tmp_path, capsys, field, invalid
-):
-    import io
-    import sys
-
-    from api import uptime_accounts
-
-    output = tmp_path / "pool.json"
-    entries = [
-        {"school_id": s, "username": u, "password": p} for s, u, p in accounts(2)
-    ]
-    entries[1][field] = invalid
-    monkeypatch.setattr(sys, "argv", ["uptime_accounts", str(output)])
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(entries)))
-    with pytest.raises(SystemExit, match="Could not provision monitor pool"):
-        uptime_accounts.main()
-    assert not output.exists()
-    assert "private-password" not in str(capsys.readouterr())
-
-
-@pytest.mark.parametrize("field", ["school_id", "username"])
-@pytest.mark.parametrize("invalid", [None, True, [], {}, 1.5])
-def test_pool_loader_rejects_malformed_identities(
-    monkeypatch, tmp_path, field, invalid
-):
-    path = tmp_path / "pool.json"
-    entries = [
-        {"school_id": s, "username": u, "password": _encrypt_password(p)}
-        for s, u, p in accounts(2)
-    ]
-    entries[1][field] = invalid
-    path.write_text(json.dumps(entries))
-    path.chmod(0o600)
-    monkeypatch.setenv("LANIS_UPTIME_ACCOUNTS_FILE", str(path))
-    assert uptime._monitor_accounts() == []
-
-
-def test_provisioning_accepts_integer_school_ids_and_normalizes(monkeypatch, tmp_path):
-    import io
-    import sys
-
-    from api import uptime_accounts
-
-    path = tmp_path / "pool.json"
-    entries = [
-        {
-            "school_id": 5201,
-            "username": f" monitor-{i} ",
-            "password": "private-password",
-        }
-        for i in range(2)
-    ]
-    monkeypatch.setattr(sys, "argv", ["uptime_accounts", str(path)])
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(entries)))
-    uptime_accounts.main()
-    monkeypatch.setenv("LANIS_UPTIME_ACCOUNTS_FILE", str(path))
-    assert uptime._monitor_accounts() == [
-        ("5201", f"monitor-{i}", "private-password") for i in range(2)
-    ]
-
-
 def test_shutdown_stops_shared_cycle_and_reaps_active_workers(monkeypatch):
     async def scenario():
         pool = accounts(2)
@@ -536,6 +432,11 @@ def test_shutdown_stops_shared_cycle_and_reaps_active_workers(monkeypatch):
         after_probe = []
         monkeypatch.setattr(uptime, "_uptime_stopping", False)
         monkeypatch.setattr(uptime, "_uptime_cycle_task", None)
+
+        async def credentials(account):
+            return account
+
+        monkeypatch.setattr(uptime, "_registered_credentials", credentials)
         monkeypatch.setattr(uptime, "_probe_child", _child_hangs)
         monkeypatch.setenv("LANIS_UPTIME_PROBE_DEADLINE_SECONDS", "60")
 

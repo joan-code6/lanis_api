@@ -60,7 +60,7 @@ def test_probe_runs_login_and_opens_all_modules(monkeypatch):
     configure_monitor(monkeypatch)
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
 
-    result = uptime._probe_portal()
+    result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
 
     assert result["status"] == "up"
     assert result["is_available"] is True
@@ -76,7 +76,7 @@ def test_probe_reports_module_open_failure_without_exposing_credentials(monkeypa
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
 
     try:
-        result = uptime._probe_portal()
+        result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
     finally:
         FakeClient.module_status = 200
 

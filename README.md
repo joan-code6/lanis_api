@@ -74,10 +74,7 @@ LANIS_ADMIN_ACCOUNTS=5201:admin.one,1234:admin.two
 LANIS_ADMIN_JWT_SECRET=replace-with-a-separate-random-value
 LANIS_ADMIN_ORIGIN=https://admin.lanis.arg-server.de
 
-# Optional authenticated Schulportal synthetic monitor. Keep these values secret.
-LANIS_UPTIME_SCHOOL_ID=replace-with-monitor-school-id
-LANIS_UPTIME_USERNAME=replace-with-monitor-username
-LANIS_UPTIME_PASSWORD=replace-with-monitor-password
+# Authenticated checks sample onboarded registered users active in the past 30 days.
 LANIS_UPTIME_INTERVAL_SECONDS=300
 LANIS_UPTIME_TIMEOUT_SECONDS=15
 # Optional Discord transition alerts. Keep the webhook URL secret.
@@ -98,22 +95,14 @@ with the same Schulportal credentials. Admin credentials are not stored in the
 configuration file. The observability API is under `/admin/*`; the legacy
 `/metrics/stats` endpoint is retained only as a protected, deprecated alias.
 
-The backend also runs an authenticated Schulportal synthetic check every five
-minutes by default. Failed probes are retried once immediately; a transient
-failure followed by a successful retry is stored as a healthy observation, not
-as an incident. If a confirmed incident is active, the successful retry is
-stored as the recovery observation.
-While an incident remains active, checks run every 15 seconds. The monitor logs in with the monitor account, loads the available
-modules, and opens each module entry without exposing credentials. Configure
-the account with `LANIS_UPTIME_SCHOOL_ID`, `LANIS_UPTIME_USERNAME`, and
-`LANIS_UPTIME_PASSWORD`; existing local deployments may use the corresponding
-`LANIS_API_*` variables as a fallback. Results are retained for the 90-day
-reporting window plus twice the longest stored sample interval, with at least
-two extra days for legacy rows and the maximum configured cadence.
-A daily 90-day overview is available to the private admin
-portal at `GET /admin/uptime`; its selectable windows include 24 hours, 7, 30,
-and 90 days with median and p95 latency. Incidents are grouped until a successful
-check confirms recovery, and the public status page keeps a safe incident history.
+The backend checks Schulportal every five minutes by default using two randomly
+selected registered users who completed onboarding and were active within the
+past 30 days. On failure, one confirmation round probes the same pair plus up
+to two additional eligible users after 15 seconds. Background probes do not
+update user activity. Incidents require two healthy scheduled cycles to recover.
+The private admin portal exposes stored rounds, confidence, scope, and 90-day
+availability summaries at `GET /admin/uptime`; the public status projection
+contains only aggregate information.
 Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
 receive one alert when the service becomes unavailable and one recovery message
 when it becomes operational again; repeated checks during the same incident are
@@ -317,33 +306,26 @@ This project is released under the [MIT License](LICENSE).
 
 ### Parallel authenticated uptime monitoring
 
-The uptime monitor uses an **explicit pool of designated monitoring accounts**;
-ordinary saved user accounts are never enrolled automatically. Every cycle samples
-two distinct accounts (preferring different schools), runs their login/module
-checks in parallel, and, if either fails, waits 15 seconds before testing the same
-two plus up to two new distinct accounts. Each probe has a fresh isolated process
-and a 90-second overall deadline. Normal and incident cycles use the configured
-`LANIS_UPTIME_INTERVAL_SECONDS` (default 300 seconds); retries never recurse.
+The uptime monitor samples **registered users**, not a separate monitor-account
+list. An eligible user must have `onboarding.status = completed`, a real user
+activity timestamp within the past 30 days, and a usable, unexpired stored SPH
+credential/session. Skipped or incomplete onboarding, stale activity, account
+deletion markers, and revoked/expired credentials exclude the account. Multiple
+browser sessions do not increase a user's sampling probability.
 
-Provision the pool outside the repository using the backend's existing
-`LANIS_CREDENTIAL_ENCRYPTION_KEY` (or stable `JWT_SECRET`). Feed a JSON array of
-objects with `school_id`, `username`, and `password` through stdin:
+Every cycle randomly chooses two distinct users, preferring different schools.
+If either probe fails, it waits 15 seconds and tests the original pair plus up
+to two new distinct eligible users in parallel. Eligibility is checked again
+before every probe, including confirmation. Only selected credentials are
+decrypted, under the existing account lifecycle lease; probes use fresh isolated
+SDK sessions and never refresh the user's activity timestamp. Thus monitoring
+cannot keep an inactive account eligible forever.
 
-```sh
-python -m api.uptime_accounts /private/path/monitor-accounts.json < /private/path/input.json
-```
-
-The command encrypts passwords, creates a mode-0600 output file, refuses to
-replace an existing file, and never prints credentials. Keep the input private
-and remove it after provisioning. Set `LANIS_UPTIME_ACCOUNTS_FILE` to the absolute
-output path. The backend must use the same encryption key. To disable an account,
-set `enabled: false` in the encrypted pool; replace the file atomically when editing.
-Malformed, unreadable, insecurely permissioned, or undecryptable pools fail closed.
-Provisioning and loading share identity validation: only nonempty strings or
-integers are accepted; nulls, booleans, compound values, and floats are rejected.
-The legacy environment credential set is readable but **one account alone is
-insufficient coverage**, so deployments must provision at least two accounts
-before upgrading. Four or more enable the full confirmation flow.
+No additional accounts file or credential configuration is required. Four
+eligible users enable the full confirmation round; two or three show reduced
+coverage, and fewer than two produce an unknown insufficient-coverage result.
+Each probe has a 90-second total deadline. Normal and incident cycles use the
+configured `LANIS_UPTIME_INTERVAL_SECONDS` (default 300); retries never recurse.
 
 Any functional failure in confirmation indicates partially impaired service
 (`degraded`), including a single failing account. All sampled accounts failing
@@ -380,7 +362,7 @@ process: run the scheduler in a single worker, as in the current deployment.
 Server shutdown explicitly stops the shared cycle and reaps its probe processes
 before draining Discord deliveries. HTTP waiter cancellation still leaves the
 shared cycle running; shutdown prevents new cycles until scheduler startup.
-Credential failures remain operator-reviewed because the SDK's generic login
+Ambiguous credential failures remain operator-reviewed because the SDK's generic login
 failure cannot reliably distinguish bad credentials from upstream failure;
 accounts are not automatically disabled on that ambiguous signal.
 
