@@ -172,3 +172,28 @@ def test_missing_stores_do_not_create_a_database(tmp_path, monkeypatch):
     )
     assert uptime._monitor_accounts() == []
     assert not auth_path.exists()
+
+
+def test_shutdown_does_not_wait_for_a_busy_account_lease(monkeypatch):
+    from api.account_data import account_lifecycle_lock
+
+    async def scenario():
+        account = ("5201", "busy", "5201:busy")
+        lifecycle = await account_lifecycle_lock(account[2])
+        await lifecycle.acquire()
+        try:
+            task = asyncio.create_task(
+                uptime._probe_round([account], {account[:2]: "Account 1"})
+            )
+            await asyncio.sleep(0.02)
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=1)
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("Expected cancelled round")
+        finally:
+            lifecycle.release()
+
+    asyncio.run(scenario())

@@ -906,6 +906,7 @@ async def _probe_round(
 ) -> list[dict[str, Any]]:
     schools = list(dict.fromkeys(account[0] for account in accounts))
     stopped = threading.Event()
+    probing: set[asyncio.Task] = set()
 
     async def probe(account):
         from .account_data import account_lifecycle_lock
@@ -916,7 +917,12 @@ async def _probe_round(
             if credentials is None:
                 result = {"status": "unknown", "error": "account_no_longer_eligible", "features": []}
             else:
-                result = await run_in_threadpool(_isolated_probe, credentials, stopped)
+                task = asyncio.current_task()
+                probing.add(task)
+                try:
+                    result = await run_in_threadpool(_isolated_probe, credentials, stopped)
+                finally:
+                    probing.discard(task)
         return {"account": labels[account[:2]], "school_group": schools.index(account[0]) + 1, **result}
 
     workers = [asyncio.create_task(probe(account)) for account in accounts]
@@ -926,6 +932,11 @@ async def _probe_round(
         return await asyncio.shield(asyncio.gather(*workers))
     finally:
         stopped.set()
+        # Waiting for a login/deletion lease must not hold up shutdown. Only
+        # threads already owning probe processes need cooperative reaping.
+        for worker in workers:
+            if worker not in probing and not worker.done():
+                worker.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
 
 
