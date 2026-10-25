@@ -9,6 +9,12 @@ import pytest
 from api import analytics_store, auth_db
 
 
+@pytest.fixture(autouse=True)
+def isolated_database_lock(monkeypatch):
+    # Tests run separate asyncio.run loops; locks must not retain an earlier loop.
+    monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+
+
 def test_account_references_are_stable_opaque_and_deleted(tmp_path, monkeypatch):
     monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
 
@@ -248,4 +254,94 @@ def test_request_ledger_retention_quality_and_feedback_ownership(tmp_path, monke
         assert counts['analytics_requests'] == 1
         assert not await analytics_store.recent_requests('5201:student0')
 
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('crash', [False, True])
+def test_analytics_reuses_request_lease_when_writer_is_waiting(tmp_path, monkeypatch, crash):
+    from api import api as api_module
+    from api.account_data import account_lifecycle_lock
+    monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+    monkeypatch.delenv('POSTHOG_PROJECT_KEY', raising=False)
+
+    async def scenario():
+        await auth_db.initialize()
+        refresh = await auth_db.store_refresh_token('5201:student', '5201', 'student', 'fake')
+        stored = await auth_db.get_refresh_token(refresh)
+        token = api_module.sessions.create_access_token('5201:student', '5201', 'student', stored['session_id'])
+        lock = await account_lifecycle_lock('5201:student')
+        original_auth = api_module.local_auth_dependency
+        writer = None
+
+        async def exclusive():
+            async with lock:
+                pass
+
+        async def auth_with_queued_writer(token):
+            nonlocal writer
+            identity = await original_auth(token)
+            if writer is None:
+                assert lock._readers >= 1  # The ordinary middleware owns this lease.
+                writer = asyncio.create_task(exclusive())
+                await asyncio.sleep(0)
+                assert lock._waiting_writers == 1
+            return identity
+
+        async def broken():
+            raise RuntimeError('controlled diagnostic')
+
+        monkeypatch.setattr(api_module, 'local_auth_dependency', auth_with_queued_writer)
+        route = None
+        if crash:
+            api_module.app.add_api_route('/analytics-test-crash', broken)
+            route = api_module.app.router.routes[-1]
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api_module.app), base_url='http://test') as client:
+                response = await asyncio.wait_for(client.get('/analytics-test-crash' if crash else '/analytics/identity', headers={'X-Session-Token': token, 'X-LANIS-Analytics-Consent': 'account-v2'}), timeout=3)
+                assert response.status_code == (500 if crash else 200)
+            await asyncio.wait_for(writer, timeout=3)
+            assert not lock.locked()
+        finally:
+            if route:
+                api_module.app.router.routes.remove(route)
+            if writer and not writer.done():
+                writer.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_admin_resolves_opaque_targets_before_taking_actor_lease(tmp_path, monkeypatch):
+    from api import api as api_module, admin as admin_module
+    from contextlib import asynccontextmanager
+    monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+    monkeypatch.setenv('LANIS_ADMIN_ACCOUNTS', '5201:operator')
+    monkeypatch.setenv('LANIS_ADMIN_JWT_SECRET', 'a' * 64)
+    async def noop(*args, **kwargs):
+        return True
+    monkeypatch.setattr(admin_module, '_verify_sph_credentials', noop)
+    monkeypatch.setattr(admin_module, '_record_login', noop)
+    monkeypatch.setattr(admin_module, '_record_admin_action', noop)
+    original_access = admin_module._admin_account_access
+    acquisitions = []
+
+    @asynccontextmanager
+    async def observed_access(*ids):
+        acquisitions.append(set(ids))
+        async with original_access(*ids):
+            yield
+
+    monkeypatch.setattr(admin_module, '_admin_account_access', observed_access)
+
+    async def scenario():
+        await auth_db.initialize()
+        login = await admin_module.admin_login(admin_module.AdminLoginRequest(school_id='5201', username='operator', password='fake'))
+        account = await analytics_store.account_reference('5201:student')
+        request_id = '12345678-1234-1234-1234-123456789abc'
+        diagnostic = await analytics_store.save_diagnostic('5201:student', {'kind': 'api', 'message': 'private', 'request_id': request_id})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api_module.app), base_url='http://test') as client:
+            for path in ['accounts/' + account, 'investigate/' + account, 'diagnostics/' + diagnostic, 'requests/' + request_id]:
+                acquisitions.clear()
+                result = await client.get('/admin/analytics/' + path, headers={'X-Admin-Token': login.access_token})
+                assert result.status_code == 200
+                assert acquisitions[0] == {'5201:operator', '5201:student'}, path
     asyncio.run(scenario())

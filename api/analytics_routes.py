@@ -1,6 +1,7 @@
 """Consent-bound local analytics endpoints; no upstream school requests."""
 from typing import Literal
-from fastapi import APIRouter, Depends, Header, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from . import analytics_store
@@ -9,7 +10,24 @@ from .account_data import account_lifecycle_lock
 router = APIRouter(prefix='/analytics', tags=['analytics'])
 
 
+@asynccontextmanager
+async def request_account_access(request, user_id):
+    # Ordinary request middleware may already hold a reader. Reacquiring behind a
+    # queued writer deadlocks that writer against our outer reader.
+    if getattr(request.state, 'account_lease_user_id', None) == user_id:
+        yield
+        return
+    async with (await account_lifecycle_lock(user_id)).shared():
+        request.state.account_lease_user_id = user_id
+        try:
+            yield
+        finally:
+            request.state.account_lease_user_id = None
+
+
+
 async def analytics_auth(
+    request: Request,
     x_session_token: str = Header(..., alias='X-Session-Token'),
     x_lanis_analytics_consent: str = Header('', alias='X-LANIS-Analytics-Consent'),
 ):
@@ -17,7 +35,7 @@ async def analytics_auth(
         raise HTTPException(403, 'Account analytics consent is required')
     from .api import local_auth_dependency
     identity = await local_auth_dependency(x_session_token)
-    async with (await account_lifecycle_lock(identity.user_id)).shared():
+    async with request_account_access(request, identity.user_id):
         # A delete/logout may have completed while we waited for the lease.
         identity = await local_auth_dependency(x_session_token)
         yield identity
@@ -103,7 +121,7 @@ def register_request_diagnostics(app):
                     try:
                         from .api import local_auth_dependency
                         identity = await local_auth_dependency(token)
-                        async with (await account_lifecycle_lock(identity.user_id)).shared():
+                        async with request_account_access(request, identity.user_id):
                             await local_auth_dependency(token)
                             await analytics_store.save_diagnostic(identity.user_id, {
                                 'kind': 'api', 'request_id': request_id,
@@ -121,7 +139,7 @@ def register_request_diagnostics(app):
             try:
                 from .api import local_auth_dependency
                 identity = await local_auth_dependency(request.headers['X-Session-Token'])
-                async with (await account_lifecycle_lock(identity.user_id)).shared():
+                async with request_account_access(request, identity.user_id):
                     await local_auth_dependency(request.headers['X-Session-Token'])
                     await analytics_store.record_request(identity.user_id, request_id, route, request.method, response.status_code, duration)
             except Exception:

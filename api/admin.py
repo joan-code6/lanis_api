@@ -94,6 +94,30 @@ class AdminLifecycleRoute(APIRoute):
                 school, separator, username = target.partition(":")
                 if separator and school and username:
                     lock_ids.add(make_user_id(school, username))
+            # Opaque analytics refs must resolve before taking any actor lease.
+            # A second operator can otherwise hold our target while waiting on us.
+            from . import analytics_store
+            analytics_targets = set()
+            if '/analytics/' in self.path:
+                account_ref = request.path_params.get('account_ref')
+                diagnostic_id = request.path_params.get('diagnostic_id')
+                request_id = request.path_params.get('request_id')
+                if account_ref:
+                    owner = await analytics_store.resolve_account(account_ref)
+                    if owner:
+                        analytics_targets.add(owner)
+                elif diagnostic_id:
+                    owner = await analytics_store.diagnostic_owner(diagnostic_id)
+                    if owner:
+                        analytics_targets.add(owner)
+                elif request_id:
+                    rows = await analytics_store.diagnostics_for_request(request_id)
+                    request.state.analytics_diagnostic_rows = rows
+                    analytics_targets.update(row['user_id'] for row in rows)
+                if (account_ref or diagnostic_id or request_id) and not analytics_targets:
+                    raise HTTPException(404, 'Analytics reference not found or expired')
+                lock_ids.update(analytics_targets)
+                request.state.analytics_targets = analytics_targets
             from .account_data import admin_bulk_read_gate
 
             async with AsyncExitStack() as stack:
@@ -953,11 +977,11 @@ async def admin_metrics_schools_map(
 
 
 @router.get('/analytics/accounts/{account_ref}')
-async def analytics_account_lookup(account_ref: str, principal: AdminPrincipal = Depends(admin_dependency)):
+async def analytics_account_lookup(account_ref: str, request: Request, principal: AdminPrincipal = Depends(admin_dependency)):
     from . import analytics_store
     from fastapi.responses import JSONResponse
     user_id = await analytics_store.resolve_account(account_ref)
-    if not user_id:
+    if not user_id or user_id not in request.state.analytics_targets:
         raise HTTPException(404, 'Analytics account not found')
     async with _admin_account_access(principal.user_id, user_id):
         if await analytics_store.resolve_account(account_ref) != user_id:
@@ -967,11 +991,11 @@ async def analytics_account_lookup(account_ref: str, principal: AdminPrincipal =
 
 
 @router.get('/analytics/diagnostics/{diagnostic_id}')
-async def analytics_diagnostic_lookup(diagnostic_id: str, principal: AdminPrincipal = Depends(admin_dependency)):
+async def analytics_diagnostic_lookup(diagnostic_id: str, request: Request, principal: AdminPrincipal = Depends(admin_dependency)):
     from . import analytics_store
     from fastapi.responses import JSONResponse
     user_id = await analytics_store.diagnostic_owner(diagnostic_id)
-    if not user_id:
+    if not user_id or user_id not in request.state.analytics_targets:
         raise HTTPException(404, 'Diagnostic not found or expired')
     async with _admin_account_access(principal.user_id, user_id):
         record = await analytics_store.read_diagnostic(diagnostic_id)
@@ -982,10 +1006,10 @@ async def analytics_diagnostic_lookup(diagnostic_id: str, principal: AdminPrinci
 
 
 @router.get('/analytics/requests/{request_id}')
-async def analytics_request_lookup(request_id: str, principal: AdminPrincipal = Depends(admin_dependency)):
+async def analytics_request_lookup(request_id: str, request: Request, principal: AdminPrincipal = Depends(admin_dependency)):
     from . import analytics_store
     from fastapi.responses import JSONResponse
-    rows = await analytics_store.diagnostics_for_request(request_id)
+    rows = request.state.analytics_diagnostic_rows
     if not rows:
         raise HTTPException(404, 'Request diagnostic not found or expired')
     records = []
@@ -999,11 +1023,11 @@ async def analytics_request_lookup(request_id: str, principal: AdminPrincipal = 
 
 
 @router.get('/analytics/investigate/{account_ref}')
-async def analytics_investigation(account_ref: str, principal: AdminPrincipal = Depends(admin_dependency)):
+async def analytics_investigation(account_ref: str, request: Request, principal: AdminPrincipal = Depends(admin_dependency)):
     from . import analytics_store
     from fastapi.responses import JSONResponse
     user_id = await analytics_store.resolve_account(account_ref)
-    if not user_id:
+    if not user_id or user_id not in request.state.analytics_targets:
         raise HTTPException(404, 'Analytics account not found')
     async with _admin_account_access(principal.user_id, user_id):
         if await analytics_store.resolve_account(account_ref) != user_id:
