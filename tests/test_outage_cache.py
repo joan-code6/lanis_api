@@ -293,6 +293,45 @@ def test_snapshot_bounds_expiration_and_invalidation_races(monkeypatch):
     assert store.get(key, version) is None
 
 
+def test_large_response_survives_persistence_reload_and_outage(
+    setup, tmp_path, monkeypatch
+):
+    """Retain a response the size of the 10.24 MiB live message-header sample."""
+    import httpx
+
+    app, manager, store, state, headers = setup
+    monkeypatch.setenv("LANIS_CREDENTIAL_ENCRYPTION_KEY", "x" * 32)
+    database = str(tmp_path / "snapshots.db")
+    store.enable_persistence(database)
+    state.value = "x" * 10_739_936
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test.local"
+        ) as client:
+            fresh = await client.get("/kalender", headers=headers)
+            assert fresh.headers["x-lanis-cache"] == "fresh"
+            assert fresh.json()["value"] == state.value
+            await store.close()
+            restored = outage_cache.SnapshotStore()
+            restored.enable_persistence(database)
+            monkeypatch.setattr(outage_cache, "snapshots", restored)
+            monkeypatch.setattr(api_module, "snapshots", restored)
+            # A restart drops the live cache while retaining persisted snapshots.
+            manager._cache.clear()
+            state.mode = "timeout"
+            stale = await client.get("/kalender", headers=headers)
+            assert stale.headers["x-lanis-cache"] == "stale"
+            assert stale.content == fresh.content
+            assert (
+                restored.status("5201:student")["body_bytes"]
+                < outage_cache.MAX_USER_BYTES
+            )
+            await restored.close()
+
+    asyncio.run(scenario())
+
+
 def test_deleted_user_snapshot_generation_is_never_reused():
     store = outage_cache.SnapshotStore()
     store.version("a", "/benutzer")

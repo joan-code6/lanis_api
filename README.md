@@ -185,8 +185,8 @@ Authentication, TLS, and permission failures are never hidden by a snapshot.
 
 Fallback responses include `X-LANIS-Cache: stale` and the original UTC fetch
 time in `X-LANIS-Fetched-At`. Live responses use `fresh` or `hit`. The cache is
-bounded to 1,000 entries and 8 MiB of response bodies per account, with a 2 MiB
-per-response limit. Accounts never evict each other’s snapshots. It is
+bounded to 1,000 entries and 16 MiB of response bodies per account, with the same
+16 MiB per-response limit. Accounts never evict each other’s snapshots. It is
 cleared on logout, account deletion, and expiry of the last valid session.
 Endpoint refreshes retain the previous successful snapshot, and backend restarts
 restore persisted snapshots. Failed decryption leaves ciphertext on disk for
@@ -229,7 +229,7 @@ submission details are downloaded sequentially through authenticated API routes.
 Course files reuse the existing URL-hash cache; the other binary routes use
 content-addressed blobs in that same cache directory, deduplicating identical
 bytes across source URLs. Access still requires a per-user file reference and a
-valid session. Binary files are stored on disk outside the 8 MiB JSON budget,
+valid session. Binary files are stored on disk outside the 16 MiB JSON budget,
 with the existing 256 MiB per-download bound; no aggregate binary quota is added.
 Nightly reads refresh existing files while ordinary reads can serve local bytes
 without contacting Schulportal. Active users' referenced files are protected
@@ -247,10 +247,10 @@ No credentials are copied into the scheduler or logs.
 Refreshes replace outage snapshots only after a successful response. Expiring or
 invalidating a live response does not delete its last successful outage snapshot.
 Snapshots have no age expiry (`/cache/status` reports `retention_seconds: 0`)
-and are encrypted in the auth SQLite database so backend restarts preserve them. Existing limits still apply: 2 MiB per response,
-1,000 snapshots and 8 MiB of response bodies per user. The oldest snapshots of
+and are encrypted in the auth SQLite database so backend restarts preserve them. Limits are 16 MiB per response,
+1,000 snapshots and 16 MiB of response bodies per user. The oldest snapshots of
 that same user are evicted at capacity; no shared byte quota evicts other accounts.
-At 300 users the retained response-body budget is 2.34 GiB, plus Python object
+At 300 users the retained response-body budget is 4.69 GiB, plus Python object
 overhead, pending disk writes, and the separate live-response cache in memory;
 encryption and SQLite add overhead on disk. `GET /cache/status` exposes
 `body_bytes`, `max_body_bytes`, and `max_snapshot_count` for the current user.

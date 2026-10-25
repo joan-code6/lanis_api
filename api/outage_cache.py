@@ -17,8 +17,10 @@ from fastapi.routing import APIRoute
 from schulportal_hessen.tools.transport import TransportObservation, observation
 
 RETENTION_SECONDS = 0  # Last successful snapshots have no time-based expiry.
-MAX_BODY_BYTES = 2 * 1024 * 1024
-MAX_USER_BYTES = 8 * 1024 * 1024
+MAX_USER_BYTES = 16 * 1024 * 1024
+# A single successful response may use the account's budget. Large message
+# header lists must not hit a smaller, unrelated per-response ceiling.
+MAX_BODY_BYTES = MAX_USER_BYTES
 MAX_USER_ENTRIES = 1000
 READ_ROUTES = {
     "/apps",
