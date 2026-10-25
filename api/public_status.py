@@ -44,7 +44,12 @@ def _iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
+def _check(
+    row: dict[str, Any],
+    checked_at: datetime,
+    *,
+    recovery_after_isolated_account_issue: bool = False,
+) -> dict[str, Any]:
     # Never forward database dictionaries: legacy data may contain diagnostics,
     # module/account names, URLs, or other fields unsuitable for public access.
     features = row.get("features") or []
@@ -56,7 +61,25 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
         "features": [],
     }
     evidence = row.get("monitoring")
+    isolated_account_failure = False
     if isinstance(evidence, dict):
+        isolated_account_failure = (
+            evidence.get("classification") == "isolated"
+            and evidence.get("observed_status") == "degraded"
+            and evidence.get("scope") == "account"
+            and evidence.get("failed_accounts") == 1
+        )
+        isolated_account_recovery = (
+            recovery_after_isolated_account_issue
+            and evidence.get("classification") == "recovering"
+            and evidence.get("observed_status") == "up"
+            and evidence.get("failed_accounts") == 0
+        )
+        if isolated_account_failure or isolated_account_recovery:
+            # Older rows stored an account-local failure as global downtime.
+            # Normalize those observations at projection time too, so the
+            # current badge, history, and uptime summary all agree immediately.
+            result["status"] = "up"
         if evidence.get("observed_status") in {"up", "down", "degraded", "unknown"}:
             result["observed_status"] = evidence["observed_status"]
         if evidence.get("confidence") in {"confirmed", "limited", "inconclusive"}:
@@ -78,6 +101,8 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
             "name": name,
             "status": item.get("status") if item and item.get("status") in {"up", "down", "degraded"} else "unknown",
         }
+        if isinstance(evidence, dict) and isolated_account_failure:
+            feature["status"] = "up"
         if item and item.get("latency_ms") is not None:
             feature["latency_ms"] = item["latency_ms"]
         result["features"].append(feature)
@@ -235,7 +260,37 @@ async def _build_public_status() -> dict[str, Any]:
     for timestamp, row in checks:
         newest_by_timestamp.setdefault(timestamp, row)
     checks = list(newest_by_timestamp.items())
-    checks = [(timestamp, _check(row, timestamp)) for timestamp, row in checks]
+    checks.sort(key=lambda item: (item[0], row_id(item[1])))
+    projected_checks = []
+    preceding_isolated_account_issue = False
+    for timestamp, row in checks:
+        evidence = row.get("monitoring") or {}
+        recovery_after_isolated = (
+            preceding_isolated_account_issue
+            and evidence.get("classification") == "recovering"
+            and evidence.get("observed_status") == "up"
+            and evidence.get("failed_accounts") == 0
+        )
+        projected_checks.append(
+            (
+                timestamp,
+                _check(
+                    row,
+                    timestamp,
+                    recovery_after_isolated_account_issue=recovery_after_isolated,
+                ),
+            )
+        )
+        if evidence.get("classification") == "isolated" and evidence.get("scope") == "account":
+            preceding_isolated_account_issue = True
+        elif recovery_after_isolated:
+            # Keep the source attribution across the one held-recovery sample
+            # written by earlier backend versions.
+            preceding_isolated_account_issue = True
+        else:
+            preceding_isolated_account_issue = False
+    checks = projected_checks
+    checks.sort(key=lambda item: item[0], reverse=True)
     latest = checks[0] if checks else None
     latest_status = latest[1]["status"] if latest else "unknown"
     if latest_status in {"down", "degraded"}:
@@ -439,7 +494,7 @@ async def _build_public_status() -> dict[str, Any]:
             "stale_after_seconds": stale_after,
             "period_start": _iso(start),
             "period_end": _iso(now),
-            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit zwei zufällig ausgewählten Monitor-Konten. Die Verfügbarkeit wird zeitgewichtet aus beobachteten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Bei einem Fehler werden beide Konten und bis zu zwei weitere Konten parallel geprüft. Auch Fehler eines einzelnen Kontos zählen als teilweise Beeinträchtigung und fließen in die Verfügbarkeitsmessung ein. Aussagekraft und beobachteter Umfang werden getrennt ausgewiesen; ein einzelnes betroffenes Konto bestätigt keinen allgemeinen Ausfall. Unvollständige Prüfungen ohne beobachteten Funktionsfehler bleiben unbekannt. Eine Wiederherstellung benötigt zwei vollständig erfolgreiche reguläre Prüfrunden. Störungen fassen aufeinanderfolgende beobachtete Beeinträchtigungen zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
+            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit zwei zufällig ausgewählten registrierten Konten. Die Verfügbarkeit wird zeitgewichtet aus beobachteten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Bei einem Fehler werden beide Konten und bis zu zwei weitere Konten parallel geprüft. Ein isolierter Fehler eines einzelnen Kontos wird als kontobezogener Hinweis dokumentiert, zählt aber nicht als allgemeine Beeinträchtigung der Verfügbarkeit. Mehrere betroffene Konten werden entsprechend ihrer Stichprobe als teilweise Beeinträchtigung gewertet. Aussagekraft und beobachteter Umfang werden getrennt ausgewiesen. Unvollständige Prüfungen ohne beobachteten Funktionsfehler bleiben unbekannt. Eine Wiederherstellung benötigt zwei vollständig erfolgreiche reguläre Prüfrunden. Störungen fassen aufeinanderfolgende beobachtete Beeinträchtigungen zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
         },
     }
 
