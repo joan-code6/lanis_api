@@ -128,21 +128,83 @@ class SchulportalHessenAPI:
         }}
         """
         if not self.logged_in:
-            return {"success": False, "error": "Not logged in. Please login first."}
+            return {
+                "success": False,
+                "error": "Not logged in. Please login first.",
+                "error_kind": "authentication",
+            }
 
+        response = None
         try:
             apps_url = f"{self.BASE_START_URL}/startseite.php?a=ajax&f=apps"
 
-            response = self.session.get(apps_url)
+            response = self.session.get(
+                apps_url, allow_redirects=False, timeout=(10, 30)
+            )
+            from urllib.parse import urljoin, urlsplit
+
+            if 300 <= response.status_code < 400:
+                location = response.headers.get("Location", "")
+                destination = urlsplit(urljoin(apps_url, location))
+                login_host = (
+                    destination.hostname or ""
+                ).lower() == "login.schulportal.hessen.de"
+                local_login = (
+                    destination.netloc.lower()
+                    == urlsplit(self.BASE_START_URL).netloc.lower()
+                    and destination.path.rstrip("/").lower() in ("/login", "/login.php")
+                )
+                return {
+                    "success": False,
+                    "error": "Schulportal apps endpoint redirected",
+                    "error_kind": "authentication"
+                    if location and (login_host or local_login)
+                    else "upstream",
+                }
             response.raise_for_status()
+            # The apps endpoint returns JSON. Recognize a sign-in response even
+            # if an upstream proxy serves it directly with HTTP 200.
+            from bs4 import BeautifulSoup
+
+            host = (urlsplit(response.url or apps_url).hostname or "").lower()
+            html = "text/html" in response.headers.get("Content-Type", "").lower()
+            if host == "login.schulportal.hessen.de" or (
+                html and BeautifulSoup(response.text, "html.parser").select_one(
+                    "form[action*='login'], input[type='password']"
+                )
+            ):
+                return {
+                    "success": False,
+                    "error": "Schulportal session expired",
+                    "error_kind": "authentication",
+                }
 
             data = response.json()
             return {"success": True, "data": data}
 
         except requests.RequestException as e:
-            return {"success": False, "error": f"Failed to retrieve apps: {str(e)}"}
+            return {
+                "success": False,
+                "error": f"Failed to retrieve apps: {str(e)}",
+                "error_kind": "authentication"
+                if getattr(e.response, "status_code", None) in (401, 403)
+                else "upstream",
+            }
         except json.JSONDecodeError as e:
-            return {"success": False, "error": f"Failed to parse response: {str(e)}"}
+            return {
+                "success": False,
+                "error": f"Failed to parse response: {str(e)}",
+                "error_kind": "upstream",
+            }
+        except ValueError:
+            return {
+                "success": False,
+                "error": "Invalid apps response URL",
+                "error_kind": "upstream",
+            }
+        finally:
+            if response is not None:
+                response.close()
 
     def _resolve_direct_url(self, url: str, timeout: int = 5) -> str:
         """Follow redirects for a URL and return the final destination.

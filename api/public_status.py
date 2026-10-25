@@ -76,13 +76,29 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
     return result
 
 
+def _observation_end(observations, index, end, interval):
+    """End of a reading's represented time, capped by cadence and transition."""
+    timestamp, check = observations[index]
+    next_timestamp = observations[index + 1][0] if index + 1 < len(observations) else end
+    cadence = uptime._sample_interval_seconds(
+        check, observations[index - 1][0] if index else None,
+        next_timestamp if index + 1 < len(observations) else None, interval,
+    )
+    return min(next_timestamp, timestamp + timedelta(seconds=max(1, cadence * 2)), end)
+
+
 def _aggregate(
     checks: list[tuple[datetime, dict[str, Any]]],
     start: datetime,
     end: datetime,
     interval: int,
+    *,
+    include_end: bool = True,
 ) -> dict[str, Any]:
-    in_window = [(timestamp, check) for timestamp, check in checks if start <= timestamp <= end]
+    in_window = [
+        (timestamp, check) for timestamp, check in checks
+        if start <= timestamp and (timestamp <= end if include_end else timestamp < end)
+    ]
     available = sum(check["status"] == "up" for _, check in in_window)
     failed = sum(check["status"] in {"down", "degraded"} for _, check in in_window)
     # Weight each result by the time it represents so 15-second incident checks
@@ -116,18 +132,7 @@ def _aggregate(
         for index, (timestamp, check) in enumerate(observations):
             if check["status"] == "unknown":
                 continue
-            next_timestamp = observations[index + 1][0] if index + 1 < len(observations) else end
-            cadence = uptime._sample_interval_seconds(
-                check,
-                observations[index - 1][0] if index else None,
-                next_timestamp if index + 1 < len(observations) else None,
-                interval,
-            )
-            span_end = min(
-                next_timestamp,
-                timestamp + timedelta(seconds=max(1, cadence * 2)),
-                end,
-            )
+            span_end = _observation_end(observations, index, end, interval)
             seconds = max(0.0, (span_end - max(timestamp, start)).total_seconds())
             observed += seconds
             if check["status"] == "up":
@@ -343,6 +348,65 @@ async def _build_public_status() -> dict[str, Any]:
                 item for item in period_checks if item[0] >= period_start
             ]),
         }
+    # Short-range strips use real rolling time buckets, never duplicated days.
+    # Infer legacy cadence with the original neighbors before bucket slicing.
+    # A lone carried reading must not fall back to the normal interval after
+    # losing the preceding incident reading that establishes its cadence.
+    bucket_checks = [
+        (timestamp, {
+            **check,
+            "sample_interval_seconds": uptime._sample_interval_seconds(
+                check,
+                ordered_checks[index - 1][0] if index else None,
+                ordered_checks[index + 1][0] if index + 1 < len(ordered_checks) else None,
+                interval,
+            ),
+        })
+        for index, (timestamp, check) in enumerate(ordered_checks)
+    ]
+    history_windows = {}
+    for key, hours, count in (("24h", 24, 48), ("7d", 168, 28)):
+        window_start = now - timedelta(hours=hours)
+        width = timedelta(hours=hours / count)
+        buckets = []
+        cursor = 0
+        for index in range(count):
+            bucket_start = window_start + index * width
+            bucket_end = bucket_start + width
+            while cursor < len(ordered_checks) and ordered_checks[cursor][0] < bucket_start:
+                cursor += 1
+            end_cursor = cursor
+            while end_cursor < len(ordered_checks) and ordered_checks[end_cursor][0] < bucket_end:
+                end_cursor += 1
+            # Include the preceding reading and the next transition to preserve
+            # cadence limits and clip carried observations at bucket boundaries.
+            samples = bucket_checks[max(0, cursor - 1):min(len(bucket_checks), end_cursor + 1)]
+            aggregate = _aggregate(
+                samples, bucket_start, bucket_end, interval,
+                include_end=index == count - 1,
+            )
+            represented_statuses = {
+                check["status"] for sample_index, (timestamp, check) in enumerate(samples)
+                if check["status"] != "unknown" and (
+                    # Included observations count even at the snapshot, where
+                    # no elapsed duration has accumulated yet.
+                    bucket_start <= timestamp < bucket_end
+                    or (index == count - 1 and timestamp == now)
+                    or _observation_end(samples, sample_index, bucket_end, interval)
+                    > max(timestamp, bucket_start)
+                )
+            }
+            bucket_status = (
+                "unknown" if not represented_statuses else
+                "up" if represented_statuses == {"up"} else
+                "down" if represented_statuses == {"down"} else "degraded"
+            )
+            buckets.append({
+                "start": _iso(bucket_start), "end": _iso(bucket_end),
+                "status": bucket_status, **aggregate,
+            })
+            cursor = end_cursor
+        history_windows[key] = buckets
     return {
         "success": True,
         "service": uptime.UPTIME_SERVICE_NAME,
@@ -353,6 +417,7 @@ async def _build_public_status() -> dict[str, Any]:
             **_aggregate(checks, start, now, interval),
         },
         "summary_windows": windows,
+        "history_windows": history_windows,
         "daily": daily,
         "history": [check for _, check in checks[: uptime.UPTIME_HISTORY_LIMIT]],
         "incidents": uptime.group_uptime_incidents(
