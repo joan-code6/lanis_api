@@ -82,7 +82,7 @@ from . import feedback_db
 from .feedback_db import FeedbackRateLimitError
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
-from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler
+from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler, stop_uptime_cycle
 from .public_status import get_public_status
 from .documentation import router as documentation_router
 from .homepage import router as homepage_router
@@ -1468,6 +1468,7 @@ async def _cleanup_sessions() -> None:
     if _uptime_scheduler_task:
         _uptime_scheduler_task.cancel()
         await asyncio.gather(_uptime_scheduler_task, return_exceptions=True)
+    await stop_uptime_cycle()
     await drain_uptime_notification_tasks()
     if _whatsapp_history_cleanup_task:
         _whatsapp_history_cleanup_task.cancel()
