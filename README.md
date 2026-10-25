@@ -166,22 +166,97 @@ keep navigation responsive.
 
 ### Cached access during Schulportal outages
 
-Successful authenticated JSON reads are also retained in a private, in-memory
-snapshot cache for up to 24 hours. If a later request observes a Schulportal
+Successful authenticated JSON reads are also retained in private snapshots,
+encrypted in the auth database with no age-based expiry. If a later request observes a Schulportal
 timeout, connection failure, or HTTP 5xx response, the API can return the last
 snapshot for the same account, route, path parameters, and query parameters.
 Authentication, TLS, and permission failures are never hidden by a snapshot.
 
 Fallback responses include `X-LANIS-Cache: stale` and the original UTC fetch
 time in `X-LANIS-Fetched-At`. Live responses use `fresh` or `hit`. The cache is
-bounded to 100 entries per account, 2 MiB per response, and 64 MiB total. It is
-cleared on logout and invalidated with the affected source data after writes.
-Snapshots are held in process memory, so a backend restart clears them.
+bounded to 1,000 entries and 16 MiB of response bodies per account, with the same
+16 MiB per-response limit. Accounts never evict each other’s snapshots. It is
+cleared on logout, account deletion, and expiry of the last valid session.
+Endpoint refreshes retain the previous successful snapshot, and backend restarts
+restore persisted snapshots. Failed decryption leaves ciphertext on disk for
+recovery with the correct key; invalid snapshot structure is removed.
 
 Authenticated clients can read `GET /cache/status` without contacting
 Schulportal. It returns whether snapshots exist, their count, the most recent
 successful fetch time, and the retention period. This timestamp describes the
 latest successful cached read; it is not a complete account synchronization.
+
+### Daily outage snapshots
+
+The API warms read-only user views daily starting at **03:00 Europe/Berlin** by default.
+Set `LANIS_DAILY_CACHE_TIME=04:30` in `.env` to choose another start time
+(24-hour `HH:MM`, always Europe/Berlin). Restart the API after changing `.env`.
+Invalid values log a warning and fall back to `03:00`.
+
+The schedule follows daylight saving changes. It processes one valid stored session per
+user, sequentially, and refreshes the standard profile, modules, calendar,
+substitution plan, timetable, courses, attendance, homework/submissions and
+message headers. Supported file-storage folder trees, file-distribution lists,
+and election forms are discovered from the user’s module capabilities. Submission
+details are discovered from submission and course views. Current and next-year
+calendar lists, course details, and calendar event details are discovered from
+overviews;
+previously requested parameter variants are refreshed too. Snapshot keys normalize
+explicit route defaults, allowing a default UI request to use a view warmed
+without redundant query parameters.
+Native substitution-plan reads, including saved variants, run only when the
+account's current module list advertises native plan support.
+
+Message headers are cached without opening conversations. Nightly sync never
+fetches conversation bodies, including previously cached bodies, because
+Schulportal marks them read when fetched. Bodies are fetched only when the user
+opens a conversation; successful interactive reads can still supply outage
+snapshots. Messages never opened in LANIS have headers only during an outage.
+
+Files advertised by file-storage trees, file distributions, course entries, and
+submission details are downloaded sequentially through authenticated API routes.
+Course files reuse the existing URL-hash cache; the other binary routes use
+content-addressed blobs in that same cache directory, deduplicating identical
+bytes across source URLs. Access still requires a per-user file reference and a
+valid session. Binary files are stored on disk outside the 16 MiB JSON budget,
+with the existing 256 MiB per-download bound; no aggregate binary quota is added.
+Nightly reads refresh existing files while ordinary reads can serve local bytes
+without contacting Schulportal. Active users' referenced files are protected
+from age cleanup, and cleanup runs only after a positive portal health check.
+Arbitrary search results, external websites and live conference join URLs are not
+bulk mirrored. Settings stored entirely in LANIS can be read with local auth.
+
+A fresh authenticated uptime check must report `up` before the batch starts.
+Configure at least two explicitly enrolled monitor accounts through
+`LANIS_UPTIME_ACCOUNTS_FILE` as described under Parallel SPH monitor below.
+Legacy single-account credentials alone cannot produce a healthy result. Unknown,
+unconfigured, degraded and down states defer the batch. Failed batches retry every
+15 minutes for up to 24 attempts, then resume at the next daily run.
+No credentials are copied into the scheduler or logs.
+
+Refreshes replace outage snapshots only after a successful response. Expiring or
+invalidating a live response does not delete its last successful outage snapshot.
+Snapshots have no age expiry (`/cache/status` reports `retention_seconds: 0`)
+and are encrypted in the auth SQLite database so backend restarts preserve them. Limits are 16 MiB per response,
+1,000 snapshots and 16 MiB of response bodies per user. The oldest snapshots of
+that same user are evicted at capacity; no shared byte quota evicts other accounts.
+At 300 users the retained response-body budget is 4.69 GiB, plus Python object
+overhead, pending disk writes, and the separate live-response cache in memory;
+encryption and SQLite add overhead on disk. `GET /cache/status` exposes
+`body_bytes`, `max_body_bytes`, and `max_snapshot_count` for the current user.
+The `sync` object reports attempted and failed reads, quota evictions and the
+attempt finish time. `sync.complete` is false when any read fails or a quota
+prevents retention; successful HTTP reads rejected by snapshot limits count as
+incomplete too. This reports coverage of discovered supported routes, not arbitrary
+SPH apps or all possible search/filter queries.
+This is bounded coverage, not a complete offline mirror of all Schulportal data.
+Final-session revocation records a durable timestamp cutoff in the auth
+transaction, so pre-revocation snapshots cannot return after a failed disk
+deletion and later login. Account deletion removes this revocation metadata
+after runtime snapshot cleanup. Session revocation and account deletion remove
+private snapshots;
+serving them always requires a valid LANIS session. Cached responses retain their
+original fetch timestamps so the UI can identify stale data.
 
 ## Push notifications
 
