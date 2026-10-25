@@ -281,7 +281,18 @@ async def _build_public_status() -> dict[str, Any]:
                 ),
             )
         )
-        if evidence.get("classification") == "isolated" and evidence.get("scope") == "account":
+        is_isolated_account_issue = (
+            evidence.get("classification") == "isolated"
+            and evidence.get("scope") == "account"
+        )
+        is_pending_unknown_after_isolated_issue = (
+            preceding_isolated_account_issue
+            and row.get("status") == "unknown"
+            and evidence.get("classification") == "inconclusive"
+            and evidence.get("observed_status") == "unknown"
+            and evidence.get("pending_status") in {"down", "degraded"}
+        )
+        if is_isolated_account_issue or is_pending_unknown_after_isolated_issue:
             preceding_isolated_account_issue = True
         elif recovery_after_isolated:
             # Keep the source attribution across the one held-recovery sample

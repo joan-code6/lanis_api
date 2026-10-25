@@ -1113,7 +1113,7 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
                     "error": None,
                 }
             )
-        previous = await user_metrics_db.get_uptime_checks(limit=2)
+        previous = await user_metrics_db.get_uptime_checks(limit=UPTIME_HISTORY_LIMIT)
         if previous:
             last = previous[0]
             last_monitoring = last.get("monitoring") or {}
@@ -1122,16 +1122,31 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
             )
             issue_scope = last_monitoring.get("pending_scope", last_monitoring.get("scope"))
             # Older rows created by the previous recovery logic did not retain
-            # the incident's original scope. Recover it from the preceding
-            # isolated observation when this is the first held recovery sample.
+            # the incident's original scope. Recover it across pending-unknown
+            # rows when this is the first held recovery sample.
             if (
                 last_monitoring.get("classification") == "recovering"
                 and not last_monitoring.get("pending_classification")
-                and len(previous) > 1
             ):
-                prior_monitoring = previous[1].get("monitoring") or {}
-                issue_classification = prior_monitoring.get("classification")
-                issue_scope = prior_monitoring.get("scope")
+                for prior in previous[1:]:
+                    prior_monitoring = prior.get("monitoring") or {}
+                    if (
+                        prior_monitoring.get("classification") == "isolated"
+                        and prior_monitoring.get("scope") == "account"
+                    ):
+                        issue_classification = "isolated"
+                        issue_scope = "account"
+                        break
+                    if (
+                        prior.get("status") == "unknown"
+                        and prior_monitoring.get("classification") == "inconclusive"
+                        and prior_monitoring.get("observed_status") == "unknown"
+                        and prior_monitoring.get("pending_status") in {"down", "degraded"}
+                    ):
+                        continue
+                    issue_classification = prior_monitoring.get("classification")
+                    issue_scope = prior_monitoring.get("scope")
+                    break
             pending_status = (
                 last["status"]
                 if last["status"] in {"down", "degraded"}
@@ -1176,10 +1191,17 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
         previous = await user_metrics_db.get_uptime_checks(limit=1)
         if previous:
             last = previous[0]
+            last_monitoring = last.get("monitoring") or {}
             details["pending_status"] = (
                 last["status"]
                 if last["status"] in {"down", "degraded"}
-                else last.get("monitoring", {}).get("pending_status")
+                else last_monitoring.get("pending_status")
+            )
+            details["pending_classification"] = last_monitoring.get(
+                "pending_classification", last_monitoring.get("classification")
+            )
+            details["pending_scope"] = last_monitoring.get(
+                "pending_scope", last_monitoring.get("scope")
             )
     check["checked_at"] = _utcnow().isoformat()
     check["latency_ms"] = max(0, round((time.perf_counter() - started) * 1000))

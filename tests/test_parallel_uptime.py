@@ -347,6 +347,27 @@ def test_isolated_account_failure_does_not_count_as_service_downtime(
         await database.record_uptime_check(
             {
                 "checked_at": (clock[0] + timedelta(seconds=300)).isoformat(),
+                "status": "unknown",
+                "is_available": None,
+                "latency_ms": 1,
+                "sample_interval_seconds": 300,
+                "features": [
+                    {"name": "login", "status": "unknown"},
+                    {"name": "modules", "status": "unknown"},
+                ],
+                "monitoring": {
+                    "classification": "inconclusive",
+                    "observed_status": "unknown",
+                    "scope": "unknown",
+                    "confidence": "inconclusive",
+                    "failed_accounts": 0,
+                    "pending_status": "degraded",
+                },
+            }
+        )
+        await database.record_uptime_check(
+            {
+                "checked_at": (clock[0] + timedelta(seconds=600)).isoformat(),
                 "status": "degraded",
                 "is_available": False,
                 "latency_ms": 1,
@@ -369,10 +390,11 @@ def test_isolated_account_failure_does_not_count_as_service_downtime(
         # The old code kept this clean sample degraded while waiting for a
         # second full scheduled cycle, even though its preceding issue was
         # isolated to one account.
-        clock[0] += timedelta(seconds=300)
+        clock[0] += timedelta(seconds=600)
         recovering_public = await public_status._build_public_status()
         assert recovering_public["current"]["status"] == "up"
         assert recovering_public["summary"]["failed_checks"] == 0
+        assert recovering_public["summary"]["unknown_checks"] == 1
         assert recovering_public["incidents"] == []
 
         async def fake_round(selected, labels):
