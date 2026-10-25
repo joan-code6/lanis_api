@@ -17,14 +17,19 @@ logger = logging.getLogger(__name__)
 warming = ContextVar("daily_cache_warming", default=False)
 MAX_BATCH_ATTEMPTS = 24  # Bound repeated full batches after permanent failures.
 ZONE = ZoneInfo("Europe/Berlin")
+NATIVE_PLAN_PATHS = frozenset(
+    {
+        "/vertretungsplan",
+        "/vertretungsplan/options",
+        "/notifications/vertretungsplan/options",
+    }
+)
 BASE_PATHS = (
     "/apps",
     "/modules",
     "/benutzer",
     "/kalender",
     "/kalender/events",
-    "/vertretungsplan",
-    "/vertretungsplan/options",
     "/stundenplan",
     "/stundenplan/view",
     "/lerngruppen",
@@ -35,7 +40,6 @@ BASE_PATHS = (
     "/nachrichten/headers",
     "/settings/class-links",
     "/dashboard/notifications",
-    "/notifications/vertretungsplan/options",
 )
 
 
@@ -68,6 +72,8 @@ def discover_metadata(path, params, data):
             for method in module.get("usage", []):
                 if method in routes:
                     targets.add((routes[method], ()))
+                if method == "vertretungsplan_get_plan":
+                    targets.update((path, ()) for path in NATIVE_PLAN_PATHS)
     if path == "/wahlen":
         for election in data.get("elections", []):
             if election.get("id"):
@@ -219,8 +225,11 @@ async def warm_users():
                 pending = sorted(
                     target
                     for target in targets
-                    if not target[0].startswith("/nachrichten/")
-                    or target[0] == "/nachrichten/headers"
+                    if target[0] not in NATIVE_PLAN_PATHS
+                    and (
+                        not target[0].startswith("/nachrichten/")
+                        or target[0] == "/nachrichten/headers"
+                    )
                 )
                 seen = set()
                 while pending:
@@ -254,9 +263,21 @@ async def warm_users():
                                 "success"
                             ) is not True or not response.headers.get("X-LANIS-Cache"):
                                 read_failed = True
-                            pending.extend(
-                                sorted(discover_metadata(path, params, data))
-                            )
+                            discovered = discover_metadata(path, params, data)
+                            pending.extend(sorted(discovered))
+                            # Unsupported native-plan requests can disrupt the
+                            # portal session. Gate saved variants as well as
+                            # first-time reads on freshly advertised support.
+                            if path == "/modules" and any(
+                                route in NATIVE_PLAN_PATHS for route, _ in discovered
+                            ):
+                                pending.extend(
+                                    sorted(
+                                        target
+                                        for target in targets
+                                        if target[0] in NATIVE_PLAN_PATHS
+                                    )
+                                )
                             pending.extend(sorted(discover_files(path, data)))
                     except Exception:  # noqa: BLE001 - isolate per-user endpoint failures
                         read_failed = True

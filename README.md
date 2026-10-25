@@ -215,6 +215,8 @@ overviews;
 previously requested parameter variants are refreshed too. Snapshot keys normalize
 explicit route defaults, allowing a default UI request to use a view warmed
 without redundant query parameters.
+Native substitution-plan reads, including saved variants, run only when the
+account's current module list advertises native plan support.
 
 Message headers are cached without opening conversations. Nightly sync never
 fetches conversation bodies, including previously cached bodies, because

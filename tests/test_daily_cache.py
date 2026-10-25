@@ -103,7 +103,10 @@ def test_preserved_snapshot_rejects_inflight_pre_refresh_write():
     "failed",
     [None, "body", "headers", "stale_headers", 302, 401, 403, 404, 422, 500, 503],
 )
-def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, failed):
+@pytest.mark.parametrize("native_available", [False, True])
+def test_warmup_discovers_unvisited_details_and_replays_variants(
+    monkeypatch, failed, native_available
+):
     """Verify warmup discovers unvisited details and replays variants."""
     from types import SimpleNamespace
 
@@ -149,6 +152,7 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
                             "dateispeicher_get_node",
                             "dateiverteilung_get_overview",
                             "wahlen_get_overview",
+                            *(["vertretungsplan_get_plan"] if native_available else []),
                         ]
                     }
                 ],
@@ -238,6 +242,8 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
                 ): None,
                 ("user", "/nachrichten/private", ()): None,
                 ("user", "/nachrichten/123", ()): None,
+                ("user", "/vertretungsplan", (("include_raw", "true"),)): None,
+                ("user", "/notifications/vertretungsplan/options", ()): None,
                 ("other", "/kalender/event/other", ()): None,
             }
         ),
@@ -268,6 +274,9 @@ def test_warmup_discovers_unvisited_details_and_replays_variants(monkeypatch, fa
     assert ("/kalender/event/new-event", "view_id=second") in requested
     assert ("/kalender/events", "category=special&view_id=second") in requested
     assert not any(path in {"/kalender/event/other"} for path, _ in requested)
+    for path in daily_cache.NATIVE_PLAN_PATHS:
+        assert ((path, "") in requested) is native_available
+    assert (("/vertretungsplan", "include_raw=true") in requested) is native_available
     assert daily_cache.warming.get() is False
 
 
