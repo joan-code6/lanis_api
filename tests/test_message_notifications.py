@@ -1,5 +1,8 @@
 import asyncio
 import sys
+import json
+import subprocess
+from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
 from types import ModuleType
@@ -11,7 +14,17 @@ from api import auth_db
 from api import message_notifications as notifications
 
 
-def test_push_delivery_uses_a_finite_timeout(monkeypatch):
+@pytest.mark.parametrize(
+    "tag,ttl",
+    [
+        ("lanis-messages-1", 86400),
+        ("lanis-vertretungsplan-1", 3600),
+        ("lanis-notification-test", 600),
+    ],
+)
+def test_push_delivery_retains_offline_messages_with_a_finite_timeout(
+    monkeypatch, tag, ttl
+):
     calls = {}
     pywebpush = ModuleType("pywebpush")
 
@@ -24,10 +37,167 @@ def test_push_delivery_uses_a_finite_timeout(monkeypatch):
     monkeypatch.setenv("VAPID_SUBJECT", "mailto:test@example.org")
 
     notifications._send_push_sync(
-        {"endpoint": "https://push.example/subscription"}, {"title": "Test"}
+        {"endpoint": "https://push.example/subscription"}, {"title": "Test", "tag": tag}
     )
 
     assert calls["timeout"] == 10
+    assert calls["ttl"] == ttl
+
+
+@pytest.mark.parametrize("status", [401, 403, 408, 429, 500, 503, None])
+def test_server_and_transient_errors_never_expire_browser_subscriptions(status):
+    error = ValueError("VAPID signing failed")
+    if status is not None:
+        error.response = SimpleNamespace(status_code=status)
+    assert notifications._is_permanent_push_failure(error) is False
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_push_service_expiration_remains_permanent(status):
+    error = RuntimeError("subscription expired")
+    error.response = SimpleNamespace(status_code=status)
+    assert notifications._is_permanent_push_failure(error) is True
+
+
+def test_notification_registration_and_pending_delivery_survive_process_restart(
+    tmp_path, monkeypatch
+):
+    database = tmp_path / "restart-auth.db"
+    monkeypatch.setattr(auth_db, "DB_PATH", str(database))
+    subscription = {
+        "endpoint": "https://fcm.googleapis.com/example",
+        "keys": {"p256dh": "public", "auth": "secret"},
+    }
+    pending = {
+        "checked_at": "2026-10-17T09:00:00+02:00",
+        "conversations": {"one": "seen"},
+        "pending_deliveries": {subscription["endpoint"]: [{"title": "pending"}]},
+    }
+
+    async def setup():
+        await auth_db.initialize()
+        token = await auth_db.store_refresh_token(
+            "restart-user", "5201", "user", "password"
+        )
+        session = await auth_db.get_refresh_token(token)
+        await auth_db.save_notification_preferences("restart-user", {"enabled": True})
+        await auth_db.save_push_subscription(
+            "restart-user", subscription, session["session_id"]
+        )
+        await auth_db.save_message_notification_state("restart-user", pending)
+        await auth_db.save_vertretungsplan_notification_state(
+            "restart-user", {"entries": {"one": "seen"}}
+        )
+
+    asyncio.run(setup())
+    script = """
+import asyncio, json, sys
+from api import auth_db
+auth_db.DB_PATH = sys.argv[1]
+async def main():
+    await auth_db.initialize()
+    print(json.dumps({
+        'subscriptions': await auth_db.get_push_subscriptions('restart-user'),
+        'messages': await auth_db.get_message_notification_state('restart-user'),
+        'plan': await auth_db.get_vertretungsplan_notification_state('restart-user'),
+        'enabled': [u['user_id'] for u in await auth_db.get_enabled_notification_users()],
+    }))
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(database)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    restored = json.loads(result.stdout)
+    assert restored == {
+        "subscriptions": [subscription],
+        "messages": pending,
+        "plan": {"entries": {"one": "seen"}},
+        "enabled": ["restart-user"],
+    }
+
+
+def test_real_webpush_encryption_sends_a_nonzero_ttl_header(monkeypatch):
+    import base64
+    import os
+
+    import requests
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    pywebpush = pytest.importorskip("pywebpush")
+    from py_vapid import Vapid
+
+    signer = Vapid()
+    signer.generate_keys()
+    receiver = ec.generate_private_key(ec.SECP256R1())
+    public = receiver.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    captured = {}
+
+    class PushService:
+        def post(self, endpoint, **kwargs):
+            captured.update(kwargs)
+            response = requests.Response()
+            response.status_code = 201
+            response._content = b""
+            return response
+
+    real_webpush = pywebpush.webpush
+
+    def send(**kwargs):
+        kwargs["vapid_private_key"] = signer
+        kwargs["requests_session"] = PushService()
+        return real_webpush(**kwargs)
+
+    monkeypatch.setattr(pywebpush, "webpush", send)
+    monkeypatch.setenv("VAPID_PRIVATE_KEY", "ephemeral-test-key")
+    monkeypatch.setenv("VAPID_SUBJECT", "mailto:test@example.org")
+    notifications._send_push_sync(
+        {
+            "endpoint": "https://fcm.googleapis.com/ephemeral-test",
+            "keys": {
+                "p256dh": base64.urlsafe_b64encode(public).decode().rstrip("="),
+                "auth": base64.urlsafe_b64encode(os.urandom(16)).decode().rstrip("="),
+            },
+        },
+        {"title": "Test", "tag": "lanis-messages-1"},
+    )
+    headers = {key.lower(): value for key, value in captured["headers"].items()}
+    assert int(headers["ttl"]) == 86400
+    assert headers["content-encoding"] == "aes128gcm"
+    assert headers["authorization"].startswith("vapid ")
+    assert b'"title"' not in captured["data"]
+
+
+def test_local_signing_failure_retains_devices_and_allows_a_retry(monkeypatch):
+    endpoint = "https://fcm.googleapis.com/signing-retry"
+    deleted = []
+    failing = True
+
+    async def send(*_args):
+        return ValueError("bad signing key") if failing else None
+
+    async def delete(*args):
+        deleted.append(args)
+
+    monkeypatch.setattr(notifications, "run_in_threadpool", send)
+    monkeypatch.setattr(notifications, "delete_push_subscription", delete)
+    monkeypatch.setattr(notifications, "push_configured", lambda: True)
+
+    async def deliver():
+        return await notifications._send_push_to_subscriptions(
+            "user", [{"endpoint": endpoint, "keys": {}}], {"title": "new message"}
+        )
+
+    assert asyncio.run(deliver()) == {endpoint: "retry"}
+    assert deleted == []
+    failing = False
+    assert asyncio.run(deliver()) == {endpoint: "delivered"}
 
 
 def test_notification_storage_round_trip(tmp_path, monkeypatch):

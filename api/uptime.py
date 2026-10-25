@@ -5,11 +5,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import logging
 import math
+import multiprocessing
 import os
+import random
+import statistics
+import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -35,19 +41,15 @@ UPTIME_SUMMARY_DAYS = 90
 UPTIME_ALERT_RETRY_SECONDS = 300
 DISCORD_WEBHOOK_ENV = "LANIS_UPTIME_DISCORD_WEBHOOK_URL"
 
+_uptime_cycle_task: asyncio.Task | None = None
+_uptime_cycle_phase = "initial"
+_uptime_stopping = False
 _uptime_alert_lock = asyncio.Lock()
-_uptime_scheduler_wake_event: asyncio.Event | None = None
 _uptime_notification_tasks: set[asyncio.Task[None]] = set()
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def wake_uptime_scheduler() -> None:
-    """Wake the recurring scheduler after an external check confirms an incident."""
-    if _uptime_scheduler_wake_event is not None:
-        _uptime_scheduler_wake_event.set()
 
 
 def _schedule_discord_notification(check: dict[str, Any]) -> None:
@@ -67,6 +69,19 @@ def _schedule_discord_notification(check: dict[str, Any]) -> None:
             )
 
     task.add_done_callback(_finish)
+
+
+async def stop_uptime_cycle() -> None:
+    """Stop shared work and reap its probes before draining notification deliveries."""
+    global _uptime_stopping, _uptime_cycle_task
+    already_stopping = _uptime_stopping
+    _uptime_stopping = True
+    task = _uptime_cycle_task
+    if task is not None:
+        if not task.done() and not already_stopping:
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        _uptime_cycle_task = None
 
 
 async def drain_uptime_notification_tasks(timeout_seconds: float = 65.0) -> None:
@@ -141,8 +156,8 @@ def _uptime_credentials() -> tuple[str, str, str] | None:
 
 
 def uptime_is_configured() -> bool:
-    """Return whether a complete monitor credential set is available."""
-    return _uptime_credentials() is not None
+    """Return whether at least two distinct designated monitor accounts exist."""
+    return len(_monitor_accounts()) >= 2
 
 
 def _discord_webhook_url() -> str | None:
@@ -309,6 +324,21 @@ def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool
             f"\nErkannt: {check.get('checked_at', 'unbekannt')}"
             f"\nStatus-Seite: {_status_page_url()}"
         )
+    evidence = check.get("monitoring") or {}
+    confidence = {
+        "confirmed": "bestätigt",
+        "limited": "begrenzte Aussagekraft",
+        "inconclusive": "unbestätigt",
+    }.get(evidence.get("confidence"))
+    scope = {
+        "account": "einzelnes Testkonto",
+        "school": "eine getestete Schule",
+        "multiple_schools": "mehrere getestete Schulen",
+        "sampled_accounts": "getestete Konten",
+        "unknown": "unbekannt",
+    }.get(evidence.get("scope"))
+    if confidence and scope:
+        content += f"\nBewertung: {confidence} · Umfang: {scope}"
     response = requests.post(
         webhook_url,
         json={"content": content, "allowed_mentions": {"parse": []}},
@@ -427,11 +457,11 @@ def _is_maintenance_page(html: str) -> bool:
     )
 
 
-def _probe_portal() -> dict[str, Any]:
+def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, Any]:
     """Log in and open the configured account's available modules."""
     checked_at = _utcnow().isoformat()
     overall_started = time.perf_counter()
-    if not uptime_is_configured():
+    if credentials is None and _uptime_credentials() is None:
         return {
             "checked_at": checked_at,
             "url": get_uptime_url(),
@@ -446,7 +476,7 @@ def _probe_portal() -> dict[str, Any]:
             ],
         }
 
-    credentials = _uptime_credentials()
+    credentials = credentials or _uptime_credentials()
     if credentials is None:
         # The environment can change between the first check and this read.
         return {
@@ -531,7 +561,7 @@ def _probe_portal() -> dict[str, Any]:
 
 
 def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = None) -> list[dict[str, Any]]:
-    """Collapse consecutive confirmed failures into incidents with recovery times."""
+    """Collapse consecutive observed impairments into incidents with recovery times."""
     now = now or _utcnow()
     ordered = sorted(checks, key=lambda item: str(item.get("checked_at") or ""))
     incidents: list[dict[str, Any]] = []
@@ -542,7 +572,7 @@ def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = 
             failed_features = [
                 str(feature.get("name"))
                 for feature in check.get("features") or []
-                if isinstance(feature, dict) and feature.get("status") == "down"
+                if isinstance(feature, dict) and feature.get("status") in {"down", "degraded"}
             ]
             if active is None:
                 active = {
@@ -556,6 +586,12 @@ def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = 
                     "last_checked_at": checked_at,
                     "error": check.get("error"),
                 }
+            evidence = check.get("monitoring") or check
+            if isinstance(evidence, dict) and evidence.get("observed_status") != "up":
+                if evidence.get("confidence") in {"confirmed", "limited", "inconclusive"}:
+                    active["confidence"] = evidence["confidence"]
+                if evidence.get("scope") in {"account", "school", "multiple_schools", "sampled_accounts", "unknown"}:
+                    active["scope"] = evidence["scope"]
             active["checks"] += 1
             active["last_checked_at"] = checked_at
             active["checked_at"] = checked_at
@@ -791,42 +827,366 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
     }
 
 
-async def run_uptime_check() -> dict[str, Any]:
-    """Retry failures once and persist the resulting healthy or confirmed state."""
-    previous_checks = await user_metrics_db.get_uptime_checks(limit=1)
-    previous_failure = bool(
-        previous_checks and previous_checks[0].get("status") in {"down", "degraded"}
+def _monitor_accounts() -> list[tuple[str, str, str]]:
+    """Load only explicitly enrolled accounts; never sample ordinary users."""
+    filename = os.getenv("LANIS_UPTIME_ACCOUNTS_FILE")
+    if not filename:
+        legacy = _uptime_credentials()
+        return [legacy] if legacy else []
+    try:
+        from .auth_db import _decrypt_password
+        from .uptime_accounts import normalize_monitor_identity
+
+        path = Path(filename)
+        if path.stat().st_mode & 0o077:
+            return []
+        entries = json.loads(path.read_text())
+        if not isinstance(entries, list) or len(entries) > 100:
+            return []
+        accounts = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return []
+            if entry.get("enabled", True) is not True:
+                continue
+            school = normalize_monitor_identity(entry.get("school_id"))
+            username = normalize_monitor_identity(entry.get("username"))
+            encrypted = entry.get("password")
+            if (
+                not school
+                or not username
+                or not isinstance(encrypted, str)
+                or not encrypted.startswith("v1:")
+            ):
+                return []
+            password = _decrypt_password(encrypted)
+            if not password:
+                return []
+            accounts[(school, username.casefold())] = (school, username, password)
+        return list(accounts.values())
+    except Exception:  # noqa: BLE001 - fail closed without leaking secrets
+        # Never log parsing/decryption exceptions: they can include secrets.
+        return []
+
+
+def _choose_accounts(
+    accounts: list[tuple[str, str, str]], count: int
+) -> list[tuple[str, str, str]]:
+    shuffled = random.SystemRandom().sample(accounts, len(accounts))
+    selected = []
+    schools = set()
+    for account in shuffled:
+        if account[0] not in schools:
+            selected.append(account)
+            schools.add(account[0])
+        if len(selected) == count:
+            return selected
+    return (selected + [account for account in shuffled if account not in selected])[
+        :count
+    ]
+
+
+def _probe_child(connection, credentials) -> None:
+    try:
+        connection.send(_probe_portal(credentials))
+    except Exception:  # noqa: BLE001 - isolate arbitrary SDK failures
+        connection.send({"status": "unknown", "error": "probe_failed", "features": []})
+    finally:
+        connection.close()
+
+
+def _isolated_probe(
+    credentials: tuple[str, str, str], stopped: threading.Event | None = None
+) -> dict[str, Any]:
+    """Bound the entire SDK flow, including redirects and module enumeration."""
+    context = multiprocessing.get_context("spawn")
+    receive, send = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_probe_child, args=(send, credentials), daemon=True
     )
-    probe_cycle_started = time.perf_counter()
-    check = await run_in_threadpool(_probe_portal)
-    if check["status"] in {"down", "degraded"}:
-        retry = await run_in_threadpool(_probe_portal)
-        if retry["status"] == "up":
-            check = retry
-            if previous_failure:
-                # A passing observation closes an already confirmed incident.
-                logger.info("Schulportal incident recovered after successful retry")
-            else:
-                logger.info("Discarding transient Schulportal check failure after successful retry")
-        else:
-            check = retry
-    if check["status"] != "not_configured":
-        probe_cycle_seconds = max(0, math.ceil(time.perf_counter() - probe_cycle_started))
-        next_interval = (
-            INCIDENT_UPTIME_INTERVAL_SECONDS
-            if check["status"] in {"down", "degraded"}
-            else get_uptime_interval_seconds()
+    try:
+        if stopped is not None and stopped.is_set():
+            return {"status": "unknown", "error": "probe_cancelled", "features": []}
+        process.start()
+        send.close()
+        deadline = time.monotonic() + _positive_env(
+            "LANIS_UPTIME_PROBE_DEADLINE_SECONDS", 90, 5, 180
         )
-        check["checked_at"] = _utcnow().isoformat()
-        check["sample_interval_seconds"] = next_interval + probe_cycle_seconds
-        await user_metrics_db.record_uptime_check(check)
-        _schedule_discord_notification(check)
-    logger.info(
-        "Schulportal synthetic check: %s (%sms)",
-        check["status"],
-        check["latency_ms"],
+        while stopped is None or not stopped.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"status": "unknown", "error": "probe_deadline", "features": []}
+            if receive.poll(min(remaining, 0.1)):
+                return receive.recv()
+        return {"status": "unknown", "error": "probe_cancelled", "features": []}
+    except Exception:  # noqa: BLE001 - classify worker crashes without exposing payloads
+        return {"status": "unknown", "error": "probe_failed", "features": []}
+    finally:
+        send.close()
+        receive.close()
+        if process.pid is not None:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=2)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            process.close()
+
+
+async def _probe_round(
+    accounts: list[tuple[str, str, str]], labels: dict[tuple[str, str], str]
+) -> list[dict[str, Any]]:
+    schools = list(dict.fromkeys(account[0] for account in accounts))
+    stopped = threading.Event()
+
+    async def probe(account):
+        result = await run_in_threadpool(_isolated_probe, account, stopped)
+        return {"account": labels[account[:2]], "school_group": schools.index(account[0]) + 1, **result}
+
+    workers = [asyncio.create_task(probe(account)) for account in accounts]
+    try:
+        # Let explicit shutdown signal the threads and wait for process cleanup.
+        # Cancelling the async wrappers alone could abandon live child processes.
+        return await asyncio.shield(asyncio.gather(*workers))
+    finally:
+        stopped.set()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+
+def _classify_round(results: list[dict[str, Any]]) -> tuple[str, str]:
+    """Classify observed availability independently of confidence or breadth."""
+    if len(results) < 2:
+        return "unknown", "inconclusive"
+    failures = sum(result["status"] in {"down", "degraded"} for result in results)
+    if failures:
+        if failures == 1:
+            return "degraded", "isolated"
+        if all(result["status"] == "down" for result in results):
+            return "down", "confirmed"
+        return "degraded", "confirmed"
+    if any(result["status"] != "up" for result in results):
+        return "unknown", "inconclusive"
+    return "up", "healthy"
+
+
+def _round_evidence(
+    results: list[dict[str, Any]],
+    initial: list[dict[str, Any]],
+    expected_count: int,
+) -> dict[str, Any]:
+    """Measure confidence and observed scope without claiming global coverage."""
+    failed = [r for r in results if r["status"] in {"down", "degraded"}]
+    complete = sum(r["status"] in {"up", "down", "degraded"} for r in results)
+    initial_failures = {
+        r.get("account") for r in initial if r["status"] in {"down", "degraded"}
+    }
+    repeated = sum(r.get("account") in initial_failures for r in failed)
+    status, _ = _classify_round(results)
+    confidence = (
+        "inconclusive"
+        if status == "unknown"
+        else "limited"
+        if len(failed) == 1 or complete < expected_count
+        else "confirmed"
     )
+    failed_schools = {
+        r["school_group"] for r in failed if r.get("school_group") is not None
+    }
+    scope = (
+        "unknown"
+        if status == "unknown"
+        else "account"
+        if len(failed) == 1
+        else "school"
+        if failed
+        and len(failed_schools) == 1
+        and all(r.get("school_group") is not None for r in failed)
+        else "multiple_schools"
+        if len(failed_schools) > 1
+        else "sampled_accounts"
+    )
+    return {
+        "observed_status": status,
+        "confidence": confidence,
+        "scope": scope,
+        "sampled_accounts": len(results),
+        "completed_accounts": complete,
+        "expected_accounts": expected_count,
+        "failed_accounts": len(failed),
+        "repeated_failures": repeated,
+    }
+
+
+async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
+    global _uptime_cycle_phase
+    _uptime_cycle_phase = "initial"
+    started = time.perf_counter()
+    accounts = _monitor_accounts()
+    check = {
+        "checked_at": _utcnow().isoformat(),
+        "url": get_uptime_url(),
+        "status": "unknown",
+        "is_available": None,
+        "status_code": None,
+        "latency_ms": 0,
+        "error": None,
+        "features": [],
+    }
+    details = {
+        "pool_size": len(accounts),
+        "reduced_coverage": len(accounts) < 4,
+        "classification": "insufficient_accounts",
+        "rounds": [],
+        "recovery_streak": 0,
+        "scheduled": scheduled,
+        "confidence": "inconclusive",
+        "scope": "unknown",
+        "observed_status": "unknown",
+    }
+    check["monitoring"] = details
+    if len(accounts) >= 2:
+        selected = _choose_accounts(accounts, 2)
+        replacements = _choose_accounts([a for a in accounts if a not in selected], 2)
+        labels = {
+            account[:2]: f"Account {index + 1}"
+            for index, account in enumerate(selected + replacements)
+        }
+        initial = await _probe_round(selected, labels)
+        details["rounds"].append({"name": "initial", "results": initial})
+        results = initial
+        if any(result["status"] != "up" for result in initial):
+            _uptime_cycle_phase = "waiting"
+            await asyncio.sleep(15)
+            _uptime_cycle_phase = "confirmation"
+            results = await _probe_round(selected + replacements, labels)
+            details["rounds"].append({"name": "confirmation", "results": results})
+        status, classification = _classify_round(results)
+        if classification == "healthy" and len(details["rounds"]) == 2:
+            classification = "transient"
+        details["classification"] = classification
+        details.update(_round_evidence(
+            results,
+            initial if len(details["rounds"]) == 2 else [],
+            4 if len(details["rounds"]) == 2 else 2,
+        ))
+        check["status"] = status
+        check["error"] = None if status == "up" else classification
+        if status == "down" and results and all(
+            result.get("error") == "maintenance" for result in results
+        ):
+            check["error"] = "maintenance"
+        for name in ("login", "modules"):
+            states = [
+                next(
+                    (
+                        f["status"]
+                        for f in r.get("features", [])
+                        if f.get("name") == name
+                    ),
+                    "unknown",
+                )
+                for r in results
+            ]
+            feature_status = (
+                "up"
+                if all(state == "up" for state in states)
+                else "down"
+                if all(state == "down" for state in states)
+                else "degraded"
+                if "down" in states
+                else "unknown"
+            )
+            latencies = [
+                f["latency_ms"]
+                for r in results
+                for f in r.get("features", [])
+                if f.get("name") == name
+                and isinstance(f.get("latency_ms"), (int, float))
+            ]
+            check["features"].append(
+                {
+                    "name": name,
+                    "status": feature_status,
+                    "is_available": True
+                    if feature_status == "up"
+                    else False
+                    if feature_status in {"down", "degraded"}
+                    else None,
+                    "latency_ms": round(statistics.median(latencies))
+                    if latencies
+                    else None,
+                    "error": None,
+                }
+            )
+        previous = await user_metrics_db.get_uptime_checks(limit=1)
+        if previous:
+            last = previous[0]
+            pending_status = (
+                last["status"]
+                if last["status"] in {"down", "degraded"}
+                else last.get("monitoring", {}).get("pending_status")
+            )
+            recovering = pending_status in {"down", "degraded"}
+            if status == "up" and recovering:
+                streak = (
+                    (
+                        last.get("monitoring", {}).get("recovery_streak", 0)
+                        + int(scheduled)
+                    )
+                    if classification == "healthy"
+                    else 0
+                )
+                details["recovery_streak"] = streak
+                if streak < 2:
+                    check["status"] = pending_status
+                    details["classification"] = "recovering"
+                    check["error"] = "recovery_pending"
+            elif status == "unknown" and recovering:
+                # Unknown evidence cannot close an incident, including across restarts.
+                details["pending_status"] = pending_status
+        check["is_available"] = (
+            True
+            if check["status"] == "up"
+            else False
+            if check["status"] in {"down", "degraded"}
+            else None
+        )
+    else:
+        check["error"] = "insufficient_accounts"
+        previous = await user_metrics_db.get_uptime_checks(limit=1)
+        if previous:
+            last = previous[0]
+            details["pending_status"] = (
+                last["status"]
+                if last["status"] in {"down", "degraded"}
+                else last.get("monitoring", {}).get("pending_status")
+            )
+    check["checked_at"] = _utcnow().isoformat()
+    check["latency_ms"] = max(0, round((time.perf_counter() - started) * 1000))
+    check["sample_interval_seconds"] = get_uptime_interval_seconds() + math.ceil(
+        time.perf_counter() - started
+    )
+    await user_metrics_db.record_uptime_check(check)
+    if check["status"] in {"up", "down", "degraded"}:
+        _schedule_discord_notification(check)
     return check
+
+
+async def run_uptime_check(*, scheduled: bool = False) -> dict[str, Any]:
+    """Join the current cycle; cancellation of one HTTP waiter cannot cancel it."""
+    global _uptime_cycle_task
+    if _uptime_stopping:
+        raise RuntimeError("Uptime monitor is shutting down")
+    if _uptime_cycle_task is None or _uptime_cycle_task.done():
+        _uptime_cycle_task = asyncio.create_task(_run_uptime_cycle(scheduled))
+
+        def completed(task: asyncio.Task) -> None:
+            if not task.cancelled() and task.exception() is not None:
+                logger.error("Schulportal uptime cycle failed")
+
+        _uptime_cycle_task.add_done_callback(completed)
+    return await asyncio.shield(_uptime_cycle_task)
 
 
 async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]:
@@ -945,7 +1305,7 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
     summary_window = windows["90d"]
     current = history[0] if history else None
     configured = uptime_is_configured()
-    if not configured:
+    if not configured and current is None:
         current = {
             "status": "not_configured",
             "is_available": None,
@@ -961,10 +1321,19 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
         "configured": configured,
         "url": get_uptime_url(),
         "generated_at": _utcnow().isoformat() + "Z",
+        "active_cycle": {"phase": _uptime_cycle_phase}
+        if _uptime_cycle_task is not None and not _uptime_cycle_task.done()
+        else None,
         "schedule": {
             "interval_seconds": get_uptime_interval_seconds(),
-            "incident_interval_seconds": INCIDENT_UPTIME_INTERVAL_SECONDS,
+            "incident_interval_seconds": get_uptime_interval_seconds(),
             "timeout_seconds": get_uptime_timeout_seconds(),
+            "parallel_accounts": 2,
+            "confirmation_accounts": 4,
+            "pool_size": len(_monitor_accounts()),
+            "probe_deadline_seconds": _positive_env(
+                "LANIS_UPTIME_PROBE_DEADLINE_SECONDS", 90, 5, 180
+            ),
         },
         "daily": daily,
         "summary_windows": windows,
@@ -998,40 +1367,18 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
 
 async def run_uptime_scheduler() -> asyncio.Task:
     """Start the recurring authenticated synthetic monitor task."""
-    global _uptime_scheduler_wake_event
-    wake_event = asyncio.Event()
-    _uptime_scheduler_wake_event = wake_event
+    global _uptime_stopping
+    _uptime_stopping = False
 
     async def _loop() -> None:
-        incident_active = False
         while True:
             try:
-                check = await run_uptime_check()
-                if check.get("status") in {"down", "degraded"}:
-                    incident_active = True
-                elif check.get("status") == "up":
-                    incident_active = False
+                await run_uptime_check(scheduled=True)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Schulportal synthetic check failed unexpectedly")
-                try:
-                    latest = await user_metrics_db.get_uptime_checks(limit=1)
-                    if latest and latest[0].get("status") in {"down", "degraded"}:
-                        incident_active = True
-                    elif latest and latest[0].get("status") == "up":
-                        incident_active = False
-                except Exception:
-                    logger.warning("Could not reload persisted uptime state after scheduler failure", exc_info=True)
-            interval = (
-                INCIDENT_UPTIME_INTERVAL_SECONDS
-                if incident_active
-                else get_uptime_interval_seconds()
-            )
-            try:
-                await asyncio.wait_for(wake_event.wait(), timeout=interval)
-                wake_event.clear()
-            except asyncio.TimeoutError:
-                pass
+            interval = get_uptime_interval_seconds()
+            await asyncio.sleep(interval)
 
     return asyncio.create_task(_loop(), name="schulportal-uptime")

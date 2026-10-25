@@ -213,6 +213,14 @@ Web Push requires these environment variables on the API server:
 
 The `pywebpush` dependency is included in `requirements.txt`. Users can configure notification categories, Vertretungsplan class scope, the active window, interval, timezone, and whether message previews contain the sender and subject in **Settings → Benachrichtigungen**.
 
+Subscriptions, category baselines and pending delivery retries live in `data/auth.db`. Normal process restarts preserve them and restart the polling worker. Keep that directory persistent (the supplied Docker Compose file mounts a named volume), use a stable working directory for a service installation, and preserve the `JWT_SECRET`/credential encryption key and VAPID key pair across deployments. Replacing these files or keys is not an ordinary restart.
+
+An upgrade introducing per-login session ownership intentionally removes legacy subscriptions that cannot be safely attributed to a login. The browser must register its existing subscription again; updated frontends do this on authenticated page visits and periodically while visible. Do not retain unowned endpoints or attach them arbitrarily to another session to bypass that migration.
+
+Push-service acceptance is not a device delivery receipt. Messages are retained by the push service for up to 24 hours while a device is unavailable; time-sensitive plan updates for one hour, and test pushes for ten minutes. The library's default is zero seconds, which discards offline messages. Only explicit push-service 404/410 responses expire a stored endpoint. Temporary network, signing or server configuration failures preserve subscriptions for retry.
+
+Polling remains subject to each account's active time window, interval, unread-message status, class scope and live login session. A newly enabled category first records a baseline. A successful test push does not test these automatic polling conditions. Real push delivery and deployment configuration must be checked separately; regression tests use temporary databases and an isolated simulated push service.
+
 ## WhatsApp assistant
 
 The hosted API can optionally expose a WhatsApp assistant. Users link
@@ -313,3 +321,79 @@ surface and method documentation.
 ## License
 
 This project is released under the [MIT License](LICENSE).
+
+### Parallel authenticated uptime monitoring
+
+The uptime monitor uses an **explicit pool of designated monitoring accounts**;
+ordinary saved user accounts are never enrolled automatically. Every cycle samples
+two distinct accounts (preferring different schools), runs their login/module
+checks in parallel, and, if either fails, waits 15 seconds before testing the same
+two plus up to two new distinct accounts. Each probe has a fresh isolated process
+and a 90-second overall deadline. Normal and incident cycles use the configured
+`LANIS_UPTIME_INTERVAL_SECONDS` (default 300 seconds); retries never recurse.
+
+Provision the pool outside the repository using the backend's existing
+`LANIS_CREDENTIAL_ENCRYPTION_KEY` (or stable `JWT_SECRET`). Feed a JSON array of
+objects with `school_id`, `username`, and `password` through stdin:
+
+```sh
+python -m api.uptime_accounts /private/path/monitor-accounts.json < /private/path/input.json
+```
+
+The command encrypts passwords, creates a mode-0600 output file, refuses to
+replace an existing file, and never prints credentials. Keep the input private
+and remove it after provisioning. Set `LANIS_UPTIME_ACCOUNTS_FILE` to the absolute
+output path. The backend must use the same encryption key. To disable an account,
+set `enabled: false` in the encrypted pool; replace the file atomically when editing.
+Malformed, unreadable, insecurely permissioned, or undecryptable pools fail closed.
+Provisioning and loading share identity validation: only nonempty strings or
+integers are accepted; nulls, booleans, compound values, and floats are rejected.
+The legacy environment credential set is readable but **one account alone is
+insufficient coverage**, so deployments must provision at least two accounts
+before upgrading. Four or more enable the full confirmation flow.
+
+Any functional failure in confirmation indicates partially impaired service
+(`degraded`), including a single failing account. All sampled accounts failing
+login indicate `down`. **Availability and confidence are independent:** a
+single-account failure has limited confidence and account scope, but it still
+counts as impairment in uptime calculations and opens a scoped incident. Two or
+more failures with complete expected coverage have confirmed confidence; missing
+or reduced confirmation coverage limits confidence. No functional failures plus
+incomplete evidence remains `unknown`, and does not open or resolve incidents.
+
+The stored evidence includes observed status, confidence, scope (account, one
+sampled school, multiple sampled schools, or sampled accounts), completed versus
+expected probes, and the number of accounts failing in both rounds. Public
+status allowlists only aggregate confidence/scope/status values; Discord includes
+human-readable confidence and scope without identifiers. An isolated generic
+login failure may still be an account credential problem: limited confidence
+makes that uncertainty explicit instead of deleting it from the measurement.
+
+All-pass confirmation records a transient failure without opening an incident. Recovery
+from an existing incident requires two consecutive healthy scheduled cycles;
+manual checks cannot advance recovery. One aggregate observation per cycle feeds
+existing time-weighted uptime and incidents. Private admin history retains both
+rounds with cycle-local account labels and numbered school groups, never usernames, passwords, or school IDs.
+The public status endpoint and Discord continue to expose only aggregate data.
+Discord retains its existing incident/recovery transition deduplication.
+
+`LANIS_UPTIME_PROBE_DEADLINE_SECONDS` configures the total per-account deadline
+(default 90; clamped to 5–180). Request timeouts still use
+`LANIS_UPTIME_TIMEOUT_SECONDS`. A manual check joins any currently running cycle
+instead of starting another one. The admin endpoint waits up to five seconds and
+then returns current status plus `active_cycle.phase`; the shared cycle continues
+in the background, and the portal refreshes every ten seconds while on Uptime. Isolation/coalescing applies within one backend
+process: run the scheduler in a single worker, as in the current deployment.
+Server shutdown explicitly stops the shared cycle and reaps its probe processes
+before draining Discord deliveries. HTTP waiter cancellation still leaves the
+shared cycle running; shutdown prevents new cycles until scheduler startup.
+Credential failures remain operator-reviewed because the SDK's generic login
+failure cannot reliably distinguish bad credentials from upstream failure;
+accounts are not automatically disabled on that ambiguous signal.
+
+## External agents
+
+Claude connectors and other MCP clients can connect through a shared
+OAuth-protected `/mcp` endpoint. The public ChatGPT plugin is planned; operator
+custom-MCP testing and publication requirements are documented separately. Users approve and manage each connection
+in LANIS Settings → Agents. See [setup, permissions, and plugin packaging](docs/agents.md).

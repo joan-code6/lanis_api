@@ -15,6 +15,7 @@ Run locally:
 import asyncio
 from collections import deque
 from contextvars import ContextVar
+from contextlib import asynccontextmanager
 import copy
 import hashlib
 import hmac
@@ -51,6 +52,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
+from starlette.routing import Route
 
 try:
     from pydantic import field_validator
@@ -58,9 +60,15 @@ except ImportError:  # Pydantic v1
     from pydantic import validator as field_validator
 
 import jwt
+from dotenv import load_dotenv
+
+# Configure import-time services (including MCP) before local modules capture URLs.
+load_dotenv()
 
 from schulportal_hessen.base import SchulportalHessenAPI
 
+from .agents import router as agents_router
+from .agent_mcp import mcp, mcp_app
 from .queue import task_queue, Task, TaskPriority
 from .queue.task_queue import TaskQueue
 from .identity import (
@@ -74,7 +82,7 @@ from . import feedback_db
 from .feedback_db import FeedbackRateLimitError
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
-from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler
+from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler, stop_uptime_cycle
 from .public_status import get_public_status
 from .documentation import router as documentation_router
 from .homepage import router as homepage_router
@@ -196,9 +204,6 @@ from .whatsapp import (
     verify_webhook_signature,
 )
 from .ai_agent import AIConfig, AIProviderError, AgentTool, run_agent
-
-from dotenv import load_dotenv
-load_dotenv()
 
 logger = logging.getLogger("api")
 
@@ -1119,6 +1124,21 @@ app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
 app.router.route_class = OutageCacheRoute
 
 
+@app.get("/agent-icon.png", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+async def agent_icon():
+    """Same-origin LANIS identity for connector clients and favicon discovery."""
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        Path(__file__).resolve().parent / "static/agent-icon.png",
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+
 MAX_DATEISPEICHER_DOWNLOAD_BYTES = 256 * 1024 * 1024
 
 
@@ -1156,6 +1176,7 @@ async def serialize_account_requests(request: Request, call_next):
     """Keep concurrent authenticated work inside the account deletion barrier."""
     if (
         request.url.path == "/login"
+        or request.url.path == "/mcp"  # MCP owns its bearer identity and lifecycle lease.
         or request.url.path == "/account/deletion/recover"
         or request.url.path == "/admin"
         or request.url.path.startswith("/admin/")
@@ -1373,6 +1394,7 @@ app.add_middleware(
         "https://lanis.arg-server.de",
         "https://lanis-ui.bennetjoanwegener.workers.dev",
         "https://lanis-admin.bennetjoanwegener.workers.dev",
+        *([os.getenv("LANIS_AGENT_UI_ORIGIN").rstrip("/")] if os.getenv("LANIS_AGENT_UI_ORIGIN") else []),
         *(
             [os.getenv("LANIS_ADMIN_ORIGIN").rstrip("/")]
             if os.getenv("LANIS_ADMIN_ORIGIN")
@@ -1385,6 +1407,22 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At"],
 )
+
+# The MCP SDK owns its task group for the complete ASGI lifespan.
+_existing_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _agents_lifespan(application):
+    async with _existing_lifespan(application):
+        async with mcp.session_manager.run():
+            yield
+
+
+app.router.lifespan_context = _agents_lifespan
+app.include_router(agents_router)
+# A path route preserves /mcp without a trailing-slash redirect on POST.
+app.router.routes.append(Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]))
 
 app.include_router(documentation_router)
 app.include_router(admin_router)
@@ -1430,6 +1468,7 @@ async def _cleanup_sessions() -> None:
     if _uptime_scheduler_task:
         _uptime_scheduler_task.cancel()
         await asyncio.gather(_uptime_scheduler_task, return_exceptions=True)
+    await stop_uptime_cycle()
     await drain_uptime_notification_tasks()
     if _whatsapp_history_cleanup_task:
         _whatsapp_history_cleanup_task.cancel()

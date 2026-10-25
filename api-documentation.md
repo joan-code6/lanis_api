@@ -1443,6 +1443,12 @@ during an incident, less when a current result is about to become stale).
 - `summary_windows`: exact rolling `24h`, `7d`, `30d`, and `90d` aggregates,
   each with counts, time-weighted availability, coverage, median/p95 total
   latency, and median/p95 latency for login and module checks.
+- `history_windows`: chronological rolling `24h` (48 × 30-minute buckets) and
+  `7d` (28 × 6-hour buckets). Each bucket includes UTC `start`/`end`, `status`,
+  counts, time-weighted `uptime_percent`, and `coverage_percent`. Buckets are
+  half-open except the final bucket, which includes the snapshot observation.
+  Readings carry into the next bucket only within their cadence limit; missing
+  observations remain unknown. Mixed healthy/failed intervals are `degraded`.
 - `daily`: the same counts/percentages per UTC `day` with a daily `status`.
   Days without known observations remain `unknown`. The rolling 90×24-hour window
   intersects up to 91 calendar dates; the first and last dates are partial days.

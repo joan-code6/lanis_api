@@ -242,6 +242,10 @@ class UserMetricsDB:
                 await db.execute(
                     "ALTER TABLE uptime_checks ADD COLUMN features_json TEXT NOT NULL DEFAULT '[]'"
                 )
+            if "monitoring_json" not in uptime_columns:
+                await db.execute(
+                    "ALTER TABLE uptime_checks ADD COLUMN monitoring_json TEXT NOT NULL DEFAULT '{}'"
+                )
             if "sample_interval_seconds" not in uptime_columns:
                 await db.execute(
                     "ALTER TABLE uptime_checks ADD COLUMN sample_interval_seconds INTEGER"
@@ -940,8 +944,8 @@ class UserMetricsDB:
                 """
                 INSERT INTO uptime_checks (
                     checked_at, sample_interval_seconds, url, status, is_available, status_code,
-                    latency_ms, error, features_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    latency_ms, error, features_json, monitoring_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     checked_at,
@@ -953,6 +957,7 @@ class UserMetricsDB:
                     check.get("latency_ms"),
                     check.get("error"),
                     json.dumps(check.get("features") or [], ensure_ascii=False),
+                    json.dumps(check.get("monitoring") or {}, ensure_ascii=False),
                 ),
             )
             if cleanup_retention:
@@ -986,7 +991,7 @@ class UserMetricsDB:
                 cursor = await db.execute(
                     """
                     SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
-                           latency_ms, error, features_json
+                           latency_ms, error, features_json, monitoring_json
                     FROM uptime_checks
                     ORDER BY checked_at DESC, id DESC LIMIT ?
                     """,
@@ -996,7 +1001,7 @@ class UserMetricsDB:
                 cursor = await db.execute(
                     """
                     SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
-                           latency_ms, error, features_json
+                           latency_ms, error, features_json, monitoring_json
                     FROM uptime_checks
                     WHERE checked_at >= ?
                     ORDER BY checked_at DESC, id DESC LIMIT ?
@@ -1006,7 +1011,12 @@ class UserMetricsDB:
             checks = []
             for row in await cursor.fetchall():
                 check = dict(row)
-                check["is_available"] = bool(check["is_available"])
+                check["is_available"] = bool(check["is_available"]) if check["status"] in {"up", "down", "degraded"} else None
+                try:
+                    monitoring = json.loads(check.pop("monitoring_json") or "{}")
+                except (TypeError, ValueError):
+                    monitoring = {}
+                check["monitoring"] = monitoring if isinstance(monitoring, dict) else {}
                 try:
                     features = json.loads(check.pop("features_json") or "[]")
                 except (TypeError, ValueError):
@@ -1023,7 +1033,7 @@ class UserMetricsDB:
             cursor = await db.execute(
                 """
                 SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
-                       latency_ms, error, features_json
+                       latency_ms, error, features_json, monitoring_json
                 FROM uptime_checks
                 WHERE checked_at < ?
                 ORDER BY checked_at DESC, id DESC LIMIT 1
@@ -1034,7 +1044,12 @@ class UserMetricsDB:
             if row is None:
                 return None
             check = dict(row)
-            check["is_available"] = bool(check["is_available"])
+            check["is_available"] = bool(check["is_available"]) if check["status"] in {"up", "down", "degraded"} else None
+            try:
+                monitoring = json.loads(check.pop("monitoring_json") or "{}")
+            except (TypeError, ValueError):
+                monitoring = {}
+            check["monitoring"] = monitoring if isinstance(monitoring, dict) else {}
             try:
                 features = json.loads(check.pop("features_json") or "[]")
             except (TypeError, ValueError):
@@ -1068,7 +1083,7 @@ class UserMetricsDB:
             cursor = await db.execute(
                 f"""
                 SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
-                       latency_ms, error, features_json
+                       latency_ms, error, features_json, monitoring_json
                 FROM uptime_checks
                 WHERE {where}
                 ORDER BY checked_at DESC, id DESC
@@ -1078,7 +1093,12 @@ class UserMetricsDB:
             checks = []
             for row in await cursor.fetchall():
                 check = dict(row)
-                check["is_available"] = bool(check["is_available"])
+                check["is_available"] = bool(check["is_available"]) if check["status"] in {"up", "down", "degraded"} else None
+                try:
+                    monitoring = json.loads(check.pop("monitoring_json") or "{}")
+                except (TypeError, ValueError):
+                    monitoring = {}
+                check["monitoring"] = monitoring if isinstance(monitoring, dict) else {}
                 try:
                     features = json.loads(check.pop("features_json") or "[]")
                 except (TypeError, ValueError):
@@ -1098,7 +1118,7 @@ class UserMetricsDB:
             cursor = await db.execute(
                 """
                 SELECT checked_at, sample_interval_seconds, url, status, is_available, status_code,
-                       latency_ms, error, features_json
+                       latency_ms, error, features_json, monitoring_json
                 FROM uptime_checks
                 WHERE status != 'up'
                 ORDER BY checked_at DESC, id DESC LIMIT ?
@@ -1108,7 +1128,12 @@ class UserMetricsDB:
             checks = []
             for row in await cursor.fetchall():
                 check = dict(row)
-                check["is_available"] = bool(check["is_available"])
+                check["is_available"] = bool(check["is_available"]) if check["status"] in {"up", "down", "degraded"} else None
+                try:
+                    monitoring = json.loads(check.pop("monitoring_json") or "{}")
+                except (TypeError, ValueError):
+                    monitoring = {}
+                check["monitoring"] = monitoring if isinstance(monitoring, dict) else {}
                 try:
                     features = json.loads(check.pop("features_json") or "[]")
                 except (TypeError, ValueError):
@@ -1126,7 +1151,7 @@ class UserMetricsDB:
                 SELECT COUNT(*) AS checks,
                        COALESCE(SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END), 0)
                            AS available_checks,
-                       COALESCE(SUM(CASE WHEN is_available = 0 THEN 1 ELSE 0 END), 0)
+                       COALESCE(SUM(CASE WHEN status IN ('down', 'degraded') THEN 1 ELSE 0 END), 0)
                            AS failed_checks
                 FROM uptime_checks
                 WHERE checked_at >= ?
@@ -1151,7 +1176,7 @@ class UserMetricsDB:
                        COUNT(*) AS checks,
                        COALESCE(SUM(CASE WHEN is_available = 1 THEN 1 ELSE 0 END), 0)
                            AS available_checks,
-                       COALESCE(SUM(CASE WHEN is_available = 0 THEN 1 ELSE 0 END), 0)
+                       COALESCE(SUM(CASE WHEN status IN ('down', 'degraded') THEN 1 ELSE 0 END), 0)
                            AS failed_checks
                 FROM uptime_checks
                 WHERE checked_at >= ?
@@ -1169,8 +1194,8 @@ class UserMetricsDB:
                 item["checks"] = checks
                 item["available_checks"] = available
                 item["failed_checks"] = failed
-                item["uptime_percent"] = round(available / checks * 100, 2) if checks else None
-                item["status"] = "up" if failed == 0 else "down" if available == 0 else "degraded"
+                item["uptime_percent"] = round(available / (available + failed) * 100, 2) if available + failed else None
+                item["status"] = "unknown" if not available and not failed else "up" if failed == 0 else "down" if available == 0 else "degraded"
                 series.append(item)
             return series
 
