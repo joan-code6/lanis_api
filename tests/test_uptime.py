@@ -80,7 +80,7 @@ def test_probe_recognizes_real_maintenance_page_without_login(monkeypatch, statu
     client_closed = []
     monkeypatch.setattr(FakeClient, "close", lambda self: client_closed.append(True))
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
-    result = uptime._probe_portal()
+    result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
     assert result["status"] == "down"
     assert result["is_available"] is False
     assert result["error"] == "maintenance"
@@ -118,7 +118,7 @@ def test_preflight_failure_falls_back_to_authenticated_checks(monkeypatch, error
 
     monkeypatch.setattr(FakeSession, "get", get)
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
-    assert uptime._probe_portal()["status"] == "up"
+    assert uptime._probe_portal(("5201", "monitor-user", "monitor-password"))["status"] == "up"
 
 
 def test_probe_resumes_authenticated_checks_after_maintenance(monkeypatch):
@@ -136,9 +136,9 @@ def test_probe_resumes_authenticated_checks_after_maintenance(monkeypatch):
     monkeypatch.setattr(FakeSession, "get", get)
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
     monkeypatch.setattr(FakeClient, "login_arguments", None)
-    assert uptime._probe_portal()["error"] == "maintenance"
+    assert uptime._probe_portal(("5201", "monitor-user", "monitor-password"))["error"] == "maintenance"
     assert FakeClient.login_arguments is None
-    recovered = uptime._probe_portal()
+    recovered = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
     assert recovered["status"] == "up"
     assert recovered["error"] is None
     assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
@@ -148,7 +148,7 @@ def test_probe_runs_login_and_opens_all_modules(monkeypatch):
     configure_monitor(monkeypatch)
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
 
-    result = uptime._probe_portal()
+    result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
 
     assert result["status"] == "up"
     assert result["is_available"] is True
@@ -164,7 +164,7 @@ def test_probe_reports_module_open_failure_without_exposing_credentials(monkeypa
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
 
     try:
-        result = uptime._probe_portal()
+        result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
     finally:
         FakeClient.module_status = 200
 

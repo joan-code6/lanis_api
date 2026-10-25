@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
-import json
 import logging
 import math
 import multiprocessing
 import os
 import random
+import sqlite3
 import statistics
 import threading
 import time
@@ -138,25 +138,8 @@ def get_uptime_timeout_seconds() -> float:
     )
 
 
-def _uptime_credentials() -> tuple[str, str, str] | None:
-    """Read monitor credentials without ever returning them from an API."""
-    # Dedicated monitor variables are preferred. The LANIS_API_* fallback
-    # keeps existing local deployments working when they already have a test
-    # account configured for the API client.
-    school_id = (
-        os.getenv("LANIS_UPTIME_SCHOOL_ID") or os.getenv("LANIS_API_SCHOOL_ID") or ""
-    ).strip()
-    username = (
-        os.getenv("LANIS_UPTIME_USERNAME") or os.getenv("LANIS_API_USERNAME") or ""
-    ).strip()
-    password = os.getenv("LANIS_UPTIME_PASSWORD") or os.getenv("LANIS_API_PASSWORD") or ""
-    if not school_id or not username or not password:
-        return None
-    return school_id, username, password
-
-
 def uptime_is_configured() -> bool:
-    """Return whether at least two distinct designated monitor accounts exist."""
+    """Return whether at least two eligible registered accounts exist."""
     return len(_monitor_accounts()) >= 2
 
 
@@ -461,7 +444,7 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
     """Log in and open the configured account's available modules."""
     checked_at = _utcnow().isoformat()
     overall_started = time.perf_counter()
-    if credentials is None and _uptime_credentials() is None:
+    if credentials is None:
         return {
             "checked_at": checked_at,
             "url": get_uptime_url(),
@@ -476,22 +459,6 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
             ],
         }
 
-    credentials = credentials or _uptime_credentials()
-    if credentials is None:
-        # The environment can change between the first check and this read.
-        return {
-            "checked_at": checked_at,
-            "url": get_uptime_url(),
-            "status": "not_configured",
-            "is_available": None,
-            "status_code": None,
-            "latency_ms": 0,
-            "error": "credentials_not_configured",
-            "features": [
-                _feature("login", "not_configured", overall_started, error="credentials_not_configured"),
-                _feature("modules", "skipped", overall_started, error="login_not_configured"),
-            ],
-        }
     school_id, username, password = credentials
     client = SchulportalHessenAPI()
     _install_request_timeout(client)
@@ -827,47 +794,85 @@ def _uptime_window(checks: list[dict[str, Any]], start: datetime, end: datetime)
     }
 
 
-def _monitor_accounts() -> list[tuple[str, str, str]]:
-    """Load only explicitly enrolled accounts; never sample ordinary users."""
-    filename = os.getenv("LANIS_UPTIME_ACCOUNTS_FILE")
-    if not filename:
-        legacy = _uptime_credentials()
-        return [legacy] if legacy else []
-    try:
-        from .auth_db import _decrypt_password
-        from .uptime_accounts import normalize_monitor_identity
+def _monitor_accounts(user_id: str | None = None) -> list[tuple[str, str, str]]:
+    """Return metadata only for onboarded users active within the past 30 days.
 
-        path = Path(filename)
-        if path.stat().st_mode & 0o077:
-            return []
-        entries = json.loads(path.read_text())
-        if not isinstance(entries, list) or len(entries) > 100:
-            return []
+    The third tuple member is a canonical user ID, never a password. Passwords
+    are decrypted only for selected users after acquiring their lifecycle lease.
+    Read-only connections cannot create missing stores or change user activity.
+    """
+    from . import auth_db
+
+    now = _utcnow()
+    params = [
+        now.isoformat(),
+        (now - timedelta(days=30)).isoformat(),
+        now.isoformat(),
+        now.isoformat(),
+    ]
+    restriction = ""
+    if user_id is not None:
+        restriction = "AND r.user_id = ?"
+        params.append(user_id)
+    try:
+        with contextlib.closing(
+            sqlite3.connect(
+                Path(auth_db.DB_PATH).resolve().as_uri() + "?mode=ro",
+                uri=True,
+                timeout=1,
+            )
+        ) as db:
+            db.execute(
+                "ATTACH DATABASE ? AS metrics",
+                (Path(user_metrics_db.db_path).resolve().as_uri() + "?mode=ro",),
+            )
+            rows = db.execute(
+                f"""
+                SELECT r.school_id, r.username, r.user_id
+                FROM refresh_tokens r
+                JOIN user_preferences p ON p.user_id = r.user_id
+                JOIN metrics.users u ON r.user_id = u.school_id || ':' || u.login
+                WHERE julianday(r.expires_at) > julianday(?)
+                  AND julianday(u.last_seen) >= julianday(?)
+                  AND julianday(u.last_seen) <= julianday(?)
+                  AND json_extract(CASE WHEN json_valid(p.preferences)
+                      THEN p.preferences ELSE '{{}}' END, '$.onboarding.status') = 'completed'
+                  AND length(trim(r.password)) > 0
+                  AND NOT EXISTS (SELECT 1 FROM account_deletion_markers d
+                      WHERE d.user_id = r.user_id AND julianday(d.expires_at) > julianday(?))
+                  {restriction}
+                ORDER BY r.created_at DESC, r.rowid DESC
+                """,
+                params,
+            ).fetchall()
+        # Multiple devices/refresh tokens must not weight a user more heavily.
         accounts = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                return []
-            if entry.get("enabled", True) is not True:
-                continue
-            school = normalize_monitor_identity(entry.get("school_id"))
-            username = normalize_monitor_identity(entry.get("username"))
-            encrypted = entry.get("password")
-            if (
-                not school
-                or not username
-                or not isinstance(encrypted, str)
-                or not encrypted.startswith("v1:")
-            ):
-                return []
-            password = _decrypt_password(encrypted)
-            if not password:
-                return []
-            accounts[(school, username.casefold())] = (school, username, password)
+        for school, username, identity in rows:
+            accounts.setdefault(identity, (school, username, identity))
         return list(accounts.values())
-    except Exception:  # noqa: BLE001 - fail closed without leaking secrets
-        # Never log parsing/decryption exceptions: they can include secrets.
+    except (sqlite3.Error, OSError, ValueError):
         return []
 
+
+async def _registered_credentials(
+    account: tuple[str, str, str],
+) -> tuple[str, str, str] | None:
+    """Recheck eligibility immediately before each probe, including confirmation."""
+    from . import auth_db
+    from .identity import make_user_id
+
+    if not await run_in_threadpool(_monitor_accounts, account[2]):
+        return None
+    try:
+        stored = await auth_db.get_refresh_token_by_user_id(account[2])
+    except (RuntimeError, ValueError, TypeError):
+        return None
+    if (
+        not stored
+        or make_user_id(stored["school_id"], stored["username"]) != account[2]
+    ):
+        return None
+    return stored["school_id"], stored["username"], stored["password"]
 
 def _choose_accounts(
     accounts: list[tuple[str, str, str]], count: int
@@ -939,9 +944,23 @@ async def _probe_round(
 ) -> list[dict[str, Any]]:
     schools = list(dict.fromkeys(account[0] for account in accounts))
     stopped = threading.Event()
+    probing: set[asyncio.Task] = set()
 
     async def probe(account):
-        result = await run_in_threadpool(_isolated_probe, account, stopped)
+        from .account_data import account_lifecycle_lock
+
+        lifecycle = await account_lifecycle_lock(account[2])
+        async with lifecycle.shared():
+            credentials = await _registered_credentials(account)
+            if credentials is None:
+                result = {"status": "unknown", "error": "account_no_longer_eligible", "features": []}
+            else:
+                task = asyncio.current_task()
+                probing.add(task)
+                try:
+                    result = await run_in_threadpool(_isolated_probe, credentials, stopped)
+                finally:
+                    probing.discard(task)
         return {"account": labels[account[:2]], "school_group": schools.index(account[0]) + 1, **result}
 
     workers = [asyncio.create_task(probe(account)) for account in accounts]
@@ -951,6 +970,11 @@ async def _probe_round(
         return await asyncio.shield(asyncio.gather(*workers))
     finally:
         stopped.set()
+        # Waiting for a login/deletion lease must not hold up shutdown. Only
+        # threads already owning probe processes need cooperative reaping.
+        for worker in workers:
+            if worker not in probing and not worker.done():
+                worker.cancel()
         await asyncio.gather(*workers, return_exceptions=True)
 
 
@@ -1022,7 +1046,7 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
     global _uptime_cycle_phase
     _uptime_cycle_phase = "initial"
     started = time.perf_counter()
-    accounts = _monitor_accounts()
+    accounts = await run_in_threadpool(_monitor_accounts)
     check = {
         "checked_at": _utcnow().isoformat(),
         "url": get_uptime_url(),
@@ -1040,6 +1064,8 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
         "rounds": [],
         "recovery_streak": 0,
         "scheduled": scheduled,
+        "pool_source": "registered_users",
+        "activity_window_days": 30,
         "confidence": "inconclusive",
         "scope": "unknown",
         "observed_status": "unknown",
