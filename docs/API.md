@@ -198,7 +198,10 @@ Returns:
 Fetch the Mein Unterricht overview with current entries.
 
 Returns:
-    Dict containing the parsed overview entries and the raw HTML.
+    Dict containing recent lesson `entries`, all course folders in `courses`,
+    and their counts. An empty parse is fetched once more before it is accepted.
+    Login responses and empty pages without the overview heading and activity
+    table return `success: false` and are not cached as empty course lists.
 
 #### meinunterricht_get_course
 
