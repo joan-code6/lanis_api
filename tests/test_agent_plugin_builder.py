@@ -132,3 +132,36 @@ def test_listing_has_review_cases_and_submission_sized_branding():
     width, height = struct.unpack(">II", icon[16:24])
     assert width == height and width >= 256
     assert len(icon) < 5 * 1024 * 1024
+
+
+def test_submission_release_refuses_missing_demo(monkeypatch, tmp_path):
+    """A valid live issuer must not turn an incomplete package into a release."""
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "builder", root / "scripts/build_agent_plugin.py"
+    )
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    issuer = "https://school-api.example"
+    resource = {"resource": issuer + "/mcp", "authorization_servers": [issuer]}
+    metadata = {
+        "issuer": issuer,
+        "authorization_endpoint": issuer + "/oauth/authorize",
+        "token_endpoint": issuer + "/oauth/token",
+        "registration_endpoint": issuer + "/oauth/register",
+        "code_challenge_methods_supported": ["S256"],
+        "scopes_supported": ["schoolwork:read"],
+    }
+    monkeypatch.setattr(builder.requests, "Session", lambda: SimpleNamespace(
+        get=lambda url, **kwargs: SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: resource if "protected-resource" in url else metadata,
+        )
+    ))
+    output = tmp_path / "release.zip"
+    monkeypatch.setattr("sys.argv", [
+        "builder", "--issuer", issuer, "--output", str(output), "--submission"
+    ])
+    with pytest.raises(SystemExit):
+        builder.main()
+    assert not output.exists()

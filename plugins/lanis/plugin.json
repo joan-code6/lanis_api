@@ -1,16 +1,21 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "lanis",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Verbinde dein LANIS-Schulkonto mit ChatGPT und bestimme selbst, welche Daten und Funktionen freigegeben sind.",
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "Lanis – Schulportal Hessen",
         "shortDescription": "Dein Schulportal im Chat",
-        "longDescription": "Lanis für das Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab.",
+        "longDescription": "Lanis für das Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch persönliche Profildaten, Noten, Fehlzeiten, Videokonferenzlinks und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab.",
         "category": "Education & Research",
-        "capabilities": [],
+        "capabilities": [
+          "Hausaufgaben und Kurse",
+          "Stundenplan und Vertretungen",
+          "Prüfungen und Schultermine",
+          "Nachrichten und Dateien"
+        ],
         "defaultPrompt": [
           "Welche Hausaufgaben habe ich auf?",
           "Habe ich morgen Vertretung?",
@@ -20,7 +25,9 @@
         "composerIcon": "./assets/icon.png",
         "websiteURL": "https://lanis.arg-server.de/",
         "supportURL": "https://github.com/joan-code6/lanis_api/issues",
-        "developerName": "Joan Code"
+        "developerName": "Joan Code",
+        "privacyPolicyURL": "https://lanis.arg-server.de/privacy-policy",
+        "termsOfServiceURL": "https://lanis.arg-server.de/terms-of-service"
       },
       "review": {
         "prompts": [
@@ -45,8 +52,8 @@
             {
               "description": "Nächste Klausur und Inhalte. Vorbereitung: separates Schultestkonto mit schoolwork:read und mindestens einer zukünftigen Klausur mit eingetragenem Thema.",
               "prompt": "Wann ist meine nächste Klausur und was kommt darin vor?",
-              "tools_triggered": "lanis_connection, lanis_courses, lanis_course",
-              "expected_behavior": "Kurse über lanis_courses finden, mit lanis_course die Klausurtermine und verfügbaren Inhalte lesen. Den nächsten zukünftigen Termin anhand der Berliner Zeit ermitteln. Nur eingetragene Themen nennen; fehlenden Prüfungsstoff ausdrücklich als unbekannt kennzeichnen. Keine Inhalte erfinden."
+              "tools_triggered": "lanis_connection, lanis_exams, lanis_courses, lanis_course",
+              "expected_behavior": "Zuerst die strukturierte persönliche Prüfungsliste mit lanis_exams lesen und den nächsten zukünftigen Termin anhand der Berliner Zeit bestimmen. Ergänzend Kursdetails für eingetragene Themen lesen. Quellen und Abdeckung kenntlich machen; fehlenden Prüfungsstoff ausdrücklich als unbekannt kennzeichnen. Keine Inhalte oder Termine erfinden."
             },
             {
               "description": "Nachrichtenübersicht ohne Lesestatusänderung. Vorbereitung: Testkonto mit Beispielnachrichten und messages:read.",
@@ -80,17 +87,23 @@
         "commerce_description": "LANIS ist kostenlos. Es werden keine Produkte verkauft, Abogebühren erhoben oder Zahlungen verarbeitet."
       },
       "publication": {
-        "release_notes": "Erste Version: LANIS-Schulkonto per OAuth verbinden, Zugriff auswählen, freigegebene Schulfunktionen nutzen und einzelne Verbindungen widerrufen.",
+        "release_notes": "OAuth-Verbindung mit getrennten Berechtigungen, kontospezifische Werkzeuge, strukturierte Prüfungsliste, Nachrichten, Dateien und persönliche Einstellungen. Verbesserte Ausgabeformate und Datenschutzinformationen.",
         "countries": [
           "DE"
         ],
         "translations": {
           "de-DE": {
             "subtitle": "Dein Schulportal im Chat",
-            "description": "Lanis für das Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch Noten, Fehlzeiten und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab."
+            "description": "Lanis für das Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch persönliche Profildaten, Noten, Fehlzeiten, Videokonferenzlinks und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab."
           }
         }
       }
     }
-  }
+  },
+  "author": {
+    "name": "Joan Code",
+    "url": "https://joancode.dev"
+  },
+  "homepage": "https://lanis.arg-server.de/",
+  "repository": "https://github.com/joan-code6/lanis_api"
 }

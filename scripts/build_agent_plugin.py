@@ -23,6 +23,10 @@ def main():
         type=Path,
         help="Destination ZIP outside plugin source",
     )
+    parser.add_argument(
+        "--submission", action="store_true",
+        help="Require all review URLs before creating a submission release ZIP.",
+    )
     args = parser.parse_args()
     issuer = args.issuer.rstrip("/")
     url = urlsplit(issuer)
@@ -96,6 +100,22 @@ def main():
             parser.error(f"Deployed authorization metadata has an invalid {field}.")
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads((root / "plugins/lanis/plugin.json").read_text())
+    settings = manifest["extensions"]["com.openai"]
+    required_urls = {
+        "privacy policy": settings["interface"].get("privacyPolicyURL"),
+        "terms of service": settings["interface"].get("termsOfServiceURL"),
+        "demo recording": settings["review"].get("demo_recording_url"),
+    }
+    missing = [name for name, value in required_urls.items() if not value]
+    if args.submission and missing:
+        parser.error("Submission materials missing: " + ", ".join(missing))
+    if args.submission:
+        for name, value in required_urls.items():
+            parsed = urlsplit(value)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                parser.error(f"{name} must use a public HTTPS URL without credentials.")
+            checked = session.get(value, timeout=15, allow_redirects=True)
+            checked.raise_for_status()
     assert (
         len(manifest["extensions"]["com.openai"]["interface"]["shortDescription"]) <= 30
     )
@@ -134,7 +154,11 @@ def main():
         ]
         for name in ("lanis/mcp.json", "lanis/plugin.json"):
             json.loads(archive.read(name))
-    print(f"LANIS developer source archive created: {args.output}")
+    print(f"LANIS {'submission release' if args.submission else 'draft'} archive created: {args.output}")
+    if not args.submission:
+        print("DRAFT: review materials and deployed legal pages must be verified before submission.")
+        if missing:
+            print("Missing review URLs: " + ", ".join(missing))
     print(
         "For remote MCP publication use the With MCP submission path, not Skills only. "
         "This archive alone does not complete deployment, review information, or publication."

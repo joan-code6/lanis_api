@@ -320,7 +320,9 @@ def test_real_mcp_transport_scoped_discovery_and_revocation(environment):
                 json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
             )
             assert response.status_code == 200, response.text
-            names = {t["name"] for t in response.json()["result"]["tools"]}
+            descriptors = response.json()["result"]["tools"]
+            assert all(t["outputSchema"]["type"] == "object" for t in descriptors)
+            names = {t["name"] for t in descriptors}
             assert names == {
                 "lanis_connection",
                 "lanis_courses",
@@ -340,6 +342,7 @@ def test_real_mcp_transport_scoped_discovery_and_revocation(environment):
             )
             assert response.status_code == 200, response.text
             assert "Europe/Berlin" in response.text
+            assert isinstance(response.json()["result"]["structuredContent"], dict)
             denied = await c.post(
                 "/mcp",
                 headers=headers,
@@ -2481,3 +2484,27 @@ def test_distributed_download_failure_preserves_authentication(
         assert invalidate.await_count == (1 if kind == "authentication" else 0)
 
     asyncio.run(scenario())
+
+
+def test_openai_domain_verification_is_exact_and_optional(environment, monkeypatch):
+    async def scenario():
+        async with client() as c:
+            monkeypatch.delenv("LANIS_OPENAI_APPS_CHALLENGE", raising=False)
+            assert (await c.get("/.well-known/openai-apps-challenge")).status_code == 404
+            monkeypatch.setenv("LANIS_OPENAI_APPS_CHALLENGE", "public-portal-challenge")
+            result = await c.get("/.well-known/openai-apps-challenge")
+            assert result.status_code == 200
+            assert result.text == "public-portal-challenge"
+            assert result.headers["content-type"].startswith("text/plain")
+            assert result.headers["cache-control"] == "no-store"
+            monkeypatch.setenv("LANIS_OPENAI_APPS_CHALLENGE", "one\ntwo")
+            assert (await c.get("/.well-known/openai-apps-challenge")).status_code == 404
+    asyncio.run(scenario())
+
+
+def test_sent_messages_are_annotated_as_irreversible():
+    for name in ("lanis_send_message", "lanis_reply_message"):
+        annotations = mcp._tool_manager.get_tool(name).annotations
+        assert annotations.destructiveHint is True
+        assert annotations.readOnlyHint is False
+        assert annotations.openWorldHint is True

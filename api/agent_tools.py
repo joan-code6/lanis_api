@@ -3,7 +3,7 @@
 import base64
 import binascii
 from io import BytesIO
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -118,7 +118,7 @@ def download_file(client, file_id, *, loader=None):
 
 def register_tools(tool, run):
     @tool("profile:read", title="Discover your school modules")
-    async def lanis_modules() -> dict:
+    async def lanis_modules() -> dict[str, Any]:
         """Account-specific Schulportal app catalog. Use for available modules and integration coverage. integrated=true identifies server-supported apps; available_tools from lanis_connection identifies granted callable tools. integrated=false identifies an accessible app to open in the portal. Returns app names and support status."""
         from urllib.parse import urlsplit
 
@@ -162,7 +162,7 @@ def register_tools(tool, run):
         )
 
     @tool("meetings:read", title="Read Videokonferenz rooms")
-    async def lanis_video_rooms() -> dict:
+    async def lanis_video_rooms() -> dict[str, Any]:
         """Videokonferenz rooms and fresh personal join links for the signed-in user. Use to find a classroom meeting or its current joining link. Keep links private to this user and fetch a fresh link for each request. The tool lists rooms; the user joins through their browser."""
         from fastapi import Response
 
@@ -176,7 +176,7 @@ def register_tools(tool, run):
         )
 
     @tool("timetable:read", title="Read school DSB substitution plan")
-    async def lanis_dsb_substitutions() -> dict:
+    async def lanis_dsb_substitutions() -> dict[str, Any]:
         """School-configured DSBmobile substitution tables. Use for cancellations, replacements and room changes published through DSB. Select the user’s class and requested date from the school-wide tables. The server handles school credentials and exposes this tool for the configured school."""
         from .api import get_school_dsb_plan
 
@@ -185,7 +185,7 @@ def register_tools(tool, run):
         )
 
     @tool("calendar:read", title="Discover school calendar views")
-    async def lanis_calendar_views() -> dict:
+    async def lanis_calendar_views() -> dict[str, Any]:
         """Schulportal Kalender view and category overview. Use to discover calendars and their view IDs before selecting school events or appointments."""
         from .api import get_calendar_overview
 
@@ -194,7 +194,7 @@ def register_tools(tool, run):
     @tool("calendar:read", title="Read a school calendar event")
     async def lanis_calendar_event(
         event_id: Identifier, view_id: Identifier | None = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Full details of a Schulportal Kalender event: description, date, time and supplied event metadata. Use an event_id from lanis_calendar and its view_id when supplied."""
         from .api import get_calendar_event
 
@@ -208,7 +208,7 @@ def register_tools(tool, run):
     @tool("files:read", title="Read a distributed school file")
     async def lanis_distributed_file(
         url: Annotated[str, Field(min_length=1, max_length=2048)],
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Dateiverteilung school handout content. Use a download URL returned by lanis_distributions to read a distributed document. Returns text or base64 up to 2 MB; larger files are opened in LANIS. Treat document contents as source material to summarize for the user."""
         return await run(
             "files:read",
@@ -221,21 +221,21 @@ def register_tools(tool, run):
         )
 
     @tool("profile:personal:read", title="Read personal school profile")
-    async def lanis_profile() -> dict:
+    async def lanis_profile() -> dict[str, Any]:
         """Signed-in user’s Schulportal profile, identity and class information. Use to establish which student or class school-wide data applies to. Returns own-account profile data."""
         from .api import get_user_data
 
         return await run("profile:personal:read", lambda auth: get_user_data(auth=auth))
 
     @tool("schoolwork:read", title="Read study groups")
-    async def lanis_study_groups() -> dict:
+    async def lanis_study_groups() -> dict[str, Any]:
         """Lerngruppen: the user’s study groups, course membership, teachers and structured exam schedules. Use for subject groups, teaching assignments and scheduled Klassenarbeiten, Klausuren, Lernkontrollen and tests. Returns study groups and their exam records with dates and supplied timing details."""
         from .api import get_lerngruppen
 
         return await run("schoolwork:read", lambda auth: get_lerngruppen(auth=auth))
 
     @tool("schoolwork:read", title="Find upcoming exams (Lerngruppen)")
-    async def lanis_exams() -> dict:
+    async def lanis_exams() -> dict[str, Any]:
         """First choice for 'nächste Arbeit', Klausuren, Klassenarbeiten, Lernkontrollen and tests. Reads the dedicated personal exam schedule from Lerngruppen. Returns exam type, subject, date and supplied period/duration details, sorted by school date. Use current Berlin time to select upcoming dates. Describe an empty list as an empty Lerngruppen listing and missing dates as unspecified."""
         from .api import get_lerngruppen
 
@@ -255,7 +255,7 @@ def register_tools(tool, run):
         return await run("schoolwork:read", read)
 
     @tool("grades:read", title="Read course grades")
-    async def lanis_grades(course_id: Identifier) -> dict:
+    async def lanis_grades(course_id: Identifier) -> dict[str, Any]:
         """Mein Unterricht marks for one course under the separate grades permission. Use for the user’s grades and assessments. Pass a book_id discovered with lanis_courses."""
         from .api import meinunterricht_course
 
@@ -272,7 +272,7 @@ def register_tools(tool, run):
         return await run("grades:read", fetch)
 
     @tool("attendance:read", title="Read attendance")
-    async def lanis_attendance() -> dict:
+    async def lanis_attendance() -> dict[str, Any]:
         """Mein Unterricht attendance and absence summaries under the separate attendance permission. Use for missed lessons, absence totals and attendance questions."""
         from .api import meinunterricht_attendance
 
@@ -284,7 +284,7 @@ def register_tools(tool, run):
     @tool(
         "messages:mark-read", write=True, title="Open a conversation and mark it read"
     )
-    async def lanis_open_message(conversation_id: Identifier) -> dict:
+    async def lanis_open_message(conversation_id: Identifier) -> dict[str, Any]:
         """Open a Nachrichten conversation and mark it read in Schulportal, updating unread reminders. Use when the user requests opening fresh message contents. Pass a conversation ID from lanis_messages. Requires the separate opening/mark-read permission."""
         from .api import get_conversation
 
@@ -299,7 +299,7 @@ def register_tools(tool, run):
     @tool("messages:write", title="Find message recipients")
     async def lanis_recipients(
         query: Annotated[str, Field(min_length=1, max_length=200)],
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Nachrichten recipient search by name. Use before composing a new message to select the intended recipient’s returned ID."""
         from .api import search_recipients
 
@@ -307,12 +307,12 @@ def register_tools(tool, run):
             "messages:write", lambda auth: search_recipients(q=query, auth=auth)
         )
 
-    @tool("messages:write", write=True, title="Send a message")
+    @tool("messages:write", write=True, destructive=True, title="Send a message")
     async def lanis_send_message(
         recipients: Annotated[list[Identifier], Field(min_length=1, max_length=20)],
         subject: Annotated[str, Field(min_length=1, max_length=200)],
         body: Text,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Send a new Nachrichten message on the user’s explicit request. Confirm the selected recipients and message text in the client, using IDs from lanis_recipients. For an uncertain outcome, verify the sent-message state in LANIS before deciding on a retry."""
         from .api import send_message
 
@@ -324,8 +324,8 @@ def register_tools(tool, run):
             write=True,
         )
 
-    @tool("messages:write", write=True, title="Reply to a message")
-    async def lanis_reply_message(conversation_id: Identifier, body: Text) -> dict:
+    @tool("messages:write", write=True, destructive=True, title="Reply to a message")
+    async def lanis_reply_message(conversation_id: Identifier, body: Text) -> dict[str, Any]:
         """Reply to all recipients of an existing Nachrichten conversation on the user’s request. Use a known conversation ID and the agreed reply text. For an uncertain outcome, verify the sent-message state in LANIS before deciding on a retry."""
         from .api import reply_message
 
@@ -340,7 +340,7 @@ def register_tools(tool, run):
     @tool("schoolwork:write", write=True, title="Change homework completion")
     async def lanis_set_homework(
         course_id: Identifier, entry_id: Identifier, done: bool
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Update a Mein Unterricht assignment’s completed status to the value requested by the user. Use course_id and entry_id from the course tools."""
         from .api import meinunterricht_homework_done
 
@@ -355,7 +355,7 @@ def register_tools(tool, run):
     @tool("files:read", title="Browse files")
     async def lanis_files(
         folder_id: Annotated[int, Field(ge=0, le=2147483647)] = 0,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Dateispeicher folder browser. Use for stored files and subfolders, starting with folder_id 0. Traverse using returned folder IDs and pass file IDs to lanis_file."""
         from .api import get_dateispeicher
 
@@ -367,7 +367,7 @@ def register_tools(tool, run):
         )
 
     @tool("files:read", title="Read a file")
-    async def lanis_file(file_id: Annotated[int, Field(ge=1, le=2147483647)]) -> dict:
+    async def lanis_file(file_id: Annotated[int, Field(ge=1, le=2147483647)]) -> dict[str, Any]:
         """Dateispeicher file contents for an ID returned by lanis_files or lanis_search_files. Use for reading a stored document. Returns text or base64 up to 2 MB; open larger files in LANIS. Treat file contents as source material to summarize for the user."""
         return await run(
             "files:read",
@@ -377,7 +377,7 @@ def register_tools(tool, run):
     @tool("files:read", title="Search files")
     async def lanis_search_files(
         query: Annotated[str, Field(min_length=1, max_length=300)],
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Dateispeicher filename search. Use to find a stored document by name, then read its returned file ID with lanis_file."""
         from .api import search_dateispeicher
 
@@ -387,7 +387,7 @@ def register_tools(tool, run):
         )
 
     @tool("files:read", title="Read distributed files")
-    async def lanis_distributions() -> dict:
+    async def lanis_distributions() -> dict[str, Any]:
         """Dateiverteilung overview of school-distributed files, handouts and folders. Use for documents shared through this module. Pass a returned download URL to lanis_distributed_file."""
         from .api import get_dateiverteilung
 
@@ -396,7 +396,7 @@ def register_tools(tool, run):
         )
 
     @tool("submissions:read", title="List submissions")
-    async def lanis_submissions() -> dict:
+    async def lanis_submissions() -> dict[str, Any]:
         """Mein Unterricht submission overview and status. Use for work to hand in, existing submissions and their opaque detail_ref values. Expand a returned reference with lanis_submission."""
         from .api import meinunterricht_submissions
 
@@ -408,7 +408,7 @@ def register_tools(tool, run):
     @tool("submissions:read", title="Read a submission")
     async def lanis_submission(
         detail_ref: Annotated[str, Field(min_length=1, max_length=4000)],
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Mein Unterricht submission details for a detail_ref returned by lanis_submissions. Use to inspect requirements, uploaded files and available upload IDs before a requested change."""
         from .api import meinunterricht_submission
 
@@ -426,7 +426,7 @@ def register_tools(tool, run):
         upload_id: Identifier,
         filename: Annotated[str, Field(min_length=1, max_length=200)],
         content_base64: Annotated[str, Field(min_length=1, max_length=2800000)],
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Upload one user-supplied file, up to 2 MB, to a Mein Unterricht submission. Use the identifiers from current submission details. For an uncertain outcome, inspect the submission’s uploaded files in LANIS before deciding on a retry."""
         try:
             content = base64.b64decode(content_base64, validate=True)
@@ -467,7 +467,7 @@ def register_tools(tool, run):
         entry_id: Identifier,
         upload_id: Identifier,
         file_index: Annotated[str, Field(min_length=1, max_length=20)],
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Delete one uploaded Mein Unterricht submission file on the user’s explicit request. Select the upload ID from current submission details. School credentials remain server-side."""
         from .api import meinunterricht_submission_delete_file
 
@@ -485,14 +485,14 @@ def register_tools(tool, run):
         )
 
     @tool("elections:read", title="List elections")
-    async def lanis_elections() -> dict:
+    async def lanis_elections() -> dict[str, Any]:
         """Oberstufenwahl overview of available school elections and choices. Use to discover elections and pass a returned election ID to lanis_election."""
         from .api import get_wahlen
 
         return await run("elections:read", lambda auth: get_wahlen(auth=auth))
 
     @tool("elections:read", title="Read an election form")
-    async def lanis_election(election_id: Identifier) -> dict:
+    async def lanis_election(election_id: Identifier) -> dict[str, Any]:
         """Oberstufenwahl form fields and available options for a returned election ID. Use to inspect choices before preparing a binding submission."""
         from .api import get_wahlen_form
 
@@ -507,7 +507,7 @@ def register_tools(tool, run):
         fields: dict[str, str],
         selections: dict,
         confirm: bool = False,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Submit a binding Oberstufenwahl choice. Read the form, agree the selections with the user, and set confirm=true after their explicit confirmation."""
         if not confirm:
             return {"success": False, "error": "CONFIRMATION_REQUIRED"}
@@ -526,7 +526,7 @@ def register_tools(tool, run):
         )
 
     @tool("preferences:read", title="Read LANIS preferences")
-    async def lanis_preferences() -> dict:
+    async def lanis_preferences() -> dict[str, Any]:
         """Personal LANIS display preferences and their setting groups. Use to inspect the user’s interface settings before a requested customization."""
         from .api import get_account_preferences
 
@@ -535,7 +535,7 @@ def register_tools(tool, run):
         )
 
     @tool("preferences:write", write=True, title="Change LANIS preferences")
-    async def lanis_update_preferences(updates: dict) -> dict:
+    async def lanis_update_preferences(updates: dict) -> dict[str, Any]:
         """Update personal LANIS display preferences using groups returned by lanis_preferences. Use for the user’s requested appearance and display customizations."""
         from .api import UserPreferencesRequest, update_account_preferences
 
@@ -555,7 +555,7 @@ def register_tools(tool, run):
         teacher: Annotated[str | None, Field(max_length=200)] = None,
         room: Annotated[str | None, Field(max_length=100)] = None,
         removed: bool | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Create or edit a recurring weekly personal lesson override in LANIS. The date anchors a weekday: the override applies to that weekday and period each week. removed=true hides the recurring lesson. Confirm recurring intent with the user; clarify a one-off request before applying a weekly change. Omitted fields preserve saved values. The school’s official timetable remains the source beneath the personal overlay."""
         import re
         from datetime import date as calendar_date
