@@ -387,3 +387,72 @@ def test_attendance_overview_does_not_report_empty_course_as_failed(monkeypatch)
     assert result["course_count"] == 1
     assert result["failed_course_count"] == 0
     assert result["totals"] == {}
+
+
+def _overview_client(pages):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def get(*args, **kwargs):
+        calls.append(args)
+        page = pages[min(len(calls) - 1, len(pages) - 1)]
+        return SimpleNamespace(
+            text=page,
+            raise_for_status=lambda: None,
+            url="https://start.schulportal.hessen.de/meinunterricht.php",
+        )
+
+    return SimpleNamespace(
+        logged_in=True, session=SimpleNamespace(get=get),
+        BASE_START_URL="https://start.schulportal.hessen.de",
+    ), calls
+
+
+def test_overview_recovers_from_transient_empty_page():
+    client, calls = _overview_client([
+        "<html><h1>Bitte warten</h1></html>",
+        '<html><tr data-book="42"><td><span class="name">Mathe</span></td></tr></html>',
+    ])
+    result = meinunterricht_get_overview(client)
+    assert len(calls) == 2
+    assert result["success"] is True
+    assert result["course_count"] == result["entry_count"] == 1
+
+
+def test_overview_rejects_unrecognized_http_200_instead_of_empty_success():
+    client, calls = _overview_client(["<html><h1>Service temporarily unavailable</h1></html>"])
+    result = meinunterricht_get_overview(client)
+    assert len(calls) == 2
+    assert result["success"] is False
+    assert "courses" not in result
+
+
+def test_overview_accepts_confirmed_empty_course_table():
+    client, calls = _overview_client([
+        '<html><h1>mein Unterricht</h1><table id="aktuellTable"><tbody></tbody></table></html>',
+    ])
+    result = meinunterricht_get_overview(client)
+    assert len(calls) == 2
+    assert result["success"] is True
+    assert result["courses"] == result["entries"] == []
+
+
+def test_overview_retries_even_recognized_transient_empty_table():
+    client, calls = _overview_client([
+        '<html><h1>mein Unterricht</h1><table id="aktuellTable"></table></html>',
+        '<html><a href="meinunterricht.php?a=sus_view&amp;id=42">Mathe</a></html>',
+    ])
+    result = meinunterricht_get_overview(client)
+    assert len(calls) == 2
+    assert result["course_count"] == 1
+
+
+def test_overview_login_page_is_not_an_empty_course_list():
+    client, calls = _overview_client([
+        '<html><form><input name="user"><input type="password"></form></html>',
+    ])
+    result = meinunterricht_get_overview(client)
+    assert len(calls) == 1
+    assert result["success"] is False
+    assert result["status_code"] == 401

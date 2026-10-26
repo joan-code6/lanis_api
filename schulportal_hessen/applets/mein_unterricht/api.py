@@ -100,11 +100,6 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
         return {"success": False, "error": "Not logged in"}
 
     try:
-        response = self.session.get(f"{self.BASE_START_URL}/meinunterricht.php")
-        response.raise_for_status()
-
-        html = response.text
-
         # Parse the HTML to extract course entries with BeautifulSoup
         try:
             from bs4 import BeautifulSoup
@@ -114,7 +109,32 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
                 "error": "BeautifulSoup4 is required for HTML parsing. Install with: pip install beautifulsoup4",
             }
 
-        soup = BeautifulSoup(html, "html.parser")
+        # HTTP 200 also occurs for login/interstitial pages. A transient empty
+        # parse must not become a successful ten-minute cache entry. Confirm an
+        # empty result once, then require the actual overview's empty table.
+        for attempt in range(2):
+            response = self.session.get(f"{self.BASE_START_URL}/meinunterricht.php")
+            response.raise_for_status()
+            html = response.text
+            if _is_login_response(response, html):
+                return {"success": False, "error": "Schulportal login required", "status_code": 401}
+            soup = BeautifulSoup(html, "html.parser")
+            courses = _extract_course_folders(soup)
+            if courses:
+                break
+            if attempt == 0:
+                continue
+            heading = soup.find("h1")
+            is_overview = (
+                heading is not None
+                and heading.get_text(" ", strip=True).casefold() == "mein unterricht"
+                and soup.select_one("table#aktuellTable") is not None
+            )
+            if not is_overview:
+                return {
+                    "success": False,
+                    "error": "Schulportal returned an unrecognized Mein Unterricht overview; please retry",
+                }
         entries = []
 
         # Find all entry rows
@@ -184,7 +204,6 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
 
             entries.append(entry)
 
-        courses = _extract_course_folders(soup)
         return {
             "success": True,
             "entries": entries,
