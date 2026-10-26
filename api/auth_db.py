@@ -328,6 +328,16 @@ async def initialize() -> None:
     """Create the database and tables if they don't exist."""
     os.makedirs("data", exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
+        from .analytics_store import SCHEMA as ANALYTICS_SCHEMA
+        await db.executescript(ANALYTICS_SCHEMA)
+        async with db.execute("PRAGMA table_info(analytics_diagnostics)") as cursor:
+            analytics_columns = {row[1] for row in await cursor.fetchall()}
+        if 'request_id' not in analytics_columns:
+            await db.execute("ALTER TABLE analytics_diagnostics ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
+        await db.execute("CREATE INDEX IF NOT EXISTS analytics_diagnostics_request ON analytics_diagnostics(request_id)")
+        await db.execute("DELETE FROM analytics_diagnostics WHERE expires_at <= ?", (int(time.time()),))
+        from .agent_store import SCHEMA
+        await db.executescript(SCHEMA)
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -341,6 +351,34 @@ async def initialize() -> None:
                 expires_at TIMESTAMP NOT NULL
             )
             """
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS cache_sync_state ("
+            "user_id TEXT PRIMARY KEY, attempted INTEGER NOT NULL, failed INTEGER NOT NULL, "
+            "evicted INTEGER NOT NULL, finished_at TEXT NOT NULL)"
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS cached_downloads ("
+            "user_id TEXT NOT NULL, request_key TEXT NOT NULL, file_hash TEXT NOT NULL, "
+            "filename TEXT NOT NULL, content_type TEXT NOT NULL, PRIMARY KEY (user_id, request_key))"
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS message_read_overrides ("
+            "user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, signature TEXT NOT NULL, "
+            "unread INTEGER NOT NULL, PRIMARY KEY (user_id, conversation_id))"
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS message_body_receipts ("
+            "user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, body_hash TEXT NOT NULL, "
+            "observed_hash TEXT, "
+            "PRIMARY KEY (user_id, conversation_id))"
+        )
+        receipt_columns = await (await db.execute("PRAGMA table_info(message_body_receipts)")).fetchall()
+        if "observed_hash" not in {row[1] for row in receipt_columns}:
+            await db.execute("ALTER TABLE message_body_receipts ADD COLUMN observed_hash TEXT")
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS outage_snapshot_revocations ("
+            "user_id TEXT PRIMARY KEY, revoked_at TEXT NOT NULL)"
         )
         await db.execute(
             "CREATE TABLE IF NOT EXISTS account_deletion_markers ("
@@ -1238,6 +1276,17 @@ async def store_refresh_token(
     return token
 
 
+async def _delete_revoked_snapshots(user_id: str) -> None:
+    """Isolate optional snapshot persistence failures from session revocation."""
+    from .outage_cache import snapshots
+
+    try:
+        snapshots.delete_user_data(user_id)
+        await snapshots.flush(user_id)
+    except Exception:  # noqa: BLE001 - one disk failure must not block other users
+        logger.warning("Outage snapshot deletion failed after session revocation")
+
+
 async def _revoke_expired_sessions() -> None:
     """Remove expired sessions and their browser subscriptions together."""
     now = datetime.utcnow()
@@ -1279,7 +1328,16 @@ async def _revoke_expired_sessions() -> None:
                     f"DELETE FROM push_subscriptions WHERE user_id IN ({revoke_placeholders})",
                     users_to_revoke,
                 )
+            await db.executemany(
+                "INSERT OR REPLACE INTO outage_snapshot_revocations VALUES (?, ?)",
+                [(user_id, now.isoformat()) for user_id in users_to_revoke],
+            )
             await db.commit()
+
+        # Keep the auth lock through snapshot deletion so a new login cannot race
+        # cleanup of the user's last expired session. The SQL transaction is closed.
+        for user_id in users_to_revoke:
+            await _delete_revoked_snapshots(user_id)
 
 
 async def get_refresh_token(token: str) -> Optional[dict]:
@@ -1384,6 +1442,7 @@ async def delete_refresh_token(token: str) -> None:
 
 async def delete_refresh_token_by_session_id(session_id: str) -> None:
     """Revoke one browser session and unlink WhatsApp after the final session."""
+    final_user_id = None
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
@@ -1408,6 +1467,7 @@ async def delete_refresh_token_by_session_id(session_id: str) -> None:
                 ) as cursor:
                     has_active_session = await cursor.fetchone()
                 if has_active_session is None:
+                    final_user_id = user_id
                     await db.execute(
                         "DELETE FROM whatsapp_links WHERE user_id = ?", (user_id,)
                     )
@@ -1423,7 +1483,15 @@ async def delete_refresh_token_by_session_id(session_id: str) -> None:
                         "DELETE FROM whatsapp_pairing_codes WHERE user_id = ?",
                         (user_id,),
                     )
+            if final_user_id is not None:
+                await db.execute(
+                    "INSERT OR REPLACE INTO outage_snapshot_revocations VALUES (?, ?)",
+                    (final_user_id, datetime.utcnow().isoformat()),
+                )
             await db.commit()
+
+        if final_user_id is not None:
+            await _delete_revoked_snapshots(final_user_id)
 
 
 async def delete_user_tokens(user_id: str) -> None:
@@ -1557,6 +1625,7 @@ async def get_refresh_metadata_by_user_id(user_id: str) -> Optional[dict]:
 
 async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     """Return user-owned persisted data without exposing authentication secrets."""
+    from .analytics_store import export_metadata
     user_id = _canonical_user_id(user_id)
     credential = await get_refresh_metadata_by_user_id(user_id)
     preferences, _ = await get_user_preferences(user_id)
@@ -1569,6 +1638,20 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
     vertretungsplan_state = await get_vertretungsplan_notification_state(user_id)
     dashboard_notifications = await get_dashboard_notifications(user_id)
     cached_file_references = await get_cached_file_references(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        unread_overrides = [dict(row) for row in await (await db.execute(
+            "SELECT conversation_id, unread FROM message_read_overrides WHERE user_id = ?",
+            (user_id,),
+        )).fetchall()]
+        downloads = [dict(row) for row in await (await db.execute(
+            "SELECT file_hash, filename, content_type FROM cached_downloads WHERE user_id = ?",
+            (user_id,),
+        )).fetchall()]
+        body_receipts = [dict(row) for row in await (await db.execute(
+            "SELECT conversation_id, body_hash, observed_hash FROM message_body_receipts WHERE user_id = ?",
+            (user_id,),
+        )).fetchall()]
     return {
         "account": {
             "school_id": credential["school_id"] if credential else None,
@@ -1596,6 +1679,11 @@ async def get_user_account_data(user_id: str) -> Dict[str, Any]:
             "dashboard_notifications": dashboard_notifications,
         },
         "cached_file_references": cached_file_references,
+        "analytics": await export_metadata(user_id),
+        "message_read_overrides": unread_overrides,
+        "message_body_receipts": body_receipts,
+        "cached_downloads": downloads,
+        "cache_sync": await get_cache_sync_state(user_id),
     }
 
 
@@ -1684,7 +1772,15 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     """Atomically delete all user-owned rows from the authentication database."""
     user_id = _canonical_user_id(user_id)
     tables = (
+        "analytics_requests",
+        "analytics_diagnostics",
+        "analytics_accounts",
         "refresh_tokens",
+        "cache_sync_state",
+        "cached_downloads",
+        "message_read_overrides",
+        "message_body_receipts",
+        "outage_snapshot_revocations",
         "admin_sessions",
         "notification_preferences",
         "custom_lessons",
@@ -1698,6 +1794,9 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
         "whatsapp_links",
         "whatsapp_ai_conversations",
         "whatsapp_pending_actions",
+        "agent_requests",
+        "agent_grants",
+        "agent_tokens",
     )
     counts: Dict[str, int] = {}
     orphaned_file_hashes: List[str] = []
@@ -2058,27 +2157,70 @@ async def get_custom_lessons(user_id: str) -> List[Dict[str, Any]]:
 
 
 async def save_custom_lesson(
-    user_id: str, lesson: Dict[str, Any]
+    user_id: str,
+    lesson: Dict[str, Any],
+    *,
+    merge_and_validate=None,
+    defaults=None,
 ) -> Dict[str, Any]:
-    """Insert or replace one date/period lesson override."""
+    """Save an override; an optional synchronous validator merges a patch atomically.
+
+    BEGIN IMMEDIATE keeps the snapshot current across API worker processes.
+    Validation failures roll back without changing the saved lesson.
+    """
     user_id = _canonical_user_id(user_id)
-    values = {
-        "date": str(lesson.get("date") or ""),
-        "period": str(lesson.get("period") or ""),
-        "subject": str(lesson.get("subject") or ""),
-        "teacher": str(lesson.get("teacher") or "") or None,
-        "room": str(lesson.get("room") or "") or None,
-        "class_name": str(lesson.get("class_name") or "") or None,
-        "info": str(lesson.get("info") or "") or None,
-        "start_time": str(lesson.get("start_time") or "") or None,
-        "end_time": str(lesson.get("end_time") or "") or None,
-        "duration": int(lesson.get("duration") or 1),
-        "week_type": str(lesson.get("week_type") or "") or None,
-        "course_id": str(lesson.get("course_id") or "") or None,
-        "removed": int(bool(lesson.get("removed"))),
-    }
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if merge_and_validate is not None:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT * FROM custom_lessons WHERE user_id = ? AND strftime('%w', lesson_date) = strftime('%w', ?) ORDER BY lesson_date DESC, period",
+                    (user_id, lesson["date"]),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                from .user_overrides import _same_period
+
+                row = next((row for row in rows if row["period"] == lesson["period"]), None)
+                if row is None:
+                    matches = [
+                        row for row in rows
+                        if _same_period({"stunde": row["period"]}, lesson["period"])
+                    ]
+                    if len(matches) > 1:
+                        from fastapi import HTTPException
+
+                        raise HTTPException(
+                            422, "Multiple saved lessons match this period. Edit this lesson in LANIS."
+                        )
+                    row = matches[0] if matches else None
+                existing = _custom_lesson_from_row(row) if row else (defaults or {})
+                # Agent edits target the recurring weekday/period identity. Keep
+                # its current anchor so another Monday does not add a new row.
+                anchor = existing.get("date", lesson["date"])
+                lesson = merge_and_validate(
+                    {
+                        **existing,
+                        **lesson,
+                        "date": anchor,
+                        "period": existing["period"] if row else lesson["period"],
+                    }
+                )
+            values = {
+                "date": str(lesson.get("date") or ""),
+                "period": str(lesson.get("period") or ""),
+                "subject": str(lesson.get("subject") or ""),
+                "teacher": str(lesson.get("teacher") or "") or None,
+                "room": str(lesson.get("room") or "") or None,
+                "class_name": str(lesson.get("class_name") or "") or None,
+                "info": str(lesson.get("info") or "") or None,
+                "start_time": str(lesson.get("start_time") or "") or None,
+                "end_time": str(lesson.get("end_time") or "") or None,
+                "duration": int(lesson.get("duration") or 1),
+                "week_type": str(lesson.get("week_type") or "") or None,
+                "course_id": str(lesson.get("course_id") or "") or None,
+                "removed": int(bool(lesson.get("removed"))),
+            }
             await db.execute(
                 """
                 INSERT INTO custom_lessons
@@ -2642,3 +2784,52 @@ async def admin_session_is_active(user_id: str, session_id: str) -> bool:
                 active = await cursor.fetchone() is not None
             await db.commit()
     return active
+async def get_cache_warmup_users() -> list[dict]:
+    """One valid session per user, without loading passwords into the scheduler."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT user_id, school_id, username, session_id FROM ("
+            "SELECT user_id, school_id, username, session_id, "
+            "ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) AS n "
+            "FROM refresh_tokens WHERE expires_at > ?) WHERE n = 1",
+            (datetime.utcnow(),),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def save_cache_sync_state(user_id, attempted, failed, evicted, *, session_id=None):
+    """Persist coverage counters instead of treating an incomplete sync as complete."""
+    async with _lock, aiosqlite.connect(DB_PATH) as db:
+        sql = "INSERT OR REPLACE INTO cache_sync_state SELECT ?, ?, ?, ?, ?"
+        values = (user_id, attempted, failed, evicted, datetime.utcnow().isoformat())
+        if session_id is not None:
+            # The session check and write are one SQLite statement, serialized
+            # against account deletion even across worker processes.
+            sql += " WHERE EXISTS (SELECT 1 FROM refresh_tokens WHERE user_id = ? AND session_id = ? AND expires_at > ?)"
+            values += (user_id, session_id, datetime.utcnow())
+        await db.execute(sql, values)
+        await db.commit()
+
+
+async def get_cache_sync_state(user_id):
+    """Return the last sync attempt's coverage, independent of portal availability."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute("SELECT attempted, failed, evicted, finished_at FROM cache_sync_state WHERE user_id = ?", (user_id,))).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result['complete'] = not result['failed'] and not result['evicted']
+    return result
+
+
+async def active_file_references():
+    """Protect files referenced by any currently authorized account from age cleanup."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        rows = await (await db.execute(
+            "SELECT DISTINCT r.file_hash FROM cached_file_references r "
+            "JOIN refresh_tokens t ON t.user_id = r.user_id WHERE t.expires_at > ?",
+            (datetime.utcnow(),),
+        )).fetchall()
+    return {row[0] for row in rows}
