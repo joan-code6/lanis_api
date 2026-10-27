@@ -4,6 +4,7 @@ import json
 import os
 import re
 from urllib.parse import quote, urlsplit
+from uuid import UUID
 
 import requests
 from fastapi.concurrency import run_in_threadpool
@@ -65,14 +66,30 @@ async def send_text(recipient, body, *, continuation_check=None):
 def incoming(payload):
     """Accept direct text messages, excluding groups, receipts and sent syncs."""
     envelope = payload.get("envelope", {}) if isinstance(payload, dict) else {}
+    if not isinstance(envelope, dict):
+        return None
     data = envelope.get("dataMessage") or {}
-    sender = envelope.get("sourceNumber") or envelope.get("source")
+    if not isinstance(data, dict):
+        return None
+    # Signal hides phone numbers from new contacts by default. Prefer the
+    # stable account UUID so pairing survives phone-number privacy changes.
+    source = envelope.get("sourceUuid") or envelope.get("source")
+    try:
+        sender = str(UUID(source)) if isinstance(source, str) else None
+    except ValueError:
+        sender = None
+    if sender is None:
+        phone = envelope.get("sourceNumber") or envelope.get("source")
+        sender = (
+            phone
+            if isinstance(phone, str) and re.fullmatch(r"\+[1-9]\d{6,14}", phone)
+            else None
+        )
     text = data.get("message")
     stamp = data.get("timestamp") or envelope.get("timestamp")
     if (
         data.get("groupInfo")
-        or not isinstance(sender, str)
-        or not re.fullmatch(r"\+[1-9]\d{6,14}", sender)
+        or sender is None
         or not isinstance(text, str)
         or not text.strip()
         or not isinstance(stamp, int)
