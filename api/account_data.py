@@ -1,6 +1,7 @@
 """Self-service account export and deletion orchestration."""
 
 import asyncio
+import time
 import weakref
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -165,6 +166,7 @@ async def build_account_export(user_id: str) -> dict:
         "profile": profile,
         "feedback": await feedback_db.get_account_data(user_id),
         "agents": await agent_store.connections(user_id),
+        "hosted_agents": await export_hosted_agents(user_id),
         "preferences": persisted["preferences"],
         "notification_preferences": persisted["notification_preferences"],
         "custom_lessons": persisted["custom_lessons"],
@@ -194,8 +196,11 @@ async def build_account_export(user_id: str) -> dict:
 
 
 async def delete_account_data(
-    user_id: str, school_id: str | None = None, username: str | None = None,
-    *, expected_session_id: str | None = None,
+    user_id: str,
+    school_id: str | None = None,
+    username: str | None = None,
+    *,
+    expected_session_id: str | None = None,
 ) -> DeletionReport:
     """Delete LANIS-held account data while preserving data in Schulportal Hessen."""
     user_id = canonicalize_user_id(user_id)
@@ -203,8 +208,8 @@ async def delete_account_data(
     async with admin_bulk_read_gate.shared(), lock:
         if expected_session_id is not None:
             session = await auth_db.get_refresh_token_by_session_id(expected_session_id)
-            if not session or canonicalize_user_id(session['user_id']) != user_id:
-                raise AccountDeletionSessionChanged('Deletion session was revoked')
+            if not session or canonicalize_user_id(session["user_id"]) != user_id:
+                raise AccountDeletionSessionChanged("Deletion session was revoked")
         credential = await auth_db.get_refresh_metadata_by_user_id(user_id)
         if credential:
             school_id = credential["school_id"]
@@ -252,3 +257,33 @@ async def delete_account_data(
             },
             upstream_sph_data_deleted=False,
         )
+
+
+async def export_hosted_agents(user_id):
+    from . import hosted_store
+
+    async with agent_store.database() as db:
+        async with db.execute(
+            "SELECT id,channel,history,history_at FROM hosted_links WHERE user_id=?",
+            (user_id,),
+        ) as cursor:
+            links = await cursor.fetchall()
+        async with db.execute(
+            "SELECT id,grant_id,started,finished,status FROM hosted_runs WHERE user_id=?",
+            (user_id,),
+        ) as cursor:
+            runs = await cursor.fetchall()
+    return {
+        "connections": [
+            {
+                "id": row["id"],
+                "channel": row["channel"],
+                "history": hosted_store.unseal(row["history"])
+                if row["history"] and (row["history_at"] or 0) > time.time() - 86400
+                else [],
+                "schedules": await hosted_store.schedules(row["id"]),
+            }
+            for row in links
+        ],
+        "runs": [dict(row) for row in runs],
+    }

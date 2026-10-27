@@ -117,6 +117,7 @@ TOOL_MODULES = {
         "wahlen_get_overview",
     ),
 }
+_hosted_grant = ContextVar("hosted_agent_grant", default=None)
 _required_module = ContextVar("agent_required_module", default=None)
 
 
@@ -247,8 +248,13 @@ def tool(scope=None, *, write=False, destructive=False, **kwargs):
 
 
 async def identity(scope=None):
-    access = get_access_token()
-    grant = await authenticate(access.token) if access else None
+    hosted = _hosted_grant.get()
+    if hosted:
+        from .hosted_store import grant as hosted_grant
+        grant = await hosted_grant(hosted)
+    else:
+        access = get_access_token()
+        grant = await authenticate(access.token) if access else None
     if not grant:
         raise ValueError(
             "CONNECTION_REVOKED: Reconnect LANIS in your agent and approve access through the LANIS sign-in screen."

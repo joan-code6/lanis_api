@@ -437,45 +437,21 @@ def test_timetable_summary_uses_recurring_template_for_another_week() -> None:
 
 
 def test_stop_bypasses_rate_limit(monkeypatch) -> None:
-    sent = []
-    deleted = []
-
-    async def reserve(_message_id):
-        return True
-
-    async def rate_limit(_sender_id):
-        raise AssertionError("STOP must not consult the ordinary rate limit")
-
-    async def delete(sender_id):
-        deleted.append(sender_id)
-
-    class Client:
-        def __init__(self, _config):
-            pass
-
-        async def send_text(self, sender_id, body):
-            sent.append((sender_id, body))
-
-    monkeypatch.setattr(api_module, "reserve_whatsapp_message", reserve)
-    monkeypatch.setattr(api_module, "allow_whatsapp_message", rate_limit)
-    monkeypatch.setattr(api_module, "delete_whatsapp_link_for_sender", delete)
-    monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
-    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
-    monkeypatch.setattr(
-        api_module, "_ai_config", lambda: SimpleNamespace(configured=False)
-    )
-
-    asyncio.run(
-        api_module._process_whatsapp_message(
-            IncomingWhatsAppMessage("wamid.stop", "49123456789", "STOP")
-        )
-    )
-
-    assert deleted == ["49123456789"]
-    assert sent and "getrennt" in sent[0][1]
+    from unittest.mock import AsyncMock
+    from api import hosted_agents
+    receiver = AsyncMock()
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", AsyncMock(return_value=True))
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", AsyncMock(return_value=None))
+    monkeypatch.setattr(api_module, "delete_whatsapp_link_for_sender", AsyncMock())
+    monkeypatch.setattr(hosted_agents, "receive", receiver)
+    asyncio.run(api_module._process_whatsapp_message(IncomingWhatsAppMessage("stop", "49123456789", "STOP")))
+    receiver.assert_awaited_once_with("whatsapp", "49123456789", "stop", "STOP")
 
 
 def test_stop_clears_pending_sender_turns_before_ai_processing(monkeypatch) -> None:
+    from api import hosted_store
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(hosted_store, "link", AsyncMock(return_value=None))
     deleted = []
     sender_id = "49123456789"
     sender_key = hashlib.sha256(sender_id.encode()).hexdigest()
@@ -519,6 +495,9 @@ def test_stop_clears_pending_sender_turns_before_ai_processing(monkeypatch) -> N
 
 
 def test_stop_retains_confirmation_task_until_send_finishes(monkeypatch) -> None:
+    from api import hosted_store
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(hosted_store, "link", AsyncMock(return_value=None))
     release = None
 
     async def reserve(_message_id):
@@ -556,106 +535,33 @@ def test_stop_retains_confirmation_task_until_send_finishes(monkeypatch) -> None
 
 
 def test_personal_response_is_suppressed_after_unlink(monkeypatch) -> None:
-    sent = []
-    links = [
-        {
-            "user_id": "5201:student",
-            "linked_at": "2026-09-05 12:00:00",
-            "show_message_previews": False,
-        },
-        None,
-    ]
-
-    async def true_result(*_args, **_kwargs):
-        return True
-
-    async def get_link(_sender_id):
-        return links.pop(0)
-
-    async def get_client(_user_id):
-        return SimpleNamespace(client=object(), school_id="5201", username="Student")
-
-    async def response(*_args, **_kwargs):
-        return "persönliche Schuldaten"
-
-    class Client:
-        def __init__(self, _config):
-            pass
-
-        async def send_text(self, sender_id, body):
-            sent.append((sender_id, body))
-
-    monkeypatch.setattr(api_module, "reserve_whatsapp_message", true_result)
-    monkeypatch.setattr(api_module, "allow_whatsapp_message", true_result)
-    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", get_link)
-    monkeypatch.setattr(api_module.sessions, "_get_or_create_schulportal_client", get_client)
-    monkeypatch.setattr(api_module, "_whatsapp_command_response", response)
-    monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
-    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
-    monkeypatch.setattr(
-        api_module, "_ai_config", lambda: SimpleNamespace(configured=False)
-    )
-
-    asyncio.run(
-        api_module._process_whatsapp_message(
-            IncomingWhatsAppMessage("wamid.today", "49123456789", "Heute")
-        )
-    )
-
-    assert sent == []
+    # Cancellation still prevents dispatching popped work into the shared runtime.
+    from unittest.mock import AsyncMock
+    from api import hosted_agents
+    receiver = AsyncMock()
+    monkeypatch.setattr(hosted_agents, "receive", receiver)
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", AsyncMock(return_value=True))
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", AsyncMock(return_value=None))
+    context = api_module._active_whatsapp_sender_queue.set(api_module._WhatsAppSenderQueue(cancelled=True))
+    try:
+        asyncio.run(api_module._process_whatsapp_message(IncomingWhatsAppMessage("cancelled", "49123456789", "Heute")))
+    finally:
+        api_module._active_whatsapp_sender_queue.reset(context)
+    receiver.assert_not_awaited()
 
 
 def test_ai_path_marks_incoming_message_as_read_before_answering(monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+    from api import hosted_agents
     events = []
-    sent = []
-    link = {
-        "user_id": "5201:student",
-        "linked_at": "2026-09-05 12:00:00",
-        "show_message_previews": False,
-    }
-
-    async def true_result(*_args, **_kwargs):
-        return True
-
-    async def get_link(_sender_id):
-        return link
-
-    async def get_client(_user_id):
-        return SimpleNamespace(client=object(), school_id="5201", username="Student")
-
-    async def ai_response(incoming, _auth, _link):
-        events.append(("ai", incoming.message_id))
-        return "Antwort"
-
-    class Client:
-        def __init__(self, _config):
-            pass
-
-        async def mark_read(self, message_id):
-            events.append(("read", message_id))
-
-        async def send_text(self, sender_id, body, **_kwargs):
-            sent.append((sender_id, body))
-
-    monkeypatch.setattr(api_module, "reserve_whatsapp_message", true_result)
-    monkeypatch.setattr(api_module, "allow_whatsapp_message", true_result)
-    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", get_link)
-    monkeypatch.setattr(api_module.sessions, "_get_or_create_schulportal_client", get_client)
-    monkeypatch.setattr(api_module, "_whatsapp_ai_response", ai_response)
-    monkeypatch.setattr(api_module, "WhatsAppCloudClient", Client)
-    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
-    monkeypatch.setattr(
-        api_module, "_ai_config", lambda: SimpleNamespace(configured=True)
-    )
-
-    asyncio.run(
-        api_module._process_whatsapp_message(
-            IncomingWhatsAppMessage("wamid.ai", "49123456789", "Was habe ich morgen?")
-        )
-    )
-
-    assert events == [("read", "wamid.ai"), ("ai", "wamid.ai")]
-    assert sent == [("49123456789", "Antwort")]
+    async def read(message_id): events.append("read")
+    async def receive(*args): events.append("harness")
+    monkeypatch.setattr(api_module, "reserve_whatsapp_message", AsyncMock(return_value=True))
+    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", AsyncMock(return_value=None))
+    monkeypatch.setattr(api_module, "WhatsAppCloudClient", lambda _: SimpleNamespace(mark_read=read))
+    monkeypatch.setattr(hosted_agents, "receive", receive)
+    asyncio.run(api_module._process_whatsapp_message(IncomingWhatsAppMessage("read-first", "49123456789", "Heute")))
+    assert events == ["read", "harness"]
 
 
 def test_whatsapp_client_sends_read_receipt_payload() -> None:
@@ -1059,39 +965,13 @@ def test_tool_guards_fail_closed_when_link_table_is_missing(monkeypatch) -> None
 
 
 def test_confirmation_attempts_are_rate_limited(monkeypatch) -> None:
-    confirmed = []
-
-    async def reserve(_message_id):
-        return True
-
-    async def rate_limit(_sender_id):
-        return False
-
-    async def confirm(*args):
-        confirmed.append(args)
-
-    async def no_link(_sender_id):
-        return None
-
-    async def clear_rate_limit(_sender_id):
-        return None
-
-    monkeypatch.setattr(api_module, "reserve_whatsapp_message", reserve)
-    monkeypatch.setattr(api_module, "allow_whatsapp_message", rate_limit)
-    monkeypatch.setattr(api_module, "get_whatsapp_link_for_sender", no_link)
-    monkeypatch.setattr(api_module, "clear_whatsapp_rate_limit", clear_rate_limit)
-    monkeypatch.setattr(api_module, "_confirm_whatsapp_action", confirm)
-    monkeypatch.setattr(api_module, "_whatsapp_config", lambda: SimpleNamespace())
-
-    asyncio.run(
-        api_module._process_whatsapp_message(
-            IncomingWhatsAppMessage(
-                "wamid.confirm", "49123456789", "BESTÄTIGEN ABC123"
-            )
-        )
-    )
-
-    assert confirmed == []
+    from unittest.mock import AsyncMock
+    from api import hosted_agents
+    monkeypatch.setattr(hosted_agents.store, "rate_limit", AsyncMock(return_value=False))
+    confirm = AsyncMock()
+    monkeypatch.setattr(hosted_agents, "confirm", confirm)
+    asyncio.run(hosted_agents.receive("whatsapp", "49123456789", "confirmation", "BESTÄTIGEN ABC123"))
+    confirm.assert_not_awaited()
 
 
 def test_exam_summary_filters_past_dates_and_sorts_upcoming() -> None:

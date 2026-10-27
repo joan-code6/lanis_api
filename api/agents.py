@@ -644,8 +644,11 @@ async def revoke_token(request: Request):
 
 @router.get("/agents")
 async def list_agents(auth: Annotated[Any, Depends(owner)]):
+    from .hosted_agents import channels
+
     return JSONResponse(
         {
+            "channels": channels(),
             "connections": await store.connections(auth.user_id),
             "scopes": SCOPES,
             "mcp_url": api_url() + "/mcp",
@@ -683,7 +686,14 @@ async def update_agent(
                 400,
                 "Choose permissions requested by this client; reconnect for additional capabilities.",
             )
-        data.update(name=body.name.strip(), scopes=scopes)
+        data.update(
+            name=body.name.strip(), scopes=scopes, revision=secrets.token_hex(12)
+        )
+        await db.execute("DELETE FROM hosted_actions WHERE grant_id=?", (grant_id,))
+        await db.execute(
+            "UPDATE hosted_links SET history=NULL,history_at=NULL WHERE id=?",
+            (grant_id,),
+        )
         await db.execute(
             "UPDATE agent_grants SET data=? WHERE id=?", (json.dumps(data), grant_id)
         )
@@ -701,6 +711,17 @@ async def disconnect(grant_id: str, auth: Annotated[Any, Depends(owner)]):
             "DELETE FROM agent_tokens WHERE grant_id=? AND user_id=?",
             (grant_id, auth.user_id),
         )
+        owned = await store.one(
+            db,
+            "SELECT id FROM agent_grants WHERE id=? AND user_id=?",
+            (grant_id, auth.user_id),
+        )
+        if owned:
+            await db.execute("DELETE FROM hosted_actions WHERE grant_id=?", (grant_id,))
+            await db.execute("DELETE FROM hosted_links WHERE id=?", (grant_id,))
+            await db.execute(
+                "DELETE FROM hosted_schedules WHERE grant_id=?", (grant_id,)
+            )
     return {"success": True}
 
 

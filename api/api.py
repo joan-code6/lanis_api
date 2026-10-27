@@ -69,6 +69,7 @@ from schulportal_hessen.base import SchulportalHessenAPI
 
 from .analytics_routes import router as analytics_router, register_request_diagnostics
 from .agents import router as agents_router
+from .hosted_agents import router as hosted_agents_router
 from .agent_mcp import mcp, mcp_app
 from .queue import task_queue, Task, TaskPriority
 from .queue.task_queue import TaskQueue
@@ -248,6 +249,9 @@ async def clear_whatsapp_user_queue(user_id: str) -> None:
     owned_senders = set()
     for sender_id in candidates:
         link = await get_whatsapp_link_for_sender(sender_id)
+        if link is None:
+            from .hosted_store import link as hosted_link
+            link = await hosted_link("whatsapp", sender_id)
         if link and link.get("user_id") == canonicalize_user_id(user_id):
             owned_senders.add(hashlib.sha256(sender_id.encode()).hexdigest())
     if not owned_senders:
@@ -1471,11 +1475,21 @@ _existing_lifespan = app.router.lifespan_context
 async def _agents_lifespan(application):
     async with _existing_lifespan(application):
         async with mcp.session_manager.run():
-            yield
+            from . import hosted_agents, signal
+            background = [asyncio.create_task(hosted_agents.scheduler())]
+            if signal.configured():
+                background.append(asyncio.create_task(signal.receive_loop()))
+            try:
+                yield
+            finally:
+                for task in background:
+                    task.cancel()
+                await asyncio.gather(*background, return_exceptions=True)
 
 
 app.router.lifespan_context = _agents_lifespan
 app.include_router(agents_router)
+app.include_router(hosted_agents_router)
 # A path route preserves /mcp without a trailing-slash redirect on POST.
 app.router.routes.append(Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]))
 
@@ -5280,19 +5294,7 @@ async def create_whatsapp_pairing(
     _: WhatsAppPairingRequest,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    config = _whatsapp_config()
-    if not config.configured:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="WhatsApp assistant is not configured on this server",
-        )
-    code, expires_at = await create_whatsapp_pairing_code(auth.user_id)
-    return {
-        "success": True,
-        "code": code,
-        "expires_at": expires_at.isoformat() + "Z",
-        "link_url": config.pairing_url(code),
-    }
+    raise HTTPException(410, "WhatsApp moved to Agents. Approve permissions and pair at /agents/channels/whatsapp/pairing.")
 
 
 @app.put("/whatsapp/preferences")
@@ -5436,6 +5438,10 @@ async def _process_whatsapp_stop_immediately(incoming: IncomingWhatsAppMessage) 
     if not await reserve_whatsapp_message(incoming.message_id):
         return
     client = WhatsAppCloudClient(_whatsapp_config())
+    from . import hosted_agents, hosted_store
+    hosted = await hosted_store.link("whatsapp", incoming.sender_id)
+    if hosted:
+        await hosted_agents.revoke(hosted["id"])
     await delete_whatsapp_link_for_sender(incoming.sender_id)
 
     global _whatsapp_pending_messages
@@ -5520,97 +5526,22 @@ async def _allow_active_whatsapp_message(sender_id: str) -> bool:
 async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
     if not await reserve_whatsapp_message(incoming.message_id):
         return
-    config = _whatsapp_config()
-    client = WhatsAppCloudClient(config)
-
-    # STOP is a privacy control, so it must remain available even when ordinary
-    # commands from this sender are currently rate-limited.
-    intent = command_intent(incoming.text)
-    if intent == "unlink":
+    # Preserve cancellation of messages popped from the queue during deletion.
+    await get_whatsapp_link_for_sender(incoming.sender_id)
+    queue = _active_whatsapp_sender_queue.get()
+    if queue is not None and queue.cancelled:
+        return
+    if command_intent(incoming.text) == "unlink":
+        from .hosted_agents import receive
+        await receive("whatsapp", incoming.sender_id, incoming.message_id, "STOP")
         await delete_whatsapp_link_for_sender(incoming.sender_id)
-        await client.send_text(
-            incoming.sender_id,
-            "✅ Die WhatsApp-Verbindung wurde getrennt. LANIS sendet über diesen "
-            "Chat keine persönlichen Daten mehr.",
-        )
         return
-
-    action_code = confirmation_code(incoming.text)
-    if action_code:
-        link = await get_whatsapp_link_for_sender(incoming.sender_id)
-        if link:
-            lifecycle_lock = await account_lifecycle_lock(link["user_id"])
-            async with lifecycle_lock.shared():
-                current_link = await get_whatsapp_link_for_sender(
-                    incoming.sender_id
-                )
-                if current_link and all(
-                    current_link.get(field) == link.get(field)
-                    for field in ("user_id", "linked_at")
-                ):
-                    if not await _allow_active_whatsapp_message(incoming.sender_id):
-                        logger.warning("Dropped rate-limited WhatsApp message")
-                        return
-                    await _confirm_whatsapp_action(
-                        incoming, action_code, client
-                    )
-                else:
-                    await client.send_text(
-                        incoming.sender_id,
-                        "⚠️ Die Aktion konnte nicht bestätigt werden.",
-                    )
-        else:
-            if not await _allow_active_whatsapp_message(incoming.sender_id):
-                logger.warning("Dropped rate-limited WhatsApp message")
-                return
-            await _confirm_whatsapp_action(incoming, action_code, client)
-        return
-
-    code = pairing_code(incoming.text)
-    if code:
-        if not await _allow_active_whatsapp_message(incoming.sender_id):
-            logger.warning("Dropped rate-limited WhatsApp message")
-            return
-        user_id = await consume_whatsapp_pairing_code(code, incoming.sender_id)
-        if user_id:
-            await client.send_text(
-                incoming.sender_id,
-                "✅ *Du bist verbunden!*\n\n"
-                "Frag mich einfach, was du über deinen Schulalltag wissen möchtest. "
-                "Ich kann mehrere Bereiche durchsuchen und Zusammenhänge für dich klären. "
-                "Nachrichtenvorschauen bleiben zum Schutz deiner Privatsphäre aus.",
-            )
-        else:
-            await client.send_text(
-                incoming.sender_id,
-                "⚠️ Dieser Verbindungscode ist ungültig oder abgelaufen. "
-                "Erzeuge in den LANIS-Einstellungen einen neuen Code.",
-            )
-        return
-
-    link = await get_whatsapp_link_for_sender(incoming.sender_id)
-    if link is None:
-        if not await _allow_active_whatsapp_message(incoming.sender_id):
-            logger.warning("Dropped rate-limited WhatsApp message")
-            return
-        await client.send_text(
-            incoming.sender_id, not_linked_message(config.ui_base_url)
-        )
-        return
-
-    lifecycle_lock = await account_lifecycle_lock(link["user_id"])
-    async with lifecycle_lock.shared():
-        # The link may have been removed while this task waited for deletion.
-        current_link = await get_whatsapp_link_for_sender(incoming.sender_id)
-        if not current_link or any(
-            current_link.get(field) != link.get(field)
-            for field in ("user_id", "linked_at")
-        ):
-            return
-        if not await _allow_active_whatsapp_message(incoming.sender_id):
-            logger.warning("Dropped rate-limited WhatsApp message")
-            return
-        await _process_linked_whatsapp_message(incoming, config, client, intent, link)
+    try:
+        await WhatsAppCloudClient(_whatsapp_config()).mark_read(incoming.message_id)
+    except Exception:
+        logger.debug("WhatsApp read indicator unavailable")
+    from .hosted_agents import receive
+    await receive("whatsapp", incoming.sender_id, incoming.message_id, incoming.text)
 
 
 async def _process_linked_whatsapp_message(
