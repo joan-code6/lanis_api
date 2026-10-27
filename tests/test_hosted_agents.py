@@ -392,3 +392,54 @@ def test_signal_env_enables_bundled_bridge(monkeypatch):
     monkeypatch.setenv("SIGNAL_BRIDGE_URL", "http://signal-bridge:8080")
     assert signal.configured()
     assert signal.config()[0] == "http://signal-bridge:8080"
+
+
+@pytest.mark.parametrize("phone", [None, "+491234567890"])
+def test_signal_sender_identity_survives_phone_privacy_changes(phone):
+    from api.signal import incoming
+
+    sender = "d24bcf3d-f9bb-4357-9c83-9afbe2b92493"
+    payload = {
+        "envelope": {
+            "source": sender,
+            "sourceUuid": sender,
+            "sourceNumber": phone,
+            "timestamp": 123,
+            "dataMessage": {"message": "LANIS ABCD-1234"},
+        }
+    }
+    assert incoming(payload) == (sender, "123", "LANIS ABCD-1234")
+
+
+@pytest.mark.parametrize("source", ["not-an-account", "group.invalid", "", None])
+def test_signal_rejects_invalid_sender_identifiers(source):
+    from api.signal import incoming
+
+    assert (
+        incoming(
+            {
+                "envelope": {
+                    "source": source,
+                    "timestamp": 123,
+                    "dataMessage": {"message": "hello"},
+                }
+            }
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {"envelope": []},
+        {"envelope": {"dataMessage": []}},
+        {"envelope": {"dataMessage": ["invalid"]}},
+    ],
+)
+def test_signal_ignores_malformed_envelopes(payload):
+    from api.signal import incoming
+
+    assert incoming(payload) is None
