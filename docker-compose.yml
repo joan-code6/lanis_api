@@ -24,6 +24,8 @@ services:
 
   signal-bridge:
     profiles: [signal]
+    tmpfs:
+      - /run:uid=1000,gid=1000,mode=0755,exec
     image: "${SIGNAL_BRIDGE_IMAGE:-bbernhard/signal-cli-rest-api:0.101}"
     restart: unless-stopped
     environment:
