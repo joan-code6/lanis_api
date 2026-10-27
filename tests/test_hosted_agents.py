@@ -443,3 +443,92 @@ def test_signal_ignores_malformed_envelopes(payload):
     from api.signal import incoming
 
     assert incoming(payload) is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [{"timestamp": "123"}],
+        {"timestamp": "123"},
+        [{"timestamp": "123", "errors": {}}],
+        [{"timestamp": "123", "errors": {"recipients": []}}],
+    ],
+)
+def test_signal_accepts_confirmed_send_responses(monkeypatch, body):
+    from unittest.mock import Mock
+
+    from api import signal
+
+    monkeypatch.setattr(
+        signal, "config", lambda: ("http://localhost:8081", "+491234567890")
+    )
+    response = Mock(is_redirect=False)
+    response.json.return_value = body
+    post = Mock(return_value=response)
+    monkeypatch.setattr(signal.requests, "post", post)
+    asyncio.run(signal.send_text("+491234567891", "Hello"))
+    post.assert_called_once()
+    response.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        ["invalid"],
+        {},
+        [
+            {
+                "timestamp": "123",
+                "errors": {"recipients": [{"reason": "untrusted identity"}]},
+            }
+        ],
+        [
+            {"timestamp": "123"},
+            {"timestamp": "124", "errors": {"recipients": [{"reason": "failed"}]}},
+        ],
+    ],
+)
+def test_signal_rejects_failed_or_invalid_send_responses(monkeypatch, body):
+    from unittest.mock import Mock
+
+    from api import signal
+
+    monkeypatch.setattr(
+        signal, "config", lambda: ("http://localhost:8081", "+491234567890")
+    )
+    response = Mock(is_redirect=False)
+    response.json.return_value = body
+    monkeypatch.setattr(signal.requests, "post", Mock(return_value=response))
+    with pytest.raises(RuntimeError):
+        asyncio.run(signal.send_text("+491234567891", "Hello"))
+    response.close.assert_called_once()
+
+
+def test_signal_successful_turn_sends_only_the_reply(environment, monkeypatch):
+    from unittest.mock import Mock
+
+    from api import signal
+
+    monkeypatch.setattr(
+        signal, "config", lambda: ("http://localhost:8081", "+491234567891")
+    )
+    response = Mock(is_redirect=False)
+    response.json.return_value = [{"timestamp": "123"}]
+    post = Mock(return_value=response)
+    monkeypatch.setattr(signal.requests, "post", post)
+    monkeypatch.setattr(
+        hosted, "run_agent", AsyncMock(return_value="Hey! Wie kann ich dir helfen?")
+    )
+
+    async def scenario():
+        async with client() as c:
+            await paired(c)
+            await hosted.receive("signal", "+491234567890", "greeting-send-test", "Hey")
+            post.assert_called_once()
+            assert (
+                post.call_args.kwargs["json"]["message"]
+                == "Hey! Wie kann ich dir helfen?"
+            )
+
+    asyncio.run(scenario())
