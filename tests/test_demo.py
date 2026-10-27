@@ -280,3 +280,86 @@ def test_fixture_dates_follow_calendar_week(monkeypatch, current_date, expected_
     assert [
         date.fromisoformat(day["date"]).weekday() for day in timetable["days"]
     ] == list(range(5))
+
+
+@pytest.mark.parametrize(
+    "current_date,mode,expected_dates",
+    [
+        (
+            "2026-11-02",
+            "rolling",
+            ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"],
+        ),
+        (
+            "2026-11-04",
+            "rolling",
+            ["2026-11-04", "2026-11-05", "2026-11-06", "2026-11-09", "2026-11-10"],
+        ),
+        (
+            "2026-11-04",
+            "week",
+            ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"],
+        ),
+        (
+            "2026-11-07",
+            "rolling",
+            ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"],
+        ),
+        (
+            "2026-11-08",
+            "week",
+            ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"],
+        ),
+    ],
+)
+def test_resolved_demo_timetable_projects_requested_dates(
+    monkeypatch, current_date, mode, expected_dates
+):
+    from datetime import date, datetime, timedelta
+
+    from api import demo
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromisoformat(current_date + "T12:00:00").replace(tzinfo=tz)
+
+    monkeypatch.setattr(demo, "datetime", FrozenDateTime)
+    before = demo.sample_data()["/stundenplan"]
+    headers = {"X-Session-Token": ACCESS_TOKEN}
+    response = run_request(
+        "GET",
+        "/stundenplan/view",
+        headers=headers,
+        params={"view_mode": mode, "show_substitutions": "false"},
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert [day["date"] for day in result["days"]] == expected_dates
+    first = date.fromisoformat(expected_dates[0])
+    assert result["week_start"] == (first - timedelta(days=first.weekday())).isoformat()
+    assert result["substitution_sources"] == []
+    for day in result["days"]:
+        weekday = date.fromisoformat(day["date"]).weekday()
+        assert [lesson["subject"] for lesson in day["lessons"]] == [
+            lesson["subject"] for lesson in before["days"][weekday]["lessons"]
+        ]
+        assert (
+            day["lessons"][0]["start_time"]
+            == before["days"][weekday]["lessons"][0]["start_time"]
+        )
+    assert demo.sample_data()["/stundenplan"] == before
+
+
+@pytest.mark.parametrize(
+    "query", ["view_mode=invalid", "plan_mode=invalid", "week_type=C"]
+)
+def test_demo_timetable_rejects_invalid_view_parameters(query):
+    assert (
+        run_request(
+            "GET",
+            "/stundenplan/view?" + query,
+            headers={"X-Session-Token": ACCESS_TOKEN},
+        ).status_code
+        == 422
+    )

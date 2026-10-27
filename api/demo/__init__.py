@@ -194,6 +194,69 @@ def sample_data():
     return data
 
 
+def timetable_view(data, params):
+    """Adapt the frontend lesson fixture to the API's pure timetable resolver."""
+    from ..timetable_substitutions import (
+        dsb_substitutions,
+        native_substitutions,
+        periods,
+        resolve_timetable,
+    )
+
+    template = data["/stundenplan"]
+    plan = []
+    for day in template["days"]:
+        lessons = []
+        for lesson in day["lessons"]:
+            lesson_periods = periods(lesson.get("period"))
+            lessons.append(
+                {
+                    **copy.deepcopy(lesson),
+                    "name": lesson["subject"],
+                    "stunde": lesson_periods[0]
+                    if lesson_periods
+                    else lesson.get("period"),
+                    "duration": len(lesson_periods) or 1,
+                    "badge": lesson.get("week_type"),
+                }
+            )
+        plan.append(lessons)
+    raw = {
+        **template,
+        "days": [day["name"] for day in template["days"]],
+        "plan_for_own": plan,
+        "plan_for_all": copy.deepcopy(plan),
+        "week_badge": template.get("active_week"),
+    }
+    show_substitutions = params.get("show_substitutions", "true").lower() not in {
+        "false",
+        "0",
+    }
+    changes = (
+        (
+            native_substitutions(data["/vertretungsplan"])
+            + dsb_substitutions(data["/dsb/school-plan"]["tables"])
+        )
+        if show_substitutions
+        else []
+    )
+    result = resolve_timetable(
+        raw,
+        changes,
+        "9C",
+        datetime.now(ZoneInfo("Europe/Berlin")).date(),
+        params.get("view_mode", "rolling"),
+        params.get("plan_mode", "personal"),
+        params.get("week_type"),
+    )
+    result["substitution_sources"] = (
+        [{"name": "Schulportal", "error": False}, {"name": "DSB", "error": False}]
+        if show_substitutions
+        else []
+    )
+    return result
+
+
 def tokens():
     return {
         "access_token": ACCESS_TOKEN,
@@ -266,7 +329,21 @@ async def dispatch(request):
                     "Content-Disposition": 'attachment; filename="beispiel.txt"',
                 },
             )
-        if path == "/settings/preferences":
+        if path == "/stundenplan/view":
+            for key, allowed in {
+                "view_mode": {"rolling", "week"},
+                "plan_mode": {"personal", "all"},
+                "week_type": {"A", "B"},
+            }.items():
+                if (
+                    key in request.query_params
+                    and request.query_params[key] not in allowed
+                ):
+                    return JSONResponse(
+                        {"detail": "Invalid " + key}, status_code=422, headers=headers
+                    )
+            result = timetable_view(data, request.query_params)
+        elif path == "/settings/preferences":
             from ..auth_db import DEFAULT_USER_PREFERENCES
 
             result = {

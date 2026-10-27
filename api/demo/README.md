@@ -21,6 +21,8 @@ Sample responses are copied from the fictional frontend demo in
 `lanis_ui/src/components/demo/{demoData,mockApi}.ts`. Courses, messages, calendar,
 attendance, timetable, substitutions, study groups, and storage retain those
 fixtures. Dates move forward by whole weeks to preserve timetable weekdays.
+The resolved timetable view uses the API’s pure resolver to project the sample
+lessons for today, rolling/week mode, and requested preview parameters.
 Profile fields use the public reviewer identity. Downloads return a harmless
 sample text file, and app launch pages remain local.
 
