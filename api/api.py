@@ -1220,6 +1220,11 @@ def _iter_open_file(file_handle):
 @app.middleware("http")
 async def serialize_account_requests(request: Request, call_next):
     """Keep concurrent authenticated work inside the account deletion barrier."""
+    from .demo import dispatch
+
+    demo_response = await dispatch(request)
+    if demo_response is not None:
+        return demo_response
     if (
         request.url.path == "/login"
         or request.url.path == "/mcp"  # MCP owns its bearer identity and lifecycle lease.
@@ -4003,6 +4008,9 @@ school_list_cache = {
 async def _refresh_school_list_cache():
     client = SchulportalHessenAPI()
     data = await run_in_threadpool(client.school_list_get_all)
+    from .demo import school_directory
+
+    data = school_directory(data)
     school_list_cache["data"] = data
     school_list_cache["created_at"] = datetime.utcnow()
     return data
@@ -4026,6 +4034,10 @@ async def school_list_all_cached() -> Dict[str, object]:
 
 @app.get("/school-list/district/{district_id}")
 async def school_list_by_district(district_id: str) -> Dict[str, object]:
+    from .demo import DISTRICT
+
+    if district_id == DISTRICT["id"]:
+        return {"success": True, "district": copy.deepcopy(DISTRICT)}
     client = SchulportalHessenAPI()
     result = await run_in_threadpool(client.school_list_get_by_district, district_id)
     return result
@@ -4035,6 +4047,17 @@ async def school_list_by_district(district_id: str) -> Dict[str, object]:
 async def school_list_search(q: str) -> Dict[str, object]:
     client = SchulportalHessenAPI()
     result = await run_in_threadpool(client.school_list_search_by_name, q)
+    from .demo import DISTRICT, SCHOOL
+    from schulportal_hessen.tools.search import text_matches_query
+
+    if text_matches_query(SCHOOL["name"], q) or q.strip() == SCHOOL["id"]:
+        result.setdefault("results", []).append({
+            "district_id": DISTRICT["id"],
+            "district_name": DISTRICT["name"],
+            "school": copy.deepcopy(SCHOOL),
+        })
+        result["count"] = len(result["results"])
+        result["success"] = True
     return result
 
 
