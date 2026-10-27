@@ -38,7 +38,9 @@ def sample_data():
     """Move fictional dates by whole weeks so the timetable keeps its weekdays."""
     today = datetime.now(ZoneInfo("Europe/Berlin")).date()
     generated = date.fromisoformat(_FIXTURES["generated_on"])
-    shift = timedelta(days=((today - generated).days // 7) * 7)
+    current_monday = today - timedelta(days=today.weekday())
+    generated_monday = generated - timedelta(days=generated.weekday())
+    shift = current_monday - generated_monday
 
     def transform(value):
         if isinstance(value, dict):

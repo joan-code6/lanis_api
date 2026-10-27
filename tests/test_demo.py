@@ -236,3 +236,47 @@ def test_write_contracts_echo_without_persisting():
     )
     response = run_request("GET", "/search/semantic?q=Deutsch", headers=headers)
     assert response.json()["results"][0]["title"] == "Deutsch 9c"
+
+
+@pytest.mark.parametrize(
+    "current_date,expected_monday",
+    [
+        ("2026-10-26", "2026-10-26"),
+        ("2026-11-01", "2026-10-26"),
+        ("2026-11-02", "2026-11-02"),
+        ("2026-11-03", "2026-11-02"),
+        ("2026-11-08", "2026-11-02"),
+        ("2026-11-09", "2026-11-09"),
+    ],
+)
+def test_fixture_dates_follow_calendar_week(monkeypatch, current_date, expected_monday):
+    from datetime import date, datetime, timedelta
+
+    from api import demo
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromisoformat(current_date + "T12:00:00").replace(tzinfo=tz)
+
+    monkeypatch.setattr(demo, "datetime", FrozenDateTime)
+    # A Tuesday export must advance to the next week on Monday, not Tuesday.
+    monkeypatch.setattr(
+        demo,
+        "_FIXTURES",
+        {
+            **demo._FIXTURES,
+            "generated_on": "2026-10-27",
+        },
+    )
+    data = demo.sample_data()
+    timetable = data["/stundenplan"]
+    assert timetable["week_start"] == expected_monday
+    assert (
+        timetable["week_end"]
+        == (date.fromisoformat(expected_monday) + timedelta(days=4)).isoformat()
+    )
+    assert data["/meinunterricht/weekly"]["week"]["start_date"] == expected_monday
+    assert [
+        date.fromisoformat(day["date"]).weekday() for day in timetable["days"]
+    ] == list(range(5))
