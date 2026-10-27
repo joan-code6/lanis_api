@@ -15,7 +15,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads connection permissions, available capabilities and current Berlin time.",
+        "read_only_justification": "Only reads the connection name, approved scopes, Berlin time and settings link; it does not invoke school operations.",
         "open_world_justification": "Operates within the connected LANIS account, which represents access to an external school service; the server conservatively declares an open-world boundary.",
         "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
       }
@@ -111,7 +111,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Retrieves the account’s available school apps and integration coverage.",
+        "read_only_justification": "Only reads the school app inventory and returns app names and LANIS integration status without opening apps or invoking their actions.",
         "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
         "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
       }

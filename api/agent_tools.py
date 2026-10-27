@@ -10,6 +10,8 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import Field
 from starlette.datastructures import Headers
 
+from .agent_schemas import SchoolAppInventory
+
 Identifier = Annotated[str, Field(min_length=1, max_length=200)]
 Text = Annotated[str, Field(min_length=1, max_length=5000)]
 
@@ -117,9 +119,9 @@ def download_file(client, file_id, *, loader=None):
 
 
 def register_tools(tool, run):
-    @tool("profile:read", title="Discover your school modules")
-    async def lanis_modules() -> dict[str, Any]:
-        """Account-specific Schulportal app catalog. Use for available modules and integration coverage. integrated=true identifies server-supported apps; available_tools from lanis_connection identifies granted callable tools. integrated=false identifies an accessible app to open in the portal. Returns app names and support status."""
+    @tool("profile:read", title="List school app names")
+    async def lanis_modules() -> SchoolAppInventory:
+        """List the names of apps in the signed-in user’s Schulportal account and whether LANIS implements an integration for each app. The integrated flag describes product support, not permission to call a tool. This inventory read does not open apps, return their launch URLs, execute their operations or create tools; callable operations have separate definitions in MCP tools/list."""
         from urllib.parse import urlsplit
 
         from .agent_mcp import PORTAL_MODULES, normalized_manifest
@@ -154,7 +156,7 @@ def register_tools(tool, run):
             return {
                 "success": True,
                 "modules": modules,
-                "coverage": "Account app list. External apps without a dedicated integration must be opened in the portal.",
+                "coverage": "School app names and LANIS integration status only; this inventory does not grant access to app operations.",
             }
 
         return await run(

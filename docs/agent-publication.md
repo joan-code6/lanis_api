@@ -199,8 +199,8 @@ missing dates and incomplete coverage must not be replaced with guesses.
 
 `lanis_modules` lists the account's portal app names without opening apps or
 returning potentially signed external URLs. `integrated` describes server support,
-not an OAuth grant: use `lanis_connection.available_tools` for the actual callable
-capabilities. External school apps such as Moodle are listed as accessible but
+not an OAuth grant: use the MCP `tools/list` response for callable tool
+definitions. External school apps such as Moodle are listed as accessible but
 without a dedicated integration. This must not be described as missing account
 access. The regression suite compares the backend's supported module registry
 with MCP coverage so a new backend module cannot silently be omitted.
@@ -209,3 +209,18 @@ Existing connections must reconnect to approve the new `meetings:read` permissio
 an existing grant never acquires extra permissions automatically. Personal meeting
 join links are sensitive: `meetings:read` is available through Full or an explicit
 Custom selection, and is excluded from Restricted.
+
+## OpenAI tool-scan clarification
+
+`lanis_connection` only reads connection metadata and Berlin time. Its result no
+longer includes a tool catalog or routing instructions. `lanis_modules` only
+reads school app names and LANIS integration status. Neither tool opens an app
+or dispatches school actions. Both publish explicit output schemas. Each school
+action has its own MCP definition, input schema, annotations and permission check.
+Discovery continues to return the definitions permitted for the connected account;
+a metadata response cannot add a callable tool or bypass a missing permission.
+
+After merging and deploying this change, rescan the hosted MCP in the OpenAI
+portal. The remote scan uses server definitions; changing the package alone does
+not update them. If the same finding remains, appeal with these bounded read
+behaviors and the separately exposed action definitions.

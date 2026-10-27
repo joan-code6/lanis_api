@@ -2508,3 +2508,39 @@ def test_sent_messages_are_annotated_as_irreversible():
         assert annotations.destructiveHint is True
         assert annotations.readOnlyHint is False
         assert annotations.openWorldHint is True
+
+
+def test_connection_status_does_not_dispatch_or_discover_school_tools(monkeypatch):
+    from unittest.mock import AsyncMock
+    from api import agent_mcp
+
+    async def scenario():
+        monkeypatch.setattr(agent_mcp, "identity", AsyncMock(return_value={
+            "name": "Review connection", "scopes": ["schoolwork:read"]
+        }))
+        forbidden = AsyncMock(side_effect=AssertionError("Metadata must not dispatch"))
+        monkeypatch.setattr(agent_mcp, "run", forbidden)
+        monkeypatch.setattr(agent_mcp, "available_tools", forbidden)
+        result = await agent_mcp.lanis_connection()
+        assert set(result) == {
+            "success", "connection_name", "scopes", "current_time", "timezone",
+            "settings_url",
+        }
+        assert result["timezone"] == "Europe/Berlin"
+        assert result["scopes"] == ["schoolwork:read"]
+        forbidden.assert_not_called()
+        tools = {t.name: t for t in await agent_mcp.mcp.list_tools()}
+        schema = tools["lanis_connection"].outputSchema
+        assert set(schema["properties"]) == set(result)
+        assert set(schema["required"]) == set(result)
+        modules = tools["lanis_modules"]
+        assert "modules" in modules.outputSchema["properties"]
+        assert "name" in modules.outputSchema["$defs"]["SchoolApp"]["properties"]
+        assert modules.inputSchema["properties"] == {}
+        # Inventory tools do not replace the individual action definitions.
+        for name in ("lanis_courses", "lanis_send_message", "lanis_submit_election"):
+            assert name in tools
+            assert tools[name].inputSchema
+            assert tools[name].annotations is not None
+
+    asyncio.run(scenario())
