@@ -382,3 +382,56 @@ def test_school_directory_preserves_upstream_failure(monkeypatch):
     assert response.json() == result
     assert api_module.school_list_cache["data"] == result
     assert school_directory({})["success"] is True
+
+
+@pytest.mark.parametrize(
+    "course_id,entry",
+    [
+        (key.rsplit("/", 1)[-1], entry)
+        for key, course in sample_data().items()
+        if key.startswith("/meinunterricht/course/")
+        for entry in course["entries"]
+    ],
+)
+def test_every_advertised_course_entry_has_matching_details(course_id, entry):
+    response = run_request(
+        "GET",
+        "/meinunterricht/entry",
+        headers={"X-Session-Token": ACCESS_TOKEN},
+        params={"url": "https://example.invalid/" + entry["entry_id"]},
+    )
+    assert response.status_code == 200
+    detail = response.json()["entry"]
+    assert detail["id"] == entry["entry_id"]
+    assert detail["title"] == entry["thema"]
+    assert detail["date"] == entry["date"]
+    assert detail["attachments"] == entry["files"]
+    assert detail["content"]
+
+
+@pytest.mark.parametrize(
+    "submission", sample_data()["/meinunterricht/submissions"]["submissions"]
+)
+def test_every_advertised_submission_has_matching_details(submission):
+    response = run_request(
+        "GET",
+        "/meinunterricht/submissions/" + submission["id"],
+        headers={"X-Session-Token": ACCESS_TOKEN},
+    )
+    assert response.status_code == 200
+    assert response.json()["submission"] == submission
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/meinunterricht/entry?url=b2e999",
+        "/meinunterricht/entry?url=b2e1suffix",
+        "/meinunterricht/submissions/unknown",
+    ],
+)
+def test_unknown_sample_details_return_not_found(path):
+    assert (
+        run_request("GET", path, headers={"X-Session-Token": ACCESS_TOKEN}).status_code
+        == 404
+    )

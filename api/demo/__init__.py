@@ -4,8 +4,9 @@ import copy
 import json
 import re
 from datetime import date, datetime, timedelta
+from html import escape
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 from starlette.responses import HTMLResponse, JSONResponse, Response
@@ -374,21 +375,60 @@ async def dispatch(request):
             }
         elif path == "/meinunterricht/entry":
             url = request.query_params.get("url", "")
-            result = next(
+            identifiers = set(re.split(r"[^A-Za-z0-9_-]+", unquote(url)))
+            entry = next(
                 (
-                    v
-                    for k, v in data.items()
-                    if k.startswith(path + "?url=") and k.split("=")[-1] in url
+                    entry
+                    for key, course in data.items()
+                    if key.startswith("/meinunterricht/course/")
+                    for entry in course["entries"]
+                    if entry["entry_id"] in identifiers
                 ),
-                data[path],
+                None,
             )
+            if not url:
+                result = data[path]
+            elif entry is None:
+                return JSONResponse(
+                    {"detail": "Sample entry not found"},
+                    status_code=404,
+                    headers=headers,
+                )
+            else:
+                result = data.get(
+                    path + "?url=" + entry["entry_id"],
+                    {
+                        "success": True,
+                        "entry": {
+                            "id": entry["entry_id"],
+                            "title": entry["thema"],
+                            "content": "<p>"
+                            + escape(entry.get("content") or entry["thema"])
+                            + "</p>",
+                            "date": entry["date"],
+                            "attachments": copy.deepcopy(entry.get("files", [])),
+                        },
+                    },
+                )
         elif path.startswith("/meinunterricht/submissions/"):
             submission_id = path.rsplit("/", 1)[-1]
+            submission = next(
+                (
+                    item
+                    for item in data["/meinunterricht/submissions"]["submissions"]
+                    if item["id"] == submission_id
+                ),
+                None,
+            )
+            if submission is None:
+                return JSONResponse(
+                    {"detail": "Sample submission not found"},
+                    status_code=404,
+                    headers=headers,
+                )
             result = {
                 "success": True,
-                "submission": next(
-                    iter(data["/meinunterricht/submissions"]["submissions"]), {}
-                ),
+                "submission": copy.deepcopy(submission),
                 "id": submission_id,
                 "files": [],
             }
