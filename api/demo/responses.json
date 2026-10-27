@@ -1,0 +1,3572 @@
+{
+  "generated_on": "2026-10-27",
+  "responses": {
+    "/benutzer": {
+      "success": true,
+      "data": {
+        "school_id": "demo",
+        "username": "mia.keller",
+        "vorname": "Mia",
+        "nachname": "Keller",
+        "firstname": "Mia",
+        "lastname": "Keller",
+        "klasse": "9C",
+        "email": "mia.keller@example.invalid",
+        "schule": "Elisabeth-Selbert-Schule",
+        "role": "Schüler/in",
+        "tutor": "Herr Brandt",
+        "geburtsdatum": "08.11.2011",
+        "geschlecht": "w",
+        "strasse": "Schulstraße 1",
+        "plz": "60311",
+        "ort": "Frankfurt am Main"
+      }
+    },
+    "/modules": {
+      "success": true,
+      "modules": [
+        {
+          "name": "Mein Unterricht",
+          "url": "https://schulportal.hessen.de/meinunterricht.php",
+          "direct_url": "https://schulportal.hessen.de/meinunterricht.php",
+          "proxy_app": false,
+          "color": "#4f46e5",
+          "logo": "fa fa-address-book",
+          "folders": [
+            "Schule"
+          ],
+          "target": "_self"
+        },
+        {
+          "name": "Nachrichten",
+          "url": "https://schulportal.hessen.de/nachrichten.php",
+          "direct_url": "https://schulportal.hessen.de/nachrichten.php",
+          "proxy_app": false,
+          "color": "#0891b2",
+          "logo": "fa fa-envelope-o",
+          "folders": [
+            "Kommunikation"
+          ],
+          "target": "_self"
+        },
+        {
+          "name": "Kalender",
+          "url": "https://schulportal.hessen.de/kalender.php",
+          "direct_url": "https://schulportal.hessen.de/kalender.php",
+          "proxy_app": false,
+          "color": "#dc2626",
+          "logo": "fa fa-calendar-o",
+          "folders": [
+            "Schule"
+          ],
+          "target": "_self"
+        },
+        {
+          "name": "Dateispeicher",
+          "url": "https://schulportal.hessen.de/dateispeicher.php",
+          "direct_url": "https://schulportal.hessen.de/dateispeicher.php",
+          "proxy_app": false,
+          "color": "#0f766e",
+          "logo": "fa fa-folder-open-o",
+          "folders": [
+            "Schule"
+          ],
+          "target": "_self"
+        },
+        {
+          "name": "Vertretungsplan",
+          "url": "https://schulportal.hessen.de/vertretungsplan.php",
+          "direct_url": "https://schulportal.hessen.de/vertretungsplan.php",
+          "proxy_app": false,
+          "color": "#7c3aed",
+          "logo": "fa fa-list-alt",
+          "folders": [
+            "Schule"
+          ],
+          "target": "_self"
+        },
+        {
+          "name": "DSBmobile",
+          "url": "https://dsb.hessen.de/dsb.php",
+          "direct_url": "https://dsb.hessen.de/dsb.php",
+          "proxy_app": false,
+          "color": "#64748b",
+          "logo": "fa fa-retweet",
+          "folders": [
+            "Schule"
+          ],
+          "target": "_self"
+        },
+        {
+          "name": "Klassenbuch",
+          "url": "https://schulportal.hessen.de/klassenbuch.php",
+          "direct_url": "https://schulportal.hessen.de/klassenbuch.php",
+          "proxy_app": false,
+          "color": "#059669",
+          "logo": "fa fa-book",
+          "folders": [
+            "Schule"
+          ],
+          "target": "_blank"
+        },
+        {
+          "name": "Stundenplan",
+          "url": "https://schulportal.hessen.de/stundenplan.php",
+          "direct_url": "https://schulportal.hessen.de/stundenplan.php",
+          "proxy_app": false,
+          "color": "#d97706",
+          "logo": "fa fa-hourglass-half",
+          "folders": [
+            "Schule"
+          ],
+          "target": "_self"
+        },
+        {
+          "name": "Lerngruppen",
+          "url": "https://schulportal.hessen.de/lerngruppen.php",
+          "direct_url": "https://schulportal.hessen.de/lerngruppen.php",
+          "proxy_app": false,
+          "color": "#0d9488",
+          "logo": "fa fa-users",
+          "folders": [
+            "Schule"
+          ],
+          "target": "_self"
+        },
+        {
+          "name": "Notenübersicht",
+          "url": "https://schulportal.hessen.de/noten.php",
+          "direct_url": "https://schulportal.hessen.de/noten.php",
+          "proxy_app": false,
+          "color": "#be185d",
+          "logo": "fa fa-bar-chart",
+          "folders": [
+            "Leistung"
+          ],
+          "target": "_blank"
+        },
+        {
+          "name": "Klausurplan",
+          "url": "https://schulportal.hessen.de/klausuren.php",
+          "direct_url": "https://schulportal.hessen.de/klausuren.php",
+          "proxy_app": false,
+          "color": "#2563eb",
+          "logo": "fa fa-list-alt",
+          "folders": [
+            "Leistung"
+          ],
+          "target": "_blank"
+        }
+      ]
+    },
+    "/dashboard/notifications": {
+      "success": true,
+      "enabled": true,
+      "notifications": [
+        {
+          "id": "demo-native-0-0",
+          "source": "native",
+          "title": "Raumänderung · Mathematik",
+          "detail": "9C · 3 - 4. Std. · Raum B204",
+          "meta": "2026-10-29",
+          "path": "/vertretungsplan",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-native-0-1",
+          "source": "native",
+          "title": "Entfall · Biologie",
+          "detail": "9C · 5 - 6. Std. · Raum C106",
+          "meta": "2026-10-29",
+          "path": "/vertretungsplan",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-native-1-0",
+          "source": "native",
+          "title": "Vertretung · Englisch",
+          "detail": "9C · 1 - 2. Std. · Raum B204",
+          "meta": "2026-10-30",
+          "path": "/vertretungsplan",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-native-1-1",
+          "source": "native",
+          "title": "Raumänderung · Kunst",
+          "detail": "9C · 5 - 6. Std. · Raum K3",
+          "meta": "2026-10-30",
+          "path": "/vertretungsplan",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-native-2-0",
+          "source": "native",
+          "title": "Vertretung · Geschichte",
+          "detail": "9C · 3 - 4. Std. · Raum B204",
+          "meta": "2026-11-02",
+          "path": "/vertretungsplan",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-dsb-0-0",
+          "source": "dsb",
+          "title": "Änderung · Mathematik",
+          "detail": "1–2. Std. · Raum B204",
+          "meta": "2026-10-27",
+          "path": "/dsb",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-dsb-0-1",
+          "source": "dsb",
+          "title": "Vertretung · Englisch",
+          "detail": "3–4. Std. · Raum B204",
+          "meta": "2026-10-27",
+          "path": "/dsb",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-dsb-0-2",
+          "source": "dsb",
+          "title": "Entfall · Biologie",
+          "detail": "5–6. Std. · Raum C106",
+          "meta": "2026-10-27",
+          "path": "/dsb",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-dsb-0-3",
+          "source": "dsb",
+          "title": "Projektarbeit · Informatik",
+          "detail": "7–8. Std. · Raum C101",
+          "meta": "2026-10-27",
+          "path": "/dsb",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-dsb-0-4",
+          "source": "dsb",
+          "title": "Raumänderung · Kunst",
+          "detail": "9–10. Std. · Raum K3",
+          "meta": "2026-10-27",
+          "path": "/dsb",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-dsb-0-5",
+          "source": "dsb",
+          "title": "Bitte Sportsachen mitbringen · Sport",
+          "detail": "11–12. Std. · Raum TH1",
+          "meta": "2026-10-27",
+          "path": "/dsb",
+          "created_at": "2026-10-27T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-message-uq-1",
+          "source": "messages",
+          "title": "Gedichtvergleich für Montag",
+          "detail": "Frau Neumann",
+          "meta": "2026-10-27T00:20:43.941Z",
+          "path": "/messages",
+          "created_at": "2026-10-27T00:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-message-uq-2",
+          "source": "messages",
+          "title": "Abgabe zum Funktionsgraphen",
+          "detail": "Herr Vogel",
+          "meta": "2026-10-26T08:20:43.941Z",
+          "path": "/messages",
+          "created_at": "2026-10-26T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-message-uq-4",
+          "source": "messages",
+          "title": "Einverständniserklärung",
+          "detail": "Herr Brandt",
+          "meta": "2026-10-24T08:20:43.941Z",
+          "path": "/messages",
+          "created_at": "2026-10-24T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        },
+        {
+          "id": "demo-message-uq-7",
+          "source": "messages",
+          "title": "Neue Bücher im Leseraum",
+          "detail": "Schulbibliothek",
+          "meta": "2026-10-17T08:20:43.941Z",
+          "path": "/messages",
+          "created_at": "2026-10-17T08:20:43.941Z",
+          "read": false,
+          "read_at": null
+        }
+      ],
+      "unread_count": 15,
+      "source_counts": {
+        "messages": 4,
+        "native": 5,
+        "dsb": 6
+      },
+      "unread_source_counts": {
+        "messages": 4,
+        "native": 5,
+        "dsb": 6
+      },
+      "errors": {}
+    },
+    "/nachrichten/headers": {
+      "success": true,
+      "total": 8,
+      "conversations": [
+        {
+          "Id": "dm-1",
+          "Uniquid": "uq-1",
+          "Sender": "Frau Neumann",
+          "Betreff": "Deutsch: Gedichtvergleich für Montag",
+          "Papierkorb": "0",
+          "private": 0,
+          "WeitereEmpfaenger": "",
+          "empf": [
+            "mia.keller"
+          ],
+          "unread": true,
+          "date": "2026-10-27T00:20:43.941Z"
+        },
+        {
+          "Id": "dm-2",
+          "Uniquid": "uq-2",
+          "Sender": "Herr Vogel",
+          "Betreff": "Mathematik: Abgabe zum Funktionsgraphen",
+          "Papierkorb": "0",
+          "private": 0,
+          "WeitereEmpfaenger": "",
+          "empf": [
+            "mia.keller"
+          ],
+          "unread": true,
+          "date": "2026-10-26T08:20:43.941Z"
+        },
+        {
+          "Id": "dm-3",
+          "Uniquid": "uq-3",
+          "Sender": "Frau Özdemir",
+          "Betreff": "Biologie: Protokoll zum See-Experiment",
+          "Papierkorb": "0",
+          "private": 0,
+          "WeitereEmpfaenger": "",
+          "empf": [
+            "mia.keller"
+          ],
+          "unread": false,
+          "read": true,
+          "date": "2026-10-25T08:20:43.941Z"
+        },
+        {
+          "Id": "dm-4",
+          "Uniquid": "uq-4",
+          "Sender": "Herr Brandt",
+          "Betreff": "Klassenfahrt: Einverständniserklärung",
+          "Papierkorb": "0",
+          "private": 0,
+          "WeitereEmpfaenger": "",
+          "empf": [
+            "mia.keller"
+          ],
+          "unread": true,
+          "date": "2026-10-24T08:20:43.941Z"
+        },
+        {
+          "Id": "dm-5",
+          "Uniquid": "uq-5",
+          "Sender": "Sekretariat",
+          "Betreff": "Sprechzeiten im Herbst",
+          "Papierkorb": "0",
+          "private": 0,
+          "WeitereEmpfaenger": "",
+          "empf": [
+            "mia.keller"
+          ],
+          "unread": false,
+          "read": true,
+          "date": "2026-10-21T08:20:43.941Z"
+        },
+        {
+          "Id": "dm-6",
+          "Uniquid": "uq-6",
+          "Sender": "Frau Winter",
+          "Betreff": "Sportfest: Laufzettel und Zeiten",
+          "Papierkorb": "0",
+          "private": 0,
+          "WeitereEmpfaenger": "",
+          "empf": [
+            "mia.keller"
+          ],
+          "unread": false,
+          "read": true,
+          "date": "2026-10-19T08:20:43.941Z"
+        },
+        {
+          "Id": "dm-7",
+          "Uniquid": "uq-7",
+          "Sender": "Schulbibliothek",
+          "Betreff": "Neue Bücher im Leseraum",
+          "Papierkorb": "0",
+          "private": 0,
+          "WeitereEmpfaenger": "",
+          "empf": [
+            "mia.keller"
+          ],
+          "unread": true,
+          "date": "2026-10-17T08:20:43.941Z"
+        },
+        {
+          "Id": "dm-8",
+          "Uniquid": "uq-8",
+          "Sender": "SV-Team",
+          "Betreff": "Ideen für die Projektwoche",
+          "Papierkorb": "0",
+          "private": 0,
+          "WeitereEmpfaenger": "",
+          "empf": [
+            "mia.keller"
+          ],
+          "unread": false,
+          "read": true,
+          "date": "2026-10-15T08:20:43.941Z"
+        }
+      ]
+    },
+    "/nachrichten/send": {
+      "success": true,
+      "conversation_id": "send",
+      "messages": []
+    },
+    "/nachrichten/reply": {
+      "success": true,
+      "conversation_id": "reply",
+      "messages": []
+    },
+    "/nachrichten/mark-read": {
+      "success": true,
+      "conversation_id": "mark-read",
+      "messages": []
+    },
+    "/notifications/config": {
+      "success": true,
+      "configured": false,
+      "public_key": ""
+    },
+    "/notifications/preferences": {
+      "success": true,
+      "preferences": {
+        "enabled": false,
+        "messages_enabled": true,
+        "vertretungsplan_enabled": false,
+        "vertretungsplan_class_mode": "own",
+        "vertretungsplan_classes": [],
+        "start_time": "07:00",
+        "end_time": "21:00",
+        "poll_interval_minutes": 15,
+        "timezone": "Europe/Berlin",
+        "show_preview": true
+      }
+    },
+    "/notifications/vertretungsplan/options": {
+      "success": true,
+      "own_class": "9C",
+      "available_classes": [
+        "9A",
+        "9B",
+        "9C"
+      ]
+    },
+    "/whatsapp/status": {
+      "success": true,
+      "configured": false,
+      "ai_configured": false,
+      "linked": false,
+      "phone_suffix": "",
+      "linked_at": null,
+      "show_message_previews": false
+    },
+    "/vertretungsplan/options": {
+      "success": true,
+      "own_class": "9C",
+      "available_classes": [
+        "9A",
+        "9B",
+        "9C"
+      ]
+    },
+    "/settings/class-links": {
+      "success": true,
+      "links": [
+        {
+          "course_id": "b1",
+          "name": "Deutsch 9c",
+          "teacher": "Neumann, Clara (CN)",
+          "url": "https://schulportal.hessen.de/courses/b1",
+          "overridden": false
+        },
+        {
+          "course_id": "b2",
+          "name": "Mathematik 9c",
+          "teacher": "Vogel, Martin (MV)",
+          "url": "https://schulportal.hessen.de/courses/b2",
+          "overridden": false
+        },
+        {
+          "course_id": "b3",
+          "name": "Englisch 9c",
+          "teacher": "Özdemir, Aylin (AO)",
+          "url": "https://schulportal.hessen.de/courses/b3",
+          "overridden": false
+        },
+        {
+          "course_id": "b4",
+          "name": "Biologie 9c",
+          "teacher": "Brandt, Felix (FB)",
+          "url": "https://schulportal.hessen.de/courses/b4",
+          "overridden": false
+        },
+        {
+          "course_id": "b5",
+          "name": "Geschichte 9c",
+          "teacher": "Seidel, Marie (MS)",
+          "url": "https://schulportal.hessen.de/courses/b5",
+          "overridden": false
+        },
+        {
+          "course_id": "b6",
+          "name": "Informatik 9c",
+          "teacher": "Roth, Leonie (LR)",
+          "url": "https://schulportal.hessen.de/courses/b6",
+          "overridden": false
+        }
+      ]
+    },
+    "/meinunterricht": {
+      "success": true,
+      "entries": [
+        {
+          "entry_id": "e1",
+          "book_id": "b1",
+          "name": "Deutsch 9c",
+          "course_link": "https://schulportal.hessen.de/courses/b1",
+          "teacher_full_name": "Neumann, Clara (CN)",
+          "teacher_short": "CN",
+          "teacher_message_link": "",
+          "thema": "Gedichtvergleich: Stadt und Natur",
+          "datum": "2026-10-26T08:20:43.941Z",
+          "homework": "Vergleichstabelle zu den beiden Gedichten vervollständigen",
+          "homework_done": false
+        },
+        {
+          "entry_id": "e2",
+          "book_id": "b2",
+          "name": "Mathematik 9c",
+          "course_link": "https://schulportal.hessen.de/courses/b2",
+          "teacher_full_name": "Vogel, Martin (MV)",
+          "teacher_short": "MV",
+          "teacher_message_link": "",
+          "thema": "Lineare Funktionen und Steigung",
+          "datum": "2026-10-25T08:20:43.941Z",
+          "homework": "Arbeitsblatt „Funktionsgraphen“: Nr. 4–7",
+          "homework_done": false
+        },
+        {
+          "entry_id": "e3",
+          "book_id": "b3",
+          "name": "Englisch 9c",
+          "course_link": "https://schulportal.hessen.de/courses/b3",
+          "teacher_full_name": "Özdemir, Aylin (AO)",
+          "teacher_short": "AO",
+          "teacher_message_link": "",
+          "thema": "Writing a persuasive speech",
+          "datum": "2026-10-24T08:20:43.941Z",
+          "homework": "Write an opening paragraph for your speech",
+          "homework_done": true
+        },
+        {
+          "entry_id": "e4",
+          "book_id": "b4",
+          "name": "Biologie 9c",
+          "course_link": "https://schulportal.hessen.de/courses/b4",
+          "teacher_full_name": "Brandt, Felix (FB)",
+          "teacher_short": "FB",
+          "teacher_message_link": "",
+          "thema": "Ökosystem See",
+          "datum": "2026-10-26T08:20:43.941Z",
+          "homework": "Versuchsprotokoll um die Auswertung ergänzen",
+          "homework_done": false
+        },
+        {
+          "entry_id": "e5",
+          "book_id": "b5",
+          "name": "Geschichte 9c",
+          "course_link": "https://schulportal.hessen.de/courses/b5",
+          "teacher_full_name": "Seidel, Marie (MS)",
+          "teacher_short": "MS",
+          "teacher_message_link": "",
+          "thema": "Industrialisierung und soziale Frage",
+          "datum": "2026-10-23T08:20:43.941Z",
+          "homework": "Quelle zur Fabrikarbeit mit drei Stichpunkten auswerten",
+          "homework_done": true
+        },
+        {
+          "entry_id": "e6",
+          "book_id": "b6",
+          "name": "Informatik 9c",
+          "course_link": "https://schulportal.hessen.de/courses/b6",
+          "teacher_full_name": "Roth, Leonie (LR)",
+          "teacher_short": "LR",
+          "teacher_message_link": "",
+          "thema": "Barrierefreie Website",
+          "datum": "2026-10-25T08:20:43.941Z",
+          "homework": "Alt-Texte für die Bilder im HTML-Dokument ergänzen",
+          "homework_done": false
+        }
+      ],
+      "entry_count": 6
+    },
+    "/meinunterricht/attendance": {
+      "success": true,
+      "source": "schulportal",
+      "available": true,
+      "totals": {
+        "anwesend": 111,
+        "entschuldigt": 3,
+        "unentschuldigt": 0
+      },
+      "courses": [
+        {
+          "course_id": "b1",
+          "course_name": "Deutsch 9c",
+          "teacher_short": "CN",
+          "teacher_full": "Clara Neumann",
+          "attendance_summary": {
+            "anwesend": 18,
+            "entschuldigt": 1,
+            "unentschuldigt": 0
+          }
+        },
+        {
+          "course_id": "b2",
+          "course_name": "Mathematik 9c",
+          "teacher_short": "MV",
+          "teacher_full": "Martin Vogel",
+          "attendance_summary": {
+            "anwesend": 19,
+            "entschuldigt": 0,
+            "unentschuldigt": 0
+          }
+        },
+        {
+          "course_id": "b3",
+          "course_name": "Englisch 9c",
+          "teacher_short": "AO",
+          "teacher_full": "Aylin Özdemir",
+          "attendance_summary": {
+            "anwesend": 20,
+            "entschuldigt": 0,
+            "unentschuldigt": 0
+          }
+        },
+        {
+          "course_id": "b4",
+          "course_name": "Biologie 9c",
+          "teacher_short": "FB",
+          "teacher_full": "Felix Brandt",
+          "attendance_summary": {
+            "anwesend": 21,
+            "entschuldigt": 1,
+            "unentschuldigt": 0
+          }
+        },
+        {
+          "course_id": "b5",
+          "course_name": "Geschichte 9c",
+          "teacher_short": "MS",
+          "teacher_full": "Marie Seidel",
+          "attendance_summary": {
+            "anwesend": 17,
+            "entschuldigt": 0,
+            "unentschuldigt": 0
+          }
+        },
+        {
+          "course_id": "b6",
+          "course_name": "Informatik 9c",
+          "teacher_short": "LR",
+          "teacher_full": "Leonie Roth",
+          "attendance_summary": {
+            "anwesend": 16,
+            "entschuldigt": 1,
+            "unentschuldigt": 0
+          }
+        }
+      ],
+      "course_count": 6,
+      "attendance_course_count": 6,
+      "failed_course_count": 0
+    },
+    "/meinunterricht/weekly": {
+      "success": true,
+      "week": {
+        "start_date": "2026-10-26",
+        "entries": [
+          {
+            "date": "2026-10-26",
+            "course": "Deutsch 9c",
+            "entry": "Gedichtvergleich: Stadt und Natur",
+            "url": ""
+          },
+          {
+            "date": "2026-10-26",
+            "course": "Mathematik 9c",
+            "entry": "Lineare Funktionen und Steigung",
+            "url": ""
+          },
+          {
+            "date": "2026-10-27",
+            "course": "Biologie 9c",
+            "entry": "Ökosystem See",
+            "url": ""
+          },
+          {
+            "date": "2026-10-28",
+            "course": "Englisch 9c",
+            "entry": "Writing a persuasive speech",
+            "url": ""
+          },
+          {
+            "date": "2026-10-29",
+            "course": "Geschichte 9c",
+            "entry": "Industrialisierung und soziale Frage",
+            "url": ""
+          },
+          {
+            "date": "2026-10-30",
+            "course": "Informatik 9c",
+            "entry": "Barrierefreie Website",
+            "url": ""
+          }
+        ]
+      }
+    },
+    "/meinunterricht/submissions": {
+      "success": true,
+      "submissions": [
+        {
+          "id": "s1",
+          "title": "Mathematik: Funktionsgraphen",
+          "course": "Mathematik 9c",
+          "due_date": "2026-10-28T23:59:00",
+          "status": "Ausstehend",
+          "url": ""
+        },
+        {
+          "id": "s2",
+          "title": "Deutsch: Gedichtvergleich",
+          "course": "Deutsch 9c",
+          "due_date": "2026-10-30T09:40:00",
+          "status": "Anstehend",
+          "url": ""
+        },
+        {
+          "id": "s3",
+          "title": "Biologie: See-Experiment",
+          "course": "Biologie 9c",
+          "due_date": "2026-10-26T23:59:00",
+          "status": "Abgegeben",
+          "url": ""
+        },
+        {
+          "id": "s4",
+          "title": "Englisch: Persuasive speech",
+          "course": "Englisch 9c",
+          "due_date": "2026-10-31T23:59:00",
+          "status": "Ausstehend",
+          "url": ""
+        },
+        {
+          "id": "s5",
+          "title": "Geschichte: Fabrikarbeit im 19. Jahrhundert",
+          "course": "Geschichte 9c",
+          "due_date": "2026-11-04T23:59:00",
+          "status": "Ausstehend",
+          "url": ""
+        },
+        {
+          "id": "s6",
+          "title": "Informatik: Barrierefreie Website",
+          "course": "Informatik 9c",
+          "due_date": "2026-11-08T09:40:00",
+          "status": "Anstehend",
+          "url": ""
+        }
+      ]
+    },
+    "/kalender": {
+      "success": true,
+      "page_title": "Kalender",
+      "calendar": {
+        "first_id": "0",
+        "new_events_count": "2",
+        "can_write": false,
+        "key": "",
+        "public_view": false,
+        "institution": "Elisabeth-Selbert-Schule",
+        "is_admin": false
+      },
+      "categories": [
+        {
+          "id": 1,
+          "name": "Klausuren",
+          "color": "#dc2626",
+          "logo": "fa-regular fa-file-lines"
+        },
+        {
+          "id": 2,
+          "name": "Sonstige Termine",
+          "color": "#2563eb",
+          "logo": "fa-regular fa-calendar"
+        },
+        {
+          "id": 3,
+          "name": "Ferien & freie Tage",
+          "color": "#059669",
+          "logo": "fa-regular fa-sun"
+        },
+        {
+          "id": 4,
+          "name": "Abgaben",
+          "color": "#d97706",
+          "logo": "fa-regular fa-clock"
+        },
+        {
+          "id": 5,
+          "name": "Klassen & Schule",
+          "color": "#7c3aed",
+          "logo": "fa-regular fa-users"
+        },
+        {
+          "id": 6,
+          "name": "Schulwochen",
+          "color": "#0f766e",
+          "logo": "fa-regular fa-calendar"
+        }
+      ],
+      "groups": [
+        {
+          "id": 1,
+          "name": "9C"
+        }
+      ],
+      "export_links": []
+    },
+    "/kalender/events": {
+      "success": true,
+      "events": [
+        {
+          "id": "ev1",
+          "title": "A-Woche",
+          "category": "6",
+          "category_name": "Schulwochen",
+          "category_color": "#0f766e",
+          "description": "<p>Diese Woche ist eine <strong>A-Woche</strong>.</p><p>Der Stundenplan folgt der A-Woche.</p>",
+          "start": "2026-10-26",
+          "end": "2026-10-31",
+          "all_day": true,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Woche": "A"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev2",
+          "title": "Klassensprecher-Runde",
+          "category": "5",
+          "category_name": "Klassen & Schule",
+          "category_color": "#7c3aed",
+          "description": "<p>Kurze Runde der Klassensprecherinnen und Klassensprecher.</p><p>Der reguläre Unterricht findet ansonsten statt.</p>",
+          "start": "2026-10-28T08:35:00",
+          "end": "2026-10-28T09:20:00",
+          "all_day": false,
+          "new": "1",
+          "editable": false,
+          "properties": {
+            "Ort": "Raum B204"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev3",
+          "title": "Klassenfahrt: Infoabend",
+          "category": "5",
+          "category_name": "Klassen & Schule",
+          "category_color": "#7c3aed",
+          "description": "<p>Informationsabend für die geplante Klassenfahrt.</p><p>Bitte Fragen und die Einverständniserklärung mitbringen.</p>",
+          "start": "2026-11-02T18:00:00",
+          "end": "2026-11-02T19:00:00",
+          "all_day": false,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Klasse": "9C",
+            "Ort": "Aula"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev4",
+          "title": "Deutsch-Arbeit",
+          "category": "1",
+          "category_name": "Klausuren",
+          "category_color": "#dc2626",
+          "description": "<p>Schriftlicher Gedichtvergleich.</p><p>Bitte Schreibmaterial und das Wörterbuch mitbringen.</p>",
+          "start": "2026-11-06T09:40:00",
+          "end": "2026-11-06T11:10:00",
+          "all_day": false,
+          "new": "1",
+          "editable": false,
+          "properties": {
+            "Fach": "Deutsch 9c",
+            "Lehrkraft": "CN",
+            "Raum": "B204",
+            "Dauer": "90 Minuten"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev5",
+          "title": "Mathematik-Arbeit",
+          "category": "1",
+          "category_name": "Klausuren",
+          "category_color": "#dc2626",
+          "description": "<p>Leistungskontrolle zu linearen Funktionen und Graphen.</p>",
+          "start": "2026-11-08T07:50:00",
+          "end": "2026-11-08T09:20:00",
+          "all_day": false,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Fach": "Mathematik 9c",
+            "Lehrkraft": "MV",
+            "Raum": "B204",
+            "Dauer": "60 Minuten"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev6",
+          "title": "Biologie-Protokoll",
+          "category": "4",
+          "category_name": "Abgaben",
+          "category_color": "#d97706",
+          "description": "<p>Abgabe des Protokolls zum See-Experiment.</p><p>Beobachtung, Erklärung und Fazit bitte getrennt ausweisen.</p>",
+          "start": "2026-10-31T23:59:00",
+          "end": "2026-10-31T23:59:00",
+          "all_day": true,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Fach": "Biologie 9c",
+            "Lehrkraft": "FB",
+            "Abgabeweg": "Kursordner"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev7",
+          "title": "SV-Treffen",
+          "category": "5",
+          "category_name": "Klassen & Schule",
+          "category_color": "#7c3aed",
+          "description": "<p>Treffen der Schülervertretung zur Planung der nächsten Aktion.</p>",
+          "start": "2026-10-31T13:30:00",
+          "end": "2026-10-31T15:00:00",
+          "all_day": false,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Ort": "Raum 215"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev8",
+          "title": "Herbstferien",
+          "category": "3",
+          "category_name": "Ferien & freie Tage",
+          "category_color": "#059669",
+          "description": "<p>Unterrichtsfreie Zeit in Hessen.</p>",
+          "start": "2026-11-28",
+          "end": "2026-12-11",
+          "all_day": true,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Bundesland": "Hessen"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev9",
+          "title": "Englisch-Präsentation",
+          "category": "4",
+          "category_name": "Abgaben",
+          "category_color": "#d97706",
+          "description": "<p>Kurze persuasive speech im Englischkurs.</p><p>Bitte den Speech-planner und eure Stichpunkte mitbringen.</p>",
+          "start": "2026-11-04T23:59:00",
+          "end": "2026-11-04T23:59:00",
+          "all_day": true,
+          "new": "1",
+          "editable": false,
+          "properties": {
+            "Fach": "Englisch 9c",
+            "Lehrkraft": "AO",
+            "Abgabeweg": "Kursordner"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev10",
+          "title": "Elternabend 9C",
+          "category": "5",
+          "category_name": "Klassen & Schule",
+          "category_color": "#7c3aed",
+          "description": "<p>Elternabend mit Informationen zum zweiten Halbjahr.</p>",
+          "start": "2026-11-05T18:30:00",
+          "end": "2026-11-05T20:00:00",
+          "all_day": false,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Klasse": "9C",
+            "Ort": "Raum B204"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev11",
+          "title": "Projektwoche",
+          "category": "2",
+          "category_name": "Sonstige Termine",
+          "category_color": "#2563eb",
+          "description": "<p>Gemeinsame Projektwoche der Jahrgänge 9 und 10.</p><p>Der genaue Workshop-Plan folgt im Dateispeicher.</p>",
+          "start": "2026-11-13",
+          "end": "2026-11-15",
+          "all_day": true,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Jahrgang": "9–10"
+          },
+          "raw": {}
+        },
+        {
+          "id": "ev12",
+          "title": "Informatik-Projektabgabe",
+          "category": "4",
+          "category_name": "Abgaben",
+          "category_color": "#d97706",
+          "description": "<p>Abgabe der barrierefreien Website und der kurzen Dokumentation.</p>",
+          "start": "2026-11-15T23:59:00",
+          "end": "2026-11-15T23:59:00",
+          "all_day": true,
+          "new": "0",
+          "editable": false,
+          "properties": {
+            "Fach": "Informatik 9c",
+            "Lehrkraft": "LR",
+            "Abgabeweg": "Kursordner"
+          },
+          "raw": {}
+        }
+      ],
+      "count": 12,
+      "categories": [
+        {
+          "id": 1,
+          "name": "Klausuren",
+          "color": "#dc2626",
+          "logo": "fa-regular fa-file-lines"
+        },
+        {
+          "id": 2,
+          "name": "Sonstige Termine",
+          "color": "#2563eb",
+          "logo": "fa-regular fa-calendar"
+        },
+        {
+          "id": 3,
+          "name": "Ferien & freie Tage",
+          "color": "#059669",
+          "logo": "fa-regular fa-sun"
+        },
+        {
+          "id": 4,
+          "name": "Abgaben",
+          "color": "#d97706",
+          "logo": "fa-regular fa-clock"
+        },
+        {
+          "id": 5,
+          "name": "Klassen & Schule",
+          "color": "#7c3aed",
+          "logo": "fa-regular fa-users"
+        },
+        {
+          "id": 6,
+          "name": "Schulwochen",
+          "color": "#0f766e",
+          "logo": "fa-regular fa-calendar"
+        }
+      ],
+      "groups": [
+        {
+          "id": 1,
+          "name": "9C"
+        }
+      ],
+      "filters": {
+        "year": 2026,
+        "start": "year",
+        "category": "",
+        "search": "",
+        "target": "",
+        "view_id": ""
+      },
+      "raw": {}
+    },
+    "/settings/timetable/lessons": {
+      "success": true,
+      "lessons": []
+    },
+    "/stundenplan/view": {
+      "success": true,
+      "days": [
+        {
+          "date": "2026-10-27",
+          "name": "Dienstag",
+          "lessons": [
+            {
+              "id": "di-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Biologie",
+              "teacher": "FB",
+              "room": "C106",
+              "course_id": "b4",
+              "course_name": "Biologie 9c",
+              "homework": [
+                {
+                  "entry_id": "e4",
+                  "text": "Versuchsprotokoll um die Auswertung ergänzen",
+                  "done": false,
+                  "assigned_date": "2026-10-26"
+                }
+              ]
+            },
+            {
+              "id": "di-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Geschichte",
+              "teacher": "MS",
+              "room": "B204",
+              "course_id": "b5",
+              "course_name": "Geschichte 9c",
+              "homework": [
+                {
+                  "entry_id": "e5",
+                  "text": "Quelle zur Fabrikarbeit mit drei Stichpunkten auswerten",
+                  "done": true,
+                  "assigned_date": "2026-10-23"
+                }
+              ]
+            },
+            {
+              "id": "di-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Mathematik",
+              "teacher": "MV",
+              "room": "B105",
+              "course_id": "b2",
+              "course_name": "Mathematik 9c",
+              "original_lesson": {
+                "subject": "Mathematik",
+                "teacher": "MV",
+                "room": "B204"
+              },
+              "substitution": {
+                "source": "Schulportal",
+                "date": "2026-10-27",
+                "periods": [],
+                "classes": "9C",
+                "subject": "Mathematik",
+                "oldSubject": "Mathematik",
+                "teacher": "MV",
+                "oldTeacher": "MV",
+                "room": "B105",
+                "kind": "Raumwechsel",
+                "info": "",
+                "group": "",
+                "cancelled": false
+              }
+            }
+          ]
+        },
+        {
+          "date": "2026-10-28",
+          "name": "Mittwoch",
+          "lessons": [
+            {
+              "id": "mi-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Englisch",
+              "teacher": "AO",
+              "room": "B204",
+              "course_id": "b3",
+              "course_name": "Englisch 9c",
+              "homework": [
+                {
+                  "entry_id": "e3",
+                  "text": "Write an opening paragraph for your speech",
+                  "done": true,
+                  "assigned_date": "2026-10-24"
+                }
+              ]
+            },
+            {
+              "id": "mi-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Deutsch",
+              "teacher": "CN",
+              "room": "B204",
+              "course_id": "b1",
+              "course_name": "Deutsch 9c"
+            },
+            {
+              "id": "mi-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Biologie",
+              "teacher": "FB",
+              "room": "C106",
+              "course_id": "b4",
+              "course_name": "Biologie 9c"
+            },
+            {
+              "id": "mi-4",
+              "period": "7–8",
+              "start_time": "13:30",
+              "end_time": "15:00",
+              "subject": "Sport",
+              "teacher": "SW",
+              "room": "TH1",
+              "course_name": "Sport 9c"
+            }
+          ]
+        },
+        {
+          "date": "2026-10-29",
+          "name": "Donnerstag",
+          "lessons": [
+            {
+              "id": "do-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Geschichte",
+              "teacher": "MS",
+              "room": "B204",
+              "course_id": "b5",
+              "course_name": "Geschichte 9c"
+            },
+            {
+              "id": "do-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Informatik",
+              "teacher": "LR",
+              "room": "C101",
+              "course_id": "b6",
+              "course_name": "Informatik 9c",
+              "info": "Projektarbeit"
+            },
+            {
+              "id": "do-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Kunst",
+              "teacher": "KH",
+              "room": "K3",
+              "course_name": "Kunst 9c"
+            }
+          ]
+        },
+        {
+          "date": "2026-10-30",
+          "name": "Freitag",
+          "lessons": [
+            {
+              "id": "fr-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Mathematik",
+              "teacher": "MV",
+              "room": "B204",
+              "course_id": "b2",
+              "course_name": "Mathematik 9c"
+            },
+            {
+              "id": "fr-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Deutsch",
+              "teacher": "CN",
+              "room": "B204",
+              "course_id": "b1",
+              "course_name": "Deutsch 9c"
+            },
+            {
+              "id": "fr-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Biologie",
+              "teacher": "FB",
+              "room": "C106",
+              "course_id": "b4",
+              "course_name": "Biologie 9c"
+            }
+          ]
+        },
+        {
+          "date": "2026-11-02",
+          "name": "Montag",
+          "lessons": [
+            {
+              "id": "mo-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Deutsch",
+              "teacher": "CN",
+              "room": "B204",
+              "course_id": "b1",
+              "course_name": "Deutsch 9c",
+              "homework": [
+                {
+                  "entry_id": "e1",
+                  "text": "Vergleichstabelle zu den beiden Gedichten vervollständigen",
+                  "done": false,
+                  "assigned_date": "2026-10-26"
+                }
+              ]
+            },
+            {
+              "id": "mo-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Mathematik",
+              "teacher": "MV",
+              "room": "B204",
+              "course_id": "b2",
+              "course_name": "Mathematik 9c",
+              "homework": [
+                {
+                  "entry_id": "e2",
+                  "text": "Arbeitsblatt „Funktionsgraphen“: Nr. 4–7",
+                  "done": false,
+                  "assigned_date": "2026-10-25"
+                }
+              ]
+            },
+            {
+              "id": "mo-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Englisch",
+              "teacher": "AO",
+              "room": "B204",
+              "course_id": "b3",
+              "course_name": "Englisch 9c"
+            },
+            {
+              "id": "mo-4",
+              "period": "7–8",
+              "start_time": "13:30",
+              "end_time": "15:00",
+              "subject": "Informatik",
+              "teacher": "LR",
+              "room": "C101",
+              "course_id": "b6",
+              "course_name": "Informatik 9c",
+              "info": "Projektarbeit"
+            }
+          ]
+        }
+      ],
+      "week_start": "2026-10-26",
+      "active_week": "A",
+      "has_alternating_weeks": false,
+      "exams": [
+        {
+          "id": "exam-1",
+          "course_id": "group-1",
+          "course_name": "Deutsch 9c",
+          "course_sys_id": "9C-DEU",
+          "date": "2026-10-27",
+          "type": "Arbeit",
+          "duration_label": "90 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-2",
+          "course_id": "group-2",
+          "course_name": "Mathematik 9c",
+          "course_sys_id": "9C-MAT",
+          "date": "2026-11-08",
+          "type": "Arbeit",
+          "duration_label": "60 Min.",
+          "hours": "1.–2. Stunde"
+        },
+        {
+          "id": "exam-3",
+          "course_id": "group-3",
+          "course_name": "Englisch 9c",
+          "course_sys_id": "9C-ENG",
+          "date": "2026-11-20",
+          "type": "Arbeit",
+          "duration_label": "90 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-4",
+          "course_id": "group-4",
+          "course_name": "Biologie 9c",
+          "course_sys_id": "9C-BIO",
+          "date": "2026-11-30",
+          "type": "Lernkontrolle",
+          "duration_label": "45 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-5",
+          "course_id": "group-5",
+          "course_name": "Geschichte 9c",
+          "course_sys_id": "9C-GES",
+          "date": "2026-12-08",
+          "type": "Arbeit",
+          "duration_label": "60 Min.",
+          "hours": "1.–2. Stunde"
+        },
+        {
+          "id": "exam-6",
+          "course_id": "group-6",
+          "course_name": "Informatik 9c",
+          "course_sys_id": "9C-INF",
+          "date": "2026-11-15",
+          "type": "Projektabgabe",
+          "duration_label": "—",
+          "hours": "Abgabe bis 23:59 Uhr"
+        }
+      ],
+      "substitution_sources": [
+        {
+          "name": "Schulportal",
+          "error": false,
+          "updated": "2026-10-27T08:20:43.941Z"
+        },
+        {
+          "name": "DSB",
+          "error": false,
+          "updated": "2026-10-27T08:20:43.941Z"
+        }
+      ]
+    },
+    "/stundenplan": {
+      "success": true,
+      "week_start": "2026-10-26",
+      "week_end": "2026-10-30",
+      "active_week": "A",
+      "days": [
+        {
+          "date": "2026-10-26",
+          "name": "Montag",
+          "lessons": [
+            {
+              "id": "mo-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Deutsch",
+              "teacher": "CN",
+              "room": "B204",
+              "course_id": "b1",
+              "course_name": "Deutsch 9c",
+              "homework": [
+                {
+                  "entry_id": "e1",
+                  "text": "Vergleichstabelle zu den beiden Gedichten vervollständigen",
+                  "done": false,
+                  "assigned_date": "2026-10-26"
+                }
+              ]
+            },
+            {
+              "id": "mo-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Mathematik",
+              "teacher": "MV",
+              "room": "B204",
+              "course_id": "b2",
+              "course_name": "Mathematik 9c",
+              "homework": [
+                {
+                  "entry_id": "e2",
+                  "text": "Arbeitsblatt „Funktionsgraphen“: Nr. 4–7",
+                  "done": false,
+                  "assigned_date": "2026-10-25"
+                }
+              ]
+            },
+            {
+              "id": "mo-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Englisch",
+              "teacher": "AO",
+              "room": "B204",
+              "course_id": "b3",
+              "course_name": "Englisch 9c"
+            },
+            {
+              "id": "mo-4",
+              "period": "7–8",
+              "start_time": "13:30",
+              "end_time": "15:00",
+              "subject": "Informatik",
+              "teacher": "LR",
+              "room": "C101",
+              "course_id": "b6",
+              "course_name": "Informatik 9c",
+              "info": "Projektarbeit"
+            }
+          ]
+        },
+        {
+          "date": "2026-10-27",
+          "name": "Dienstag",
+          "lessons": [
+            {
+              "id": "di-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Biologie",
+              "teacher": "FB",
+              "room": "C106",
+              "course_id": "b4",
+              "course_name": "Biologie 9c",
+              "homework": [
+                {
+                  "entry_id": "e4",
+                  "text": "Versuchsprotokoll um die Auswertung ergänzen",
+                  "done": false,
+                  "assigned_date": "2026-10-26"
+                }
+              ]
+            },
+            {
+              "id": "di-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Geschichte",
+              "teacher": "MS",
+              "room": "B204",
+              "course_id": "b5",
+              "course_name": "Geschichte 9c",
+              "homework": [
+                {
+                  "entry_id": "e5",
+                  "text": "Quelle zur Fabrikarbeit mit drei Stichpunkten auswerten",
+                  "done": true,
+                  "assigned_date": "2026-10-23"
+                }
+              ]
+            },
+            {
+              "id": "di-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Mathematik",
+              "teacher": "MV",
+              "room": "B204",
+              "course_id": "b2",
+              "course_name": "Mathematik 9c"
+            }
+          ]
+        },
+        {
+          "date": "2026-10-28",
+          "name": "Mittwoch",
+          "lessons": [
+            {
+              "id": "mi-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Englisch",
+              "teacher": "AO",
+              "room": "B204",
+              "course_id": "b3",
+              "course_name": "Englisch 9c",
+              "homework": [
+                {
+                  "entry_id": "e3",
+                  "text": "Write an opening paragraph for your speech",
+                  "done": true,
+                  "assigned_date": "2026-10-24"
+                }
+              ]
+            },
+            {
+              "id": "mi-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Deutsch",
+              "teacher": "CN",
+              "room": "B204",
+              "course_id": "b1",
+              "course_name": "Deutsch 9c"
+            },
+            {
+              "id": "mi-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Biologie",
+              "teacher": "FB",
+              "room": "C106",
+              "course_id": "b4",
+              "course_name": "Biologie 9c"
+            },
+            {
+              "id": "mi-4",
+              "period": "7–8",
+              "start_time": "13:30",
+              "end_time": "15:00",
+              "subject": "Sport",
+              "teacher": "SW",
+              "room": "TH1",
+              "course_name": "Sport 9c"
+            }
+          ]
+        },
+        {
+          "date": "2026-10-29",
+          "name": "Donnerstag",
+          "lessons": [
+            {
+              "id": "do-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Geschichte",
+              "teacher": "MS",
+              "room": "B204",
+              "course_id": "b5",
+              "course_name": "Geschichte 9c"
+            },
+            {
+              "id": "do-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Informatik",
+              "teacher": "LR",
+              "room": "C101",
+              "course_id": "b6",
+              "course_name": "Informatik 9c",
+              "info": "Projektarbeit"
+            },
+            {
+              "id": "do-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Kunst",
+              "teacher": "KH",
+              "room": "K3",
+              "course_name": "Kunst 9c"
+            }
+          ]
+        },
+        {
+          "date": "2026-10-30",
+          "name": "Freitag",
+          "lessons": [
+            {
+              "id": "fr-1",
+              "period": "1–2",
+              "start_time": "07:50",
+              "end_time": "09:20",
+              "subject": "Mathematik",
+              "teacher": "MV",
+              "room": "B204",
+              "course_id": "b2",
+              "course_name": "Mathematik 9c"
+            },
+            {
+              "id": "fr-2",
+              "period": "3–4",
+              "start_time": "09:40",
+              "end_time": "11:10",
+              "subject": "Deutsch",
+              "teacher": "CN",
+              "room": "B204",
+              "course_id": "b1",
+              "course_name": "Deutsch 9c"
+            },
+            {
+              "id": "fr-3",
+              "period": "5–6",
+              "start_time": "11:30",
+              "end_time": "13:00",
+              "subject": "Biologie",
+              "teacher": "FB",
+              "room": "C106",
+              "course_id": "b4",
+              "course_name": "Biologie 9c"
+            }
+          ]
+        }
+      ],
+      "exams": [
+        {
+          "id": "exam-1",
+          "course_id": "group-1",
+          "course_name": "Deutsch 9c",
+          "course_sys_id": "9C-DEU",
+          "date": "2026-10-27",
+          "type": "Arbeit",
+          "duration_label": "90 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-2",
+          "course_id": "group-2",
+          "course_name": "Mathematik 9c",
+          "course_sys_id": "9C-MAT",
+          "date": "2026-11-08",
+          "type": "Arbeit",
+          "duration_label": "60 Min.",
+          "hours": "1.–2. Stunde"
+        },
+        {
+          "id": "exam-3",
+          "course_id": "group-3",
+          "course_name": "Englisch 9c",
+          "course_sys_id": "9C-ENG",
+          "date": "2026-11-20",
+          "type": "Arbeit",
+          "duration_label": "90 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-4",
+          "course_id": "group-4",
+          "course_name": "Biologie 9c",
+          "course_sys_id": "9C-BIO",
+          "date": "2026-11-30",
+          "type": "Lernkontrolle",
+          "duration_label": "45 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-5",
+          "course_id": "group-5",
+          "course_name": "Geschichte 9c",
+          "course_sys_id": "9C-GES",
+          "date": "2026-12-08",
+          "type": "Arbeit",
+          "duration_label": "60 Min.",
+          "hours": "1.–2. Stunde"
+        },
+        {
+          "id": "exam-6",
+          "course_id": "group-6",
+          "course_name": "Informatik 9c",
+          "course_sys_id": "9C-INF",
+          "date": "2026-11-15",
+          "type": "Projektabgabe",
+          "duration_label": "—",
+          "hours": "Abgabe bis 23:59 Uhr"
+        }
+      ],
+      "custom_lessons": []
+    },
+    "/dateispeicher": {
+      "success": true,
+      "folder_id": 0,
+      "folders": [
+        {
+          "id": 1,
+          "name": "Unterrichtsmaterialien",
+          "subfolders": 0,
+          "description": "Arbeitsblätter und Zusammenfassungen"
+        },
+        {
+          "id": 2,
+          "name": "Projekte",
+          "subfolders": 0,
+          "description": "Gemeinsame Projektdateien"
+        },
+        {
+          "id": 3,
+          "name": "Abgaben",
+          "subfolders": 0,
+          "description": "Einreichungen für Unterricht und Projekte"
+        },
+        {
+          "id": 4,
+          "name": "Schulorganisation",
+          "subfolders": 0,
+          "description": "Wichtige Informationen rund um die Schule"
+        }
+      ],
+      "files": [
+        {
+          "id": 101,
+          "name": "Schuljahreskalender.pdf",
+          "changed": "28.08.2026",
+          "size": "248 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=101"
+        },
+        {
+          "id": 105,
+          "name": "Raumplan_9C.pdf",
+          "changed": "01.09.2026",
+          "size": "174 KB",
+          "note": "Stand: September 2026",
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=105"
+        },
+        {
+          "id": 106,
+          "name": "Regeln_fuer_Projektarbeit.pdf",
+          "changed": "25.08.2026",
+          "size": "312 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=106"
+        }
+      ],
+      "file_count": 3,
+      "folder_count": 4
+    },
+    "/dateispeicher/search": {
+      "success": true,
+      "query": "",
+      "source": "server",
+      "results": {
+        "files": [
+          {
+            "id": 101,
+            "name": "Schuljahreskalender.pdf",
+            "changed": "28.08.2026",
+            "size": "248 KB",
+            "note": null,
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=101"
+          },
+          {
+            "id": 105,
+            "name": "Raumplan_9C.pdf",
+            "changed": "01.09.2026",
+            "size": "174 KB",
+            "note": "Stand: September 2026",
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=105"
+          },
+          {
+            "id": 106,
+            "name": "Regeln_fuer_Projektarbeit.pdf",
+            "changed": "25.08.2026",
+            "size": "312 KB",
+            "note": null,
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=106"
+          },
+          {
+            "id": 102,
+            "name": "Mathematik_Formelsammlung.pdf",
+            "changed": "26.08.2026",
+            "size": "1,2 MB",
+            "note": "Für die Oberstufe",
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=102"
+          },
+          {
+            "id": 103,
+            "name": "Deutsch_Lektürehilfe.pdf",
+            "changed": "20.08.2026",
+            "size": "860 KB",
+            "note": null,
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=103"
+          },
+          {
+            "id": 107,
+            "name": "Biologie_See-Experiment.pdf",
+            "changed": "19.08.2026",
+            "size": "1,1 MB",
+            "note": "Versuchsaufbau und Messwerte",
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=107"
+          },
+          {
+            "id": 108,
+            "name": "Englisch_Speech-Planner.pdf",
+            "changed": "15.08.2026",
+            "size": "426 KB",
+            "note": null,
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=108"
+          },
+          {
+            "id": 104,
+            "name": "Projektplanung_Nachhaltigkeit.docx",
+            "changed": "18.08.2026",
+            "size": "92 KB",
+            "note": null,
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=104"
+          },
+          {
+            "id": 109,
+            "name": "Präsentation_Entwurf.pptx",
+            "changed": "17.08.2026",
+            "size": "2,4 MB",
+            "note": "Gemeinsamer Entwurf der Gruppe",
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=109"
+          },
+          {
+            "id": 110,
+            "name": "Quellen_und_Notizen.odt",
+            "changed": "14.08.2026",
+            "size": "68 KB",
+            "note": null,
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=110"
+          },
+          {
+            "id": 111,
+            "name": "Deutsch_Gedichtvergleich.docx",
+            "changed": "02.09.2026",
+            "size": "84 KB",
+            "note": "Noch nicht abgegeben",
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=111"
+          },
+          {
+            "id": 112,
+            "name": "Informatik_Checkliste.html",
+            "changed": "29.08.2026",
+            "size": "12 KB",
+            "note": "Projektdatei",
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=112"
+          },
+          {
+            "id": 113,
+            "name": "Schulordnung_2026.pdf",
+            "changed": "22.08.2026",
+            "size": "518 KB",
+            "note": null,
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=113"
+          },
+          {
+            "id": 114,
+            "name": "Ansprechpartner_und_Sprechzeiten.pdf",
+            "changed": "21.08.2026",
+            "size": "205 KB",
+            "note": null,
+            "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=114"
+          }
+        ],
+        "folders": [
+          {
+            "id": 1,
+            "name": "Unterrichtsmaterialien",
+            "subfolders": 0,
+            "description": "Arbeitsblätter und Zusammenfassungen"
+          },
+          {
+            "id": 2,
+            "name": "Projekte",
+            "subfolders": 0,
+            "description": "Gemeinsame Projektdateien"
+          },
+          {
+            "id": 3,
+            "name": "Abgaben",
+            "subfolders": 0,
+            "description": "Einreichungen für Unterricht und Projekte"
+          },
+          {
+            "id": 4,
+            "name": "Schulorganisation",
+            "subfolders": 0,
+            "description": "Wichtige Informationen rund um die Schule"
+          }
+        ]
+      }
+    },
+    "/vertretungsplan": {
+      "success": true,
+      "source": "schulportal",
+      "available": true,
+      "mode": "ajax",
+      "last_updated": "2026-10-27T08:20:43.942Z",
+      "days": [
+        {
+          "date": "2026-10-29",
+          "substitutions": [
+            {
+              "tag": "2026-10-29",
+              "tag_en": "2026-10-29",
+              "stunde": "3 - 4",
+              "fach": "Mathematik",
+              "klasse": "9C",
+              "lehrer": "MV",
+              "vertreter": "---",
+              "raum": "B204",
+              "art": "Raumänderung",
+              "hinweis": "Der Unterricht findet in Raum B204 statt."
+            },
+            {
+              "tag": "2026-10-29",
+              "tag_en": "2026-10-29",
+              "stunde": "5 - 6",
+              "fach": "Biologie",
+              "klasse": "9C",
+              "lehrer": "FB",
+              "vertreter": null,
+              "raum": "C106",
+              "art": "Entfall",
+              "hinweis": "Der Unterricht entfällt."
+            }
+          ],
+          "infos": [
+            {
+              "header": "Hinweis",
+              "values": [
+                "Bitte Änderungen bis zum Unterrichtsbeginn beachten."
+              ]
+            }
+          ]
+        },
+        {
+          "date": "2026-10-30",
+          "substitutions": [
+            {
+              "tag": "2026-10-30",
+              "tag_en": "2026-10-30",
+              "stunde": "1 - 2",
+              "fach": "Englisch",
+              "klasse": "9C",
+              "lehrer": "AO",
+              "vertreter": "Frau Winter",
+              "raum": "B204",
+              "art": "Vertretung"
+            },
+            {
+              "tag": "2026-10-30",
+              "tag_en": "2026-10-30",
+              "stunde": "5 - 6",
+              "fach": "Kunst",
+              "klasse": "9C",
+              "lehrer": "KH",
+              "vertreter": "---",
+              "raum": "K3",
+              "art": "Raumänderung",
+              "hinweis": "Bitte direkt in den Kunstraum gehen."
+            }
+          ]
+        },
+        {
+          "date": "2026-11-02",
+          "substitutions": [
+            {
+              "tag": "2026-11-02",
+              "tag_en": "2026-11-02",
+              "stunde": "3 - 4",
+              "fach": "Geschichte",
+              "klasse": "9C",
+              "lehrer": "MS",
+              "vertreter": "Herr Yilmaz",
+              "raum": "B204",
+              "art": "Vertretung",
+              "hinweis": "Arbeitsauftrag liegt im Kursordner."
+            }
+          ]
+        }
+      ],
+      "count": 5,
+      "raw_html": null
+    },
+    "/lerngruppen": {
+      "success": true,
+      "groups": [
+        {
+          "id": "group-1",
+          "semester": "1. Halbjahr 2026/2027",
+          "course_name": "Deutsch 9c",
+          "course_sys_id": "9C-DEU",
+          "teachers": [
+            {
+              "krz": "CN",
+              "first_name": "Clara",
+              "last_name": "Neumann",
+              "email": null,
+              "recipient_id": "l-1001"
+            }
+          ],
+          "exams": [
+            {
+              "id": "exam-1",
+              "course_id": "group-1",
+              "course_name": "Deutsch 9c",
+              "course_sys_id": "9C-DEU",
+              "date": "2026-10-27",
+              "type": "Arbeit",
+              "duration_label": "90 Min.",
+              "hours": "3.–4. Stunde"
+            }
+          ]
+        },
+        {
+          "id": "group-2",
+          "semester": "1. Halbjahr 2026/2027",
+          "course_name": "Mathematik 9c",
+          "course_sys_id": "9C-MAT",
+          "teachers": [
+            {
+              "krz": "MV",
+              "first_name": "Martin",
+              "last_name": "Vogel",
+              "email": null,
+              "recipient_id": "l-1002"
+            }
+          ],
+          "exams": [
+            {
+              "id": "exam-2",
+              "course_id": "group-2",
+              "course_name": "Mathematik 9c",
+              "course_sys_id": "9C-MAT",
+              "date": "2026-11-08",
+              "type": "Arbeit",
+              "duration_label": "60 Min.",
+              "hours": "1.–2. Stunde"
+            }
+          ]
+        },
+        {
+          "id": "group-3",
+          "semester": "1. Halbjahr 2026/2027",
+          "course_name": "Englisch 9c",
+          "course_sys_id": "9C-ENG",
+          "teachers": [
+            {
+              "krz": "AO",
+              "first_name": "Aylin",
+              "last_name": "Özdemir",
+              "email": null,
+              "recipient_id": "l-1003"
+            }
+          ],
+          "exams": [
+            {
+              "id": "exam-3",
+              "course_id": "group-3",
+              "course_name": "Englisch 9c",
+              "course_sys_id": "9C-ENG",
+              "date": "2026-11-20",
+              "type": "Arbeit",
+              "duration_label": "90 Min.",
+              "hours": "3.–4. Stunde"
+            }
+          ]
+        },
+        {
+          "id": "group-4",
+          "semester": "1. Halbjahr 2026/2027",
+          "course_name": "Biologie 9c",
+          "course_sys_id": "9C-BIO",
+          "teachers": [
+            {
+              "krz": "FB",
+              "first_name": "Felix",
+              "last_name": "Brandt",
+              "email": null,
+              "recipient_id": "l-1004"
+            }
+          ],
+          "exams": [
+            {
+              "id": "exam-4",
+              "course_id": "group-4",
+              "course_name": "Biologie 9c",
+              "course_sys_id": "9C-BIO",
+              "date": "2026-11-30",
+              "type": "Lernkontrolle",
+              "duration_label": "45 Min.",
+              "hours": "3.–4. Stunde"
+            }
+          ]
+        },
+        {
+          "id": "group-5",
+          "semester": "1. Halbjahr 2026/2027",
+          "course_name": "Geschichte 9c",
+          "course_sys_id": "9C-GES",
+          "teachers": [
+            {
+              "krz": "MS",
+              "first_name": "Marie",
+              "last_name": "Seidel",
+              "email": null,
+              "recipient_id": "l-1005"
+            }
+          ],
+          "exams": [
+            {
+              "id": "exam-5",
+              "course_id": "group-5",
+              "course_name": "Geschichte 9c",
+              "course_sys_id": "9C-GES",
+              "date": "2026-12-08",
+              "type": "Arbeit",
+              "duration_label": "60 Min.",
+              "hours": "1.–2. Stunde"
+            }
+          ]
+        },
+        {
+          "id": "group-6",
+          "semester": "1. Halbjahr 2026/2027",
+          "course_name": "Informatik 9c",
+          "course_sys_id": "9C-INF",
+          "teachers": [
+            {
+              "krz": "LR",
+              "first_name": "Leonie",
+              "last_name": "Roth",
+              "email": null,
+              "recipient_id": "l-1006"
+            }
+          ],
+          "exams": [
+            {
+              "id": "exam-6",
+              "course_id": "group-6",
+              "course_name": "Informatik 9c",
+              "course_sys_id": "9C-INF",
+              "date": "2026-11-15",
+              "type": "Projektabgabe",
+              "duration_label": "—",
+              "hours": "Abgabe bis 23:59 Uhr"
+            }
+          ]
+        }
+      ],
+      "group_count": 6,
+      "exams": [
+        {
+          "id": "exam-1",
+          "course_id": "group-1",
+          "course_name": "Deutsch 9c",
+          "course_sys_id": "9C-DEU",
+          "date": "2026-10-27",
+          "type": "Arbeit",
+          "duration_label": "90 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-2",
+          "course_id": "group-2",
+          "course_name": "Mathematik 9c",
+          "course_sys_id": "9C-MAT",
+          "date": "2026-11-08",
+          "type": "Arbeit",
+          "duration_label": "60 Min.",
+          "hours": "1.–2. Stunde"
+        },
+        {
+          "id": "exam-3",
+          "course_id": "group-3",
+          "course_name": "Englisch 9c",
+          "course_sys_id": "9C-ENG",
+          "date": "2026-11-20",
+          "type": "Arbeit",
+          "duration_label": "90 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-4",
+          "course_id": "group-4",
+          "course_name": "Biologie 9c",
+          "course_sys_id": "9C-BIO",
+          "date": "2026-11-30",
+          "type": "Lernkontrolle",
+          "duration_label": "45 Min.",
+          "hours": "3.–4. Stunde"
+        },
+        {
+          "id": "exam-5",
+          "course_id": "group-5",
+          "course_name": "Geschichte 9c",
+          "course_sys_id": "9C-GES",
+          "date": "2026-12-08",
+          "type": "Arbeit",
+          "duration_label": "60 Min.",
+          "hours": "1.–2. Stunde"
+        },
+        {
+          "id": "exam-6",
+          "course_id": "group-6",
+          "course_name": "Informatik 9c",
+          "course_sys_id": "9C-INF",
+          "date": "2026-11-15",
+          "type": "Projektabgabe",
+          "duration_label": "—",
+          "hours": "Abgabe bis 23:59 Uhr"
+        }
+      ],
+      "exam_count": 6
+    },
+    "/dsb/school-plan": {
+      "success": true,
+      "tables": [
+        {
+          "caption": "Klasse 9C — Vertretungsplan",
+          "headers": [
+            "Stunde",
+            "Fach",
+            "Lehrkraft",
+            "Vertretung",
+            "Raum",
+            "Info"
+          ],
+          "rows": [
+            {
+              "Stunde": "1–2",
+              "Fach": "Mathematik",
+              "Lehrkraft": "MV",
+              "Vertretung": "---",
+              "Raum": "B204",
+              "Info": ""
+            },
+            {
+              "Stunde": "3–4",
+              "Fach": "Englisch",
+              "Lehrkraft": "AO",
+              "Vertretung": "Frau Winter",
+              "Raum": "B204",
+              "Info": "Vertretung"
+            },
+            {
+              "Stunde": "5–6",
+              "Fach": "Biologie",
+              "Lehrkraft": "FB",
+              "Vertretung": "---",
+              "Raum": "C106",
+              "Info": "Entfall"
+            },
+            {
+              "Stunde": "7–8",
+              "Fach": "Informatik",
+              "Lehrkraft": "LR",
+              "Vertretung": "---",
+              "Raum": "C101",
+              "Info": "Projektarbeit"
+            },
+            {
+              "Stunde": "9–10",
+              "Fach": "Kunst",
+              "Lehrkraft": "KH",
+              "Vertretung": "---",
+              "Raum": "K3",
+              "Info": "Raumänderung"
+            },
+            {
+              "Stunde": "11–12",
+              "Fach": "Sport",
+              "Lehrkraft": "SW",
+              "Vertretung": "---",
+              "Raum": "TH1",
+              "Info": "Bitte Sportsachen mitbringen"
+            }
+          ],
+          "date": "2026-10-27"
+        }
+      ],
+      "last_updated": "2026-10-27T08:20:43.941Z"
+    },
+    "/nachrichten/uq-1": {
+      "success": true,
+      "conversation_id": "uq-1",
+      "messages": [
+        {
+          "id": "c1-1",
+          "sender": "Frau Neumann",
+          "content": "Hallo zusammen,\n\nbitte bringt für Montag euren Vergleich der beiden Gedichte mit. Markiert jeweils ein sprachliches Bild und erklärt kurz seine Wirkung.\n\nViele Grüße\nFrau Neumann",
+          "date": "2026-10-27T00:20:43.941Z"
+        },
+        {
+          "id": "c1-2",
+          "sender": "Mia Keller",
+          "content": "Guten Morgen Frau Neumann,\n\nich ergänze noch die Stelle mit dem Perspektivwechsel. Dann bringe ich die Tabelle am Montag mit.\n\nViele Grüße\nMia",
+          "date": "2026-10-27T03:20:43.941Z"
+        }
+      ]
+    },
+    "/nachrichten/uq-2": {
+      "success": true,
+      "conversation_id": "uq-2",
+      "messages": [
+        {
+          "id": "c2-1",
+          "sender": "Herr Vogel",
+          "content": "Liebe 9C,\n\nzeichnet den Graphen der linearen Funktion aus dem Arbeitsblatt sauber in euer Heft und notiert den Rechenweg für den Schnittpunkt mit der y-Achse.\n\nViele Grüße\nHerr Vogel",
+          "date": "2026-10-26T08:20:43.941Z"
+        }
+      ]
+    },
+    "/nachrichten/uq-3": {
+      "success": true,
+      "conversation_id": "uq-3",
+      "messages": [
+        {
+          "id": "c3-1",
+          "sender": "Frau Özdemir",
+          "content": "Für die nächste Stunde: Ergänzt euer Protokoll zum See-Experiment um eine begründete Vermutung. Denkt an Beobachtung, Erklärung und ein kurzes Fazit.\n\nViele Grüße\nFrau Özdemir",
+          "date": "2026-10-25T08:20:43.941Z"
+        }
+      ]
+    },
+    "/nachrichten/uq-4": {
+      "success": true,
+      "conversation_id": "uq-4",
+      "messages": [
+        {
+          "id": "c4-1",
+          "sender": "Herr Brandt",
+          "content": "Liebe 9C,\n\nfür die Klassenfahrt brauchen wir die unterschriebene Einverständniserklärung bis Ende der Woche. Gebt sie direkt bei eurer Klassenleitung ab.\n\nViele Grüße\nHerr Brandt",
+          "date": "2026-10-24T08:20:43.941Z"
+        }
+      ]
+    },
+    "/nachrichten/uq-5": {
+      "success": true,
+      "conversation_id": "uq-5",
+      "messages": [
+        {
+          "id": "c5-1",
+          "sender": "Sekretariat",
+          "content": "Liebe Schülerinnen und Schüler,\n\ndie Sprechzeiten der Schulleitung und des Sekretariats für das neue Halbjahr hängen ab sofort im Eingangsbereich aus.\n\nViele Grüße\nDas Sekretariat",
+          "date": "2026-10-21T08:20:43.941Z"
+        }
+      ]
+    },
+    "/nachrichten/uq-6": {
+      "success": true,
+      "conversation_id": "uq-6",
+      "messages": [
+        {
+          "id": "c6-1",
+          "sender": "Frau Winter",
+          "content": "Hallo 9C,\n\nfür das Sportfest findet ihr den Laufzettel ab heute im Dateispeicher. Die Startzeiten eurer Gruppe besprecht ihr bitte am Freitag in der ersten Stunde.\n\nViele Grüße\nFrau Winter",
+          "date": "2026-10-19T08:20:43.941Z"
+        }
+      ]
+    },
+    "/nachrichten/uq-7": {
+      "success": true,
+      "conversation_id": "uq-7",
+      "messages": [
+        {
+          "id": "c7-1",
+          "sender": "Schulbibliothek",
+          "content": "Hallo Mia,\n\nim Leseraum sind neue Jugendromane und Sachbücher eingetroffen. Die Ausleihe ist montags und donnerstags in der großen Pause möglich.\n\nViele Grüße\nDas Bibliotheksteam",
+          "date": "2026-10-17T08:20:43.941Z"
+        }
+      ]
+    },
+    "/nachrichten/uq-8": {
+      "success": true,
+      "conversation_id": "uq-8",
+      "messages": [
+        {
+          "id": "c8-1",
+          "sender": "SV-Team",
+          "content": "Hallo zusammen,\n\nfür die Projektwoche sammeln wir noch Ideen. Wenn ihr einen Workshop oder eine Aktion anbieten möchtet, tragt euren Vorschlag bitte bis Freitag in die Liste ein.\n\nViele Grüße\nEuer SV-Team",
+          "date": "2026-10-15T08:20:43.941Z"
+        }
+      ]
+    },
+    "/meinunterricht/course/b1": {
+      "success": true,
+      "course_id": "b1",
+      "course_name": "Deutsch 9c",
+      "semester": "1. Halbjahr 2026/2027",
+      "teacher_short": "CN",
+      "teacher_full": "Clara Neumann",
+      "entries": [
+        {
+          "entry_id": "b1e1",
+          "date": "2026-10-26T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Gedichtvergleich: Stadt und Natur",
+          "homework": "Vergleichstabelle zu den beiden Gedichten vervollständigen",
+          "homework_done": false,
+          "attendance": "anwesend",
+          "files": [
+            {
+              "name": "Gedichtvergleich-Leitfaden.pdf",
+              "url": "/files/gedichtvergleich-leitfaden.pdf"
+            }
+          ],
+          "content": "Wir vergleichen Bildsprache, Rhythmus und die Perspektive der beiden Gedichte. Zum Schluss begründen wir, wie die Sprache die jeweilige Stimmung erzeugt."
+        },
+        {
+          "entry_id": "b1e2",
+          "date": "2026-10-22T08:20:43.941Z",
+          "hours": "1–2",
+          "thema": "Sprachliche Bilder und Wirkung",
+          "homework": "Drei Metaphern aus dem Text erklären",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "Wir unterscheiden Metapher, Vergleich und Personifikation und untersuchen ihre Wirkung im Gedicht."
+        },
+        {
+          "entry_id": "b1e3",
+          "date": "2026-10-18T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Eine Textdeutung strukturieren",
+          "homework": "",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "Wir haben eine Deutungshypothese formuliert und die passenden Belege im Text geordnet."
+        }
+      ],
+      "entry_count": 3,
+      "marks": [
+        {
+          "name": "Gedichtvergleich",
+          "date": "02.09.2026",
+          "mark": "2+",
+          "comment": "Klarer Vergleich und gut gewählte Textbelege."
+        },
+        {
+          "name": "Textdeutung",
+          "date": "21.08.2026",
+          "mark": "1−"
+        }
+      ],
+      "exams": [
+        "2026-11-06 Arbeit, 3., 4. Std."
+      ],
+      "attendance_summary": {
+        "anwesend": "18",
+        "entschuldigt": "1",
+        "unentschuldigt": "0"
+      }
+    },
+    "/meinunterricht/course/b2": {
+      "success": true,
+      "course_id": "b2",
+      "course_name": "Mathematik 9c",
+      "semester": "1. Halbjahr 2026/2027",
+      "teacher_short": "MV",
+      "teacher_full": "Martin Vogel",
+      "entries": [
+        {
+          "entry_id": "b2e1",
+          "date": "2026-10-25T08:20:43.941Z",
+          "hours": "1–2",
+          "thema": "Lineare Funktionen und Steigung",
+          "homework": "Arbeitsblatt „Funktionsgraphen“: Nr. 4–7",
+          "homework_done": false,
+          "attendance": "anwesend",
+          "files": [
+            {
+              "name": "Funktionsgraphen-Arbeitsblatt.pdf",
+              "url": "/files/funktionsgraphen-arbeitsblatt.pdf"
+            }
+          ],
+          "content": "Wir lesen Steigung und y-Achsenabschnitt aus verschiedenen Darstellungen ab und zeichnen den passenden Graphen."
+        },
+        {
+          "entry_id": "b2e2",
+          "date": "2026-10-21T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Tabellen, Graphen und Terme",
+          "homework": "Drei Darstellungen derselben Funktion zuordnen",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "Wir übertragen Werte aus einer Tabelle in ein Koordinatensystem und prüfen unsere Ergebnisse mit dem Funktionsterm."
+        },
+        {
+          "entry_id": "b2e3",
+          "date": "2026-10-17T08:20:43.941Z",
+          "hours": "1–2",
+          "thema": "Koordinatensysteme sicher nutzen",
+          "homework": "",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "Wiederholung von Punkten, Achsenbeschriftung und sinnvollen Maßstäben."
+        }
+      ],
+      "entry_count": 3,
+      "exams": [
+        "2026-11-08 Arbeit, 1., 2. Std. (60 Min.)"
+      ],
+      "attendance_summary": {
+        "anwesend": "19",
+        "entschuldigt": "0",
+        "unentschuldigt": "0"
+      }
+    },
+    "/meinunterricht/course/b3": {
+      "success": true,
+      "course_id": "b3",
+      "course_name": "Englisch 9c",
+      "semester": "1. Halbjahr 2026/2027",
+      "teacher_short": "AO",
+      "teacher_full": "Aylin Özdemir",
+      "entries": [
+        {
+          "entry_id": "b3e1",
+          "date": "2026-10-24T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Writing a persuasive speech",
+          "homework": "Write an opening paragraph for your speech",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [
+            {
+              "name": "Speech-planner.pdf",
+              "url": "/files/speech-planner.pdf"
+            }
+          ],
+          "content": "We organise a short persuasive speech with a clear claim, a supporting example and a closing appeal to the audience."
+        },
+        {
+          "entry_id": "b3e2",
+          "date": "2026-10-20T08:20:43.941Z",
+          "hours": "1–2",
+          "thema": "Linking ideas clearly",
+          "homework": "Use five linking words in your draft",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "We practise linking words for contrast, cause and consequence so that an argument is easy to follow."
+        },
+        {
+          "entry_id": "b3e3",
+          "date": "2026-10-16T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Audience and purpose",
+          "homework": "",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "We compare how the target audience changes vocabulary, examples and tone."
+        }
+      ],
+      "entry_count": 3,
+      "exams": [
+        "2026-11-20 Arbeit, 3., 4. Std. (90 Min.)"
+      ],
+      "attendance_summary": {
+        "anwesend": "20",
+        "entschuldigt": "0",
+        "unentschuldigt": "0"
+      }
+    },
+    "/meinunterricht/course/b4": {
+      "success": true,
+      "course_id": "b4",
+      "course_name": "Biologie 9c",
+      "semester": "1. Halbjahr 2026/2027",
+      "teacher_short": "FB",
+      "teacher_full": "Felix Brandt",
+      "entries": [
+        {
+          "entry_id": "b4e1",
+          "date": "2026-10-26T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Ökosystem See",
+          "homework": "Versuchsprotokoll um die Auswertung ergänzen",
+          "homework_done": false,
+          "attendance": "anwesend",
+          "files": [
+            {
+              "name": "See-Experiment-Protokoll.pdf",
+              "url": "/files/see-experiment-protokoll.pdf"
+            }
+          ],
+          "content": "Wir untersuchen die Bedingungen für Algenwachstum und unterscheiden Beobachtung, Vermutung und Auswertung im Versuchsprotokoll."
+        },
+        {
+          "entry_id": "b4e2",
+          "date": "2026-10-22T08:20:43.941Z",
+          "hours": "1–2",
+          "thema": "Nahrungsnetze und Energiefluss",
+          "homework": "Nahrungsnetz mit Pfeilen ergänzen",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "Wir ordnen Produzenten, Konsumenten und Destruenten in einem Nahrungsnetz und verfolgen den Energiefluss."
+        },
+        {
+          "entry_id": "b4e3",
+          "date": "2026-10-18T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Anpassung an den Lebensraum",
+          "homework": "",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "Wir erklären, wie Körperbau und Verhalten verschiedener Arten zu ihrem Lebensraum passen."
+        }
+      ],
+      "entry_count": 3,
+      "exams": [
+        "2026-11-30 Lernkontrolle, 3., 4. Std. (45 Min.)"
+      ],
+      "attendance_summary": {
+        "anwesend": "21",
+        "entschuldigt": "1",
+        "unentschuldigt": "0"
+      }
+    },
+    "/meinunterricht/course/b5": {
+      "success": true,
+      "course_id": "b5",
+      "course_name": "Geschichte 9c",
+      "semester": "1. Halbjahr 2026/2027",
+      "teacher_short": "MS",
+      "teacher_full": "Marie Seidel",
+      "entries": [
+        {
+          "entry_id": "b5e1",
+          "date": "2026-10-23T08:20:43.941Z",
+          "hours": "1–2",
+          "thema": "Industrialisierung und soziale Frage",
+          "homework": "Quelle zur Fabrikarbeit mit drei Stichpunkten auswerten",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [
+            {
+              "name": "Quellenblatt-Fabrikarbeit.pdf",
+              "url": "/files/quellenblatt-fabrikarbeit.pdf"
+            }
+          ],
+          "content": "Wir untersuchen, wie Fabrikarbeit den Alltag veränderte, und vergleichen zeitgenössische Perspektiven auf die Arbeitsbedingungen."
+        },
+        {
+          "entry_id": "b5e2",
+          "date": "2026-10-19T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Leben in der wachsenden Stadt",
+          "homework": "Zwei Veränderungen für Familien notieren",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "Wir lesen eine historische Statistik und leiten daraus Veränderungen für Wohnen, Arbeit und Mobilität ab."
+        }
+      ],
+      "entry_count": 2,
+      "exams": [
+        "2026-12-08 Arbeit, 1., 2. Std. (60 Min.)"
+      ],
+      "attendance_summary": {
+        "anwesend": "17",
+        "entschuldigt": "0",
+        "unentschuldigt": "0"
+      }
+    },
+    "/meinunterricht/course/b6": {
+      "success": true,
+      "course_id": "b6",
+      "course_name": "Informatik 9c",
+      "semester": "1. Halbjahr 2026/2027",
+      "teacher_short": "LR",
+      "teacher_full": "Leonie Roth",
+      "entries": [
+        {
+          "entry_id": "b6e1",
+          "date": "2026-10-25T08:20:43.941Z",
+          "hours": "3–4",
+          "thema": "Barrierefreie Website",
+          "homework": "Alt-Texte für die Bilder im HTML-Dokument ergänzen",
+          "homework_done": false,
+          "attendance": "anwesend",
+          "files": [
+            {
+              "name": "HTML-Checkliste.pdf",
+              "url": "/files/html-checkliste.pdf"
+            }
+          ],
+          "content": "Wir prüfen eine kleine Website mit einer Checkliste: Überschriften, Alternativtexte, Kontraste und verständliche Linktexte."
+        },
+        {
+          "entry_id": "b6e2",
+          "date": "2026-10-21T08:20:43.941Z",
+          "hours": "1–2",
+          "thema": "HTML-Struktur und semantische Elemente",
+          "homework": "Navigation mit einer ungeordneten Liste auszeichnen",
+          "homework_done": true,
+          "attendance": "anwesend",
+          "files": [],
+          "content": "Wir strukturieren Inhalte mit passenden HTML-Elementen und besprechen, warum Semantik die Orientierung verbessert."
+        }
+      ],
+      "entry_count": 2,
+      "exams": [
+        "2026-11-15 Projektabgabe"
+      ],
+      "attendance_summary": {
+        "anwesend": "16",
+        "entschuldigt": "1",
+        "unentschuldigt": "0"
+      }
+    },
+    "/meinunterricht/entry?url=b1e1": {
+      "success": true,
+      "entry": {
+        "id": "b1e1",
+        "title": "Gedichtvergleich: Stadt und Natur",
+        "content": "<p>Vergleiche Bildsprache und Stimmung der beiden Gedichte.</p><p><strong>Arbeitsauftrag:</strong> Belege deine Aussage mit je einer Textstelle und einem Fachbegriff.</p>",
+        "date": "2026-10-26T08:20:43.941Z",
+        "attachments": [
+          {
+            "name": "Gedichtvergleich-Leitfaden.pdf",
+            "url": "/files/gedichtvergleich-leitfaden.pdf"
+          }
+        ]
+      }
+    },
+    "/meinunterricht/entry?url=b2e1": {
+      "success": true,
+      "entry": {
+        "id": "b2e1",
+        "title": "Lineare Funktionen und Steigung",
+        "content": "<p>Lies Steigung und y-Achsenabschnitt aus dem Graphen ab und zeichne die Funktion.</p><p><strong>Arbeitsauftrag:</strong> Notiere jeden Rechenschritt und prüfe einen Punkt durch Einsetzen.</p>",
+        "date": "2026-10-25T08:20:43.941Z",
+        "attachments": [
+          {
+            "name": "Funktionsgraphen-Arbeitsblatt.pdf",
+            "url": "/files/funktionsgraphen-arbeitsblatt.pdf"
+          }
+        ]
+      }
+    },
+    "/meinunterricht/entry?url=b3e1": {
+      "success": true,
+      "entry": {
+        "id": "b3e1",
+        "title": "Writing a persuasive speech",
+        "content": "<p>Write an opening paragraph with a clear claim and a concrete example.</p><p><strong>Remember:</strong> Address your audience directly and finish with a short appeal.</p>",
+        "date": "2026-10-24T08:20:43.941Z",
+        "attachments": [
+          {
+            "name": "Speech-planner.pdf",
+            "url": "/files/speech-planner.pdf"
+          }
+        ]
+      }
+    },
+    "/meinunterricht/entry?url=b4e1": {
+      "success": true,
+      "entry": {
+        "id": "b4e1",
+        "title": "Ökosystem See",
+        "content": "<p>Ergänze dein Protokoll um eine begründete Auswertung des Algenwachstums.</p><p>Trenne dabei klar zwischen Beobachtung, Erklärung und Fazit.</p>",
+        "date": "2026-10-26T08:20:43.941Z",
+        "attachments": [
+          {
+            "name": "See-Experiment-Protokoll.pdf",
+            "url": "/files/see-experiment-protokoll.pdf"
+          }
+        ]
+      }
+    },
+    "/meinunterricht/entry?url=b5e1": {
+      "success": true,
+      "entry": {
+        "id": "b5e1",
+        "title": "Industrialisierung und soziale Frage",
+        "content": "<p>Werte die Quelle zur Fabrikarbeit aus und ordne sie in ihren historischen Zusammenhang ein.</p><p><strong>Arbeitsauftrag:</strong> Formuliere drei Aussagen mit Quellenbeleg.</p>",
+        "date": "2026-10-23T08:20:43.941Z",
+        "attachments": [
+          {
+            "name": "Quellenblatt-Fabrikarbeit.pdf",
+            "url": "/files/quellenblatt-fabrikarbeit.pdf"
+          }
+        ]
+      }
+    },
+    "/meinunterricht/entry?url=b6e1": {
+      "success": true,
+      "entry": {
+        "id": "b6e1",
+        "title": "Barrierefreie Website",
+        "content": "<p>Prüfe deine Website mit der Checkliste und verbessere die Stellen, die die Orientierung erschweren.</p><p>Beginne mit Überschriften, Alternativtexten, Kontrasten und Linktexten.</p>",
+        "date": "2026-10-25T08:20:43.941Z",
+        "attachments": [
+          {
+            "name": "HTML-Checkliste.pdf",
+            "url": "/files/html-checkliste.pdf"
+          }
+        ]
+      }
+    },
+    "/meinunterricht/entry": {
+      "success": true,
+      "entry": {
+        "id": "b1e1",
+        "title": "Gedichtvergleich: Stadt und Natur",
+        "content": "<p>Vergleiche Bildsprache und Stimmung der beiden Gedichte.</p><p><strong>Arbeitsauftrag:</strong> Belege deine Aussage mit je einer Textstelle und einem Fachbegriff.</p>",
+        "date": "2026-10-26T08:20:43.941Z",
+        "attachments": [
+          {
+            "name": "Gedichtvergleich-Leitfaden.pdf",
+            "url": "/files/gedichtvergleich-leitfaden.pdf"
+          }
+        ]
+      }
+    },
+    "/kalender/event/ev1": {
+      "success": true,
+      "event": {
+        "id": "ev1",
+        "title": "A-Woche",
+        "category": "6",
+        "category_name": "Schulwochen",
+        "category_color": "#0f766e",
+        "description": "<p>Diese Woche ist eine <strong>A-Woche</strong>.</p><p>Der Stundenplan folgt der A-Woche.</p>",
+        "start": "2026-10-26",
+        "end": "2026-10-31",
+        "all_day": true,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Woche": "A"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev1",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev2": {
+      "success": true,
+      "event": {
+        "id": "ev2",
+        "title": "Klassensprecher-Runde",
+        "category": "5",
+        "category_name": "Klassen & Schule",
+        "category_color": "#7c3aed",
+        "description": "<p>Kurze Runde der Klassensprecherinnen und Klassensprecher.</p><p>Der reguläre Unterricht findet ansonsten statt.</p>",
+        "start": "2026-10-28T08:35:00",
+        "end": "2026-10-28T09:20:00",
+        "all_day": false,
+        "new": "1",
+        "editable": false,
+        "properties": {
+          "Ort": "Raum B204"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev2",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev3": {
+      "success": true,
+      "event": {
+        "id": "ev3",
+        "title": "Klassenfahrt: Infoabend",
+        "category": "5",
+        "category_name": "Klassen & Schule",
+        "category_color": "#7c3aed",
+        "description": "<p>Informationsabend für die geplante Klassenfahrt.</p><p>Bitte Fragen und die Einverständniserklärung mitbringen.</p>",
+        "start": "2026-11-02T18:00:00",
+        "end": "2026-11-02T19:00:00",
+        "all_day": false,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Klasse": "9C",
+          "Ort": "Aula"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev3",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev4": {
+      "success": true,
+      "event": {
+        "id": "ev4",
+        "title": "Deutsch-Arbeit",
+        "category": "1",
+        "category_name": "Klausuren",
+        "category_color": "#dc2626",
+        "description": "<p>Schriftlicher Gedichtvergleich.</p><p>Bitte Schreibmaterial und das Wörterbuch mitbringen.</p>",
+        "start": "2026-11-06T09:40:00",
+        "end": "2026-11-06T11:10:00",
+        "all_day": false,
+        "new": "1",
+        "editable": false,
+        "properties": {
+          "Fach": "Deutsch 9c",
+          "Lehrkraft": "CN",
+          "Raum": "B204",
+          "Dauer": "90 Minuten"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev4",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev5": {
+      "success": true,
+      "event": {
+        "id": "ev5",
+        "title": "Mathematik-Arbeit",
+        "category": "1",
+        "category_name": "Klausuren",
+        "category_color": "#dc2626",
+        "description": "<p>Leistungskontrolle zu linearen Funktionen und Graphen.</p>",
+        "start": "2026-11-08T07:50:00",
+        "end": "2026-11-08T09:20:00",
+        "all_day": false,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Fach": "Mathematik 9c",
+          "Lehrkraft": "MV",
+          "Raum": "B204",
+          "Dauer": "60 Minuten"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev5",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev6": {
+      "success": true,
+      "event": {
+        "id": "ev6",
+        "title": "Biologie-Protokoll",
+        "category": "4",
+        "category_name": "Abgaben",
+        "category_color": "#d97706",
+        "description": "<p>Abgabe des Protokolls zum See-Experiment.</p><p>Beobachtung, Erklärung und Fazit bitte getrennt ausweisen.</p>",
+        "start": "2026-10-31T23:59:00",
+        "end": "2026-10-31T23:59:00",
+        "all_day": true,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Fach": "Biologie 9c",
+          "Lehrkraft": "FB",
+          "Abgabeweg": "Kursordner"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev6",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev7": {
+      "success": true,
+      "event": {
+        "id": "ev7",
+        "title": "SV-Treffen",
+        "category": "5",
+        "category_name": "Klassen & Schule",
+        "category_color": "#7c3aed",
+        "description": "<p>Treffen der Schülervertretung zur Planung der nächsten Aktion.</p>",
+        "start": "2026-10-31T13:30:00",
+        "end": "2026-10-31T15:00:00",
+        "all_day": false,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Ort": "Raum 215"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev7",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev8": {
+      "success": true,
+      "event": {
+        "id": "ev8",
+        "title": "Herbstferien",
+        "category": "3",
+        "category_name": "Ferien & freie Tage",
+        "category_color": "#059669",
+        "description": "<p>Unterrichtsfreie Zeit in Hessen.</p>",
+        "start": "2026-11-28",
+        "end": "2026-12-11",
+        "all_day": true,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Bundesland": "Hessen"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev8",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev9": {
+      "success": true,
+      "event": {
+        "id": "ev9",
+        "title": "Englisch-Präsentation",
+        "category": "4",
+        "category_name": "Abgaben",
+        "category_color": "#d97706",
+        "description": "<p>Kurze persuasive speech im Englischkurs.</p><p>Bitte den Speech-planner und eure Stichpunkte mitbringen.</p>",
+        "start": "2026-11-04T23:59:00",
+        "end": "2026-11-04T23:59:00",
+        "all_day": true,
+        "new": "1",
+        "editable": false,
+        "properties": {
+          "Fach": "Englisch 9c",
+          "Lehrkraft": "AO",
+          "Abgabeweg": "Kursordner"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev9",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev10": {
+      "success": true,
+      "event": {
+        "id": "ev10",
+        "title": "Elternabend 9C",
+        "category": "5",
+        "category_name": "Klassen & Schule",
+        "category_color": "#7c3aed",
+        "description": "<p>Elternabend mit Informationen zum zweiten Halbjahr.</p>",
+        "start": "2026-11-05T18:30:00",
+        "end": "2026-11-05T20:00:00",
+        "all_day": false,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Klasse": "9C",
+          "Ort": "Raum B204"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev10",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev11": {
+      "success": true,
+      "event": {
+        "id": "ev11",
+        "title": "Projektwoche",
+        "category": "2",
+        "category_name": "Sonstige Termine",
+        "category_color": "#2563eb",
+        "description": "<p>Gemeinsame Projektwoche der Jahrgänge 9 und 10.</p><p>Der genaue Workshop-Plan folgt im Dateispeicher.</p>",
+        "start": "2026-11-13",
+        "end": "2026-11-15",
+        "all_day": true,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Jahrgang": "9–10"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev11",
+        "view_id": ""
+      }
+    },
+    "/kalender/event/ev12": {
+      "success": true,
+      "event": {
+        "id": "ev12",
+        "title": "Informatik-Projektabgabe",
+        "category": "4",
+        "category_name": "Abgaben",
+        "category_color": "#d97706",
+        "description": "<p>Abgabe der barrierefreien Website und der kurzen Dokumentation.</p>",
+        "start": "2026-11-15T23:59:00",
+        "end": "2026-11-15T23:59:00",
+        "all_day": true,
+        "new": "0",
+        "editable": false,
+        "properties": {
+          "Fach": "Informatik 9c",
+          "Lehrkraft": "LR",
+          "Abgabeweg": "Kursordner"
+        },
+        "raw": {}
+      },
+      "filters": {
+        "event_id": "ev12",
+        "view_id": ""
+      }
+    },
+    "/dateispeicher?folder_id=0": {
+      "success": true,
+      "folder_id": 0,
+      "folders": [
+        {
+          "id": 1,
+          "name": "Unterrichtsmaterialien",
+          "subfolders": 0,
+          "description": "Arbeitsblätter und Zusammenfassungen"
+        },
+        {
+          "id": 2,
+          "name": "Projekte",
+          "subfolders": 0,
+          "description": "Gemeinsame Projektdateien"
+        },
+        {
+          "id": 3,
+          "name": "Abgaben",
+          "subfolders": 0,
+          "description": "Einreichungen für Unterricht und Projekte"
+        },
+        {
+          "id": 4,
+          "name": "Schulorganisation",
+          "subfolders": 0,
+          "description": "Wichtige Informationen rund um die Schule"
+        }
+      ],
+      "files": [
+        {
+          "id": 101,
+          "name": "Schuljahreskalender.pdf",
+          "changed": "28.08.2026",
+          "size": "248 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=101"
+        },
+        {
+          "id": 105,
+          "name": "Raumplan_9C.pdf",
+          "changed": "01.09.2026",
+          "size": "174 KB",
+          "note": "Stand: September 2026",
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=105"
+        },
+        {
+          "id": 106,
+          "name": "Regeln_fuer_Projektarbeit.pdf",
+          "changed": "25.08.2026",
+          "size": "312 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=106"
+        }
+      ],
+      "file_count": 3,
+      "folder_count": 4
+    },
+    "/dateispeicher?folder_id=1": {
+      "success": true,
+      "folder_id": 1,
+      "folders": [],
+      "files": [
+        {
+          "id": 102,
+          "name": "Mathematik_Formelsammlung.pdf",
+          "changed": "26.08.2026",
+          "size": "1,2 MB",
+          "note": "Für die Oberstufe",
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=102"
+        },
+        {
+          "id": 103,
+          "name": "Deutsch_Lektürehilfe.pdf",
+          "changed": "20.08.2026",
+          "size": "860 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=103"
+        },
+        {
+          "id": 107,
+          "name": "Biologie_See-Experiment.pdf",
+          "changed": "19.08.2026",
+          "size": "1,1 MB",
+          "note": "Versuchsaufbau und Messwerte",
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=107"
+        },
+        {
+          "id": 108,
+          "name": "Englisch_Speech-Planner.pdf",
+          "changed": "15.08.2026",
+          "size": "426 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=108"
+        }
+      ],
+      "file_count": 4,
+      "folder_count": 0
+    },
+    "/dateispeicher?folder_id=2": {
+      "success": true,
+      "folder_id": 2,
+      "folders": [],
+      "files": [
+        {
+          "id": 104,
+          "name": "Projektplanung_Nachhaltigkeit.docx",
+          "changed": "18.08.2026",
+          "size": "92 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=104"
+        },
+        {
+          "id": 109,
+          "name": "Präsentation_Entwurf.pptx",
+          "changed": "17.08.2026",
+          "size": "2,4 MB",
+          "note": "Gemeinsamer Entwurf der Gruppe",
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=109"
+        },
+        {
+          "id": 110,
+          "name": "Quellen_und_Notizen.odt",
+          "changed": "14.08.2026",
+          "size": "68 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=110"
+        }
+      ],
+      "file_count": 3,
+      "folder_count": 0
+    },
+    "/dateispeicher?folder_id=3": {
+      "success": true,
+      "folder_id": 3,
+      "folders": [],
+      "files": [
+        {
+          "id": 111,
+          "name": "Deutsch_Gedichtvergleich.docx",
+          "changed": "02.09.2026",
+          "size": "84 KB",
+          "note": "Noch nicht abgegeben",
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=111"
+        },
+        {
+          "id": 112,
+          "name": "Informatik_Checkliste.html",
+          "changed": "29.08.2026",
+          "size": "12 KB",
+          "note": "Projektdatei",
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=112"
+        }
+      ],
+      "file_count": 2,
+      "folder_count": 0
+    },
+    "/dateispeicher?folder_id=4": {
+      "success": true,
+      "folder_id": 4,
+      "folders": [],
+      "files": [
+        {
+          "id": 113,
+          "name": "Schulordnung_2026.pdf",
+          "changed": "22.08.2026",
+          "size": "518 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=113"
+        },
+        {
+          "id": 114,
+          "name": "Ansprechpartner_und_Sprechzeiten.pdf",
+          "changed": "21.08.2026",
+          "size": "205 KB",
+          "note": null,
+          "download_url": "https://start.schulportal.hessen.de/dateispeicher.php?a=download&f=114"
+        }
+      ],
+      "file_count": 2,
+      "folder_count": 0
+    },
+    "/dsb/login": {
+      "success": true,
+      "session_cookie": "mock-session",
+      "session_id": "mock-sid"
+    },
+    "/dsb/plan": {
+      "success": true,
+      "plan_url": "/plan/heute",
+      "title": "Vertretungsplan",
+      "tables": [
+        {
+          "caption": "Klasse 9C — Vertretungsplan",
+          "headers": [
+            "Stunde",
+            "Fach",
+            "Lehrkraft",
+            "Vertretung",
+            "Raum",
+            "Info"
+          ],
+          "rows": [
+            {
+              "Stunde": "1–2",
+              "Fach": "Mathematik",
+              "Lehrkraft": "MV",
+              "Vertretung": "---",
+              "Raum": "B204",
+              "Info": ""
+            },
+            {
+              "Stunde": "3–4",
+              "Fach": "Englisch",
+              "Lehrkraft": "AO",
+              "Vertretung": "Frau Winter",
+              "Raum": "B204",
+              "Info": "Vertretung"
+            },
+            {
+              "Stunde": "5–6",
+              "Fach": "Biologie",
+              "Lehrkraft": "FB",
+              "Vertretung": "---",
+              "Raum": "C106",
+              "Info": "Entfall"
+            },
+            {
+              "Stunde": "7–8",
+              "Fach": "Informatik",
+              "Lehrkraft": "LR",
+              "Vertretung": "---",
+              "Raum": "C101",
+              "Info": "Projektarbeit"
+            },
+            {
+              "Stunde": "9–10",
+              "Fach": "Kunst",
+              "Lehrkraft": "KH",
+              "Vertretung": "---",
+              "Raum": "K3",
+              "Info": "Raumänderung"
+            },
+            {
+              "Stunde": "11–12",
+              "Fach": "Sport",
+              "Lehrkraft": "SW",
+              "Vertretung": "---",
+              "Raum": "TH1",
+              "Info": "Bitte Sportsachen mitbringen"
+            }
+          ],
+          "date": "2026-10-27"
+        }
+      ]
+    },
+    "/dsb/plan-urls": {
+      "success": true,
+      "plan_urls": [
+        "/plan/heute",
+        "/plan/morgen"
+      ],
+      "menu_items": [
+        "Heute",
+        "Morgen"
+      ],
+      "count": 2
+    }
+  }
+}
