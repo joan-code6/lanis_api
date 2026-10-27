@@ -55,8 +55,22 @@ async def send_text(recipient, body, *, continuation_check=None):
             )
             try:
                 response.raise_for_status()
-                if response.is_redirect or response.json().get("errors"):
+                if response.is_redirect:
                     raise RuntimeError("Signal delivery failed")
+                # /v2/send returns an array, even for a single recipient.
+                records = response.json()
+                if isinstance(records, dict):
+                    records = [records]  # Compatibility with older bridges.
+                if not isinstance(records, list) or not records:
+                    raise RuntimeError("Signal delivery response was invalid")
+                for record in records:
+                    if not isinstance(record, dict) or not record.get("timestamp"):
+                        raise RuntimeError("Signal delivery response was invalid")
+                    errors = record.get("errors")
+                    if isinstance(errors, dict) and set(errors) == {"recipients"}:
+                        errors = errors["recipients"]
+                    if errors:
+                        raise RuntimeError("Signal delivery failed")
             finally:
                 response.close()
 
