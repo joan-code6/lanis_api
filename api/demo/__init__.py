@@ -30,7 +30,7 @@ def school_directory(data):
         ]
     districts[:] = [d for d in districts if d.get("id") != DISTRICT["id"]]
     districts.append(copy.deepcopy(DISTRICT))
-    result["success"] = True
+    result.setdefault("success", True)
     return result
 
 

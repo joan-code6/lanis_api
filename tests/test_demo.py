@@ -363,3 +363,22 @@ def test_demo_timetable_rejects_invalid_view_parameters(query):
         ).status_code
         == 422
     )
+
+
+def test_school_directory_preserves_upstream_failure(monkeypatch):
+    from api.demo import school_directory
+
+    failed = {"success": False, "error": "Directory unavailable"}
+    result = school_directory(failed)
+    assert result == {**failed, "districts": [DISTRICT]}
+    assert failed == {"success": False, "error": "Directory unavailable"}
+
+    client = type("Client", (), {"school_list_get_all": lambda self: dict(failed)})()
+    monkeypatch.setattr(api_module, "SchulportalHessenAPI", lambda: client)
+    monkeypatch.setitem(api_module.school_list_cache, "data", None)
+    monkeypatch.setitem(api_module.school_list_cache, "created_at", None)
+    response = run_request("GET", "/school-list")
+    assert response.status_code == 200
+    assert response.json() == result
+    assert api_module.school_list_cache["data"] == result
+    assert school_directory({})["success"] is True
