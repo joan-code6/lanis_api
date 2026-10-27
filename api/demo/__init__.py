@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 SCHOOL_ID = "9999"
-USERNAME = "Vornahme.Nachname"
+USERNAME = "Vorname.Nachname"
 # Public markers, deliberately not JWTs and not valid outside this dispatcher.
 ACCESS_TOKEN = "lanis-public-reviewer-demo-access"
 REFRESH_TOKEN = "lanis-public-reviewer-demo-refresh"
@@ -58,7 +58,7 @@ def sample_data():
             except ValueError:
                 pass
         value = value.replace("mia.keller", USERNAME).replace(
-            "Mia Keller", "Vornahme Nachname"
+            "Mia Keller", "Vorname Nachname"
         )
         value = value.replace("Elisabeth-Selbert-Schule", SCHOOL["name"])
         # Every downloadable fixture stays inside this sandbox, even with arbitrary URL params.
@@ -74,8 +74,8 @@ def sample_data():
     data["/benutzer"]["data"].update(
         school_id=SCHOOL_ID,
         username=USERNAME,
-        vorname="Vornahme",
-        firstname="Vornahme",
+        vorname="Vorname",
+        firstname="Vorname",
         nachname="Nachname",
         lastname="Nachname",
         email="reviewer@example.invalid",
@@ -289,7 +289,7 @@ async def dispatch(request):
             if str(body.get("username", "")).strip().casefold() == USERNAME.casefold():
                 return JSONResponse(tokens(), headers={"Cache-Control": "no-store"})
             return JSONResponse(
-                {"detail": "Use Vornahme.Nachname for Lanis Test Schule"},
+                {"detail": "Use Vorname.Nachname for Lanis Test Schule"},
                 status_code=401,
             )
         if path == "/auth/refresh" and body.get("refresh_token") == REFRESH_TOKEN:

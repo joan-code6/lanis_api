@@ -51,7 +51,7 @@ def test_login_and_refresh_without_upstream_or_persistence(password, caplog):
         "/login",
         json={
             "school_id": "9999",
-            "username": "Vornahme.Nachname",
+            "username": "Vorname.Nachname",
             "password": password,
         },
     )
@@ -194,7 +194,7 @@ def test_normal_login_still_uses_real_handler(monkeypatch):
             "access_token": "real",
             "refresh_token": "real",
             "school_id": "1234",
-            "username": "Vornahme.Nachname",
+            "username": "Vorname.Nachname",
             "encryption_ready": False,
         }
     )
@@ -205,7 +205,7 @@ def test_normal_login_still_uses_real_handler(monkeypatch):
             "/login",
             json={
                 "school_id": "1234",
-                "username": "Vornahme.Nachname",
+                "username": "Vorname.Nachname",
                 "password": "x",
             },
         ).status_code

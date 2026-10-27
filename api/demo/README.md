@@ -1,7 +1,7 @@
 # Public reviewer account
 
 Select **Lanis Test Schule** (school ID `9999`), username
-`Vornahme.Nachname` (case insensitive), and any password. Empty passwords are
+`Vorname.Nachname` (case insensitive), and any password. Empty passwords are
 also accepted by the API. Other usernames at school `9999` are rejected locally.
 All other schools retain their normal authentication.
 
