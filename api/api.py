@@ -1225,6 +1225,12 @@ async def serialize_account_requests(request: Request, call_next):
     demo_response = await dispatch(request)
     if demo_response is not None:
         return demo_response
+    from .demo import ACCESS_TOKEN
+
+    if request.headers.get("X-Session-Token") == ACCESS_TOKEN and (
+        request.url.path == "/agents" or request.url.path.startswith("/agents/")
+    ):
+        return await call_next(request)
     if (
         request.url.path == "/login"
         or request.url.path == "/mcp"  # MCP owns its bearer identity and lifecycle lease.

@@ -122,7 +122,15 @@ def test_actions_have_no_side_effects(method, path):
 
 
 @pytest.mark.parametrize(
-    "path", ["/admin", "/admin/users", "/mcp", "/oauth/token", "/agents", "/unknown"]
+    "path",
+    [
+        "/admin",
+        "/admin/users",
+        "/mcp",
+        "/oauth/token",
+        "/agents/channels/signal/pairing",
+        "/unknown",
+    ],
 )
 def test_demo_never_falls_through_to_real_routes(path):
     assert run_request(

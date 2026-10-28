@@ -296,6 +296,12 @@ async def dispatch(request):
             return JSONResponse({"access_token": ACCESS_TOKEN, "expires_in": 3600})
     if not is_demo:
         return None
+    # Browser management uses normal OAuth consent and grant ownership checks.
+    # The public browser marker is never accepted as an MCP bearer token.
+    if token == ACCESS_TOKEN and (
+        path == "/agents" or re.fullmatch(r"/agents/(?:authorization/)?[^/]+", path)
+    ):
+        return None
     headers = {"Cache-Control": "no-store"}
     if path.startswith(("/admin", "/mcp", "/oauth", "/agents")):
         return JSONResponse(
@@ -372,6 +378,23 @@ async def dispatch(request):
                     ]
                     for kind in ("files", "folders")
                 },
+            }
+        elif path == "/nachrichten/search":
+            query = request.query_params.get("q", "").casefold()
+            recipients = [
+                {
+                    "id": teacher["recipient_id"],
+                    "name": teacher["first_name"] + " " + teacher["last_name"],
+                    "username": teacher["krz"],
+                    "type": "Lehrkraft",
+                }
+                for group in data["/lerngruppen"]["groups"]
+                for teacher in group["teachers"]
+                if teacher.get("recipient_id")
+            ]
+            result = {
+                "success": True,
+                "results": [r for r in recipients if query in r["name"].casefold()],
             }
         elif path == "/meinunterricht/entry":
             url = request.query_params.get("url", "")

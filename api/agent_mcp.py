@@ -223,6 +223,15 @@ def tool(scope=None, *, write=False, destructive=False, **kwargs):
 
         @wraps(fn)
         async def guarded(*args, **kw):
+            from .demo.agents import call_tool, is_demo_user
+
+            grant = await identity(scope)
+            if is_demo_user(grant["user_id"]) and fn.__name__ != "lanis_connection":
+                from inspect import signature
+
+                bound = signature(fn).bind(*args, **kw)
+                bound.apply_defaults()
+                return await call_tool(fn.__name__, bound.arguments)
             token = _required_module.set(requirement)
             try:
                 return await fn(*args, **kw)
@@ -251,6 +260,7 @@ async def identity(scope=None):
     hosted = _hosted_grant.get()
     if hosted:
         from .hosted_store import grant as hosted_grant
+
         grant = await hosted_grant(hosted)
     else:
         access = get_access_token()
@@ -376,10 +386,17 @@ async def lanis_connection() -> dict[str, Any]:
 
     grant = await identity()
     tools, availability = await available_tools(grant)
+    from .demo.agents import is_demo_user
+
     names = {t.name for t in tools}
     return {
         "success": True,
         "module_access": availability,
+        **(
+            {"demo": True, "writes_simulated": True}
+            if is_demo_user(grant["user_id"])
+            else {}
+        ),
         "connection_name": grant["name"],
         "scopes": grant["scopes"],
         "current_time": datetime.now(ZoneInfo("Europe/Berlin")).isoformat(),
@@ -595,7 +612,15 @@ async def available_tools(grant):
     async def read(auth):
         return {"success": True, "methods": sorted(await account_modules(auth))}
 
-    result = await run(None, read)
+    from .demo.agents import is_demo_user
+
+    if is_demo_user(grant["user_id"]):
+        result = {
+            "success": True,
+            "methods": sorted({m for m in TOOL_MODULES.values() if m}),
+        }
+    else:
+        result = await run(None, read)
     methods = set(result.get("methods", []))
     tools = [
         t
