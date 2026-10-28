@@ -111,7 +111,7 @@ def test_demo_oauth_mcp_scopes_refresh_and_revocation(monkeypatch):
                 "lanis_distributions": {},
                 "lanis_distributed_file": {"url": "/dateiverteilung/file"},
                 "lanis_submissions": {},
-                "lanis_submission": {"detail_ref": "s2"},
+                "lanis_submission": {},
                 "lanis_elections": {},
                 "lanis_election": {"election_id": "demo-election"},
                 "lanis_preferences": {},
@@ -159,10 +159,27 @@ def test_demo_oauth_mcp_scopes_refresh_and_revocation(monkeypatch):
             }
             assert set(calls) == available
             before = sample_data()
+            discovered_submissions = []
             for name, arguments in calls.items():
+                if name == "lanis_submission":
+                    arguments = {"detail_ref": discovered_submissions[1]["detail_ref"]}
                 result = await rpc("tools/call", {"name": name, "arguments": arguments})
                 assert not result.get("isError"), (name, result)
                 assert result["structuredContent"].get("success"), (name, result)
+                if name == "lanis_submissions":
+                    discovered_submissions = result["structuredContent"]["submissions"]
+                    assert discovered_submissions
+                    for submission in discovered_submissions:
+                        detail = await rpc(
+                            "tools/call",
+                            {
+                                "name": "lanis_submission",
+                                "arguments": {"detail_ref": submission["detail_ref"]},
+                            },
+                        )
+                        assert not detail.get("isError"), detail
+                        selected = detail["structuredContent"]["submission"]
+                        assert selected == submission
                 if name == "lanis_course":
                     assert "marks" not in result["structuredContent"]
                     assert all(

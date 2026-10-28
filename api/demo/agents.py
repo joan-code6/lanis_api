@@ -73,6 +73,9 @@ async def call_tool(name, args):
         if "query" in params:
             params["q"] = params.pop("query")
         result = await sample_request(reads[name], params=params)
+        if name == "lanis_submissions":
+            for submission in result.get("submissions", []):
+                submission["detail_ref"] = submission["id"]
         if name == "lanis_exams":
             return {
                 "success": True,
@@ -131,7 +134,10 @@ async def call_tool(name, args):
     }
     if name in details:
         prefix, key = details[name]
-        return await sample_request(prefix + quote(args[key], safe=""))
+        result = await sample_request(prefix + quote(args[key], safe=""))
+        if name == "lanis_submission" and result.get("success"):
+            result["submission"]["detail_ref"] = args[key]
+        return result
     if name in {"lanis_file", "lanis_distributed_file"}:
         return {
             "success": True,
