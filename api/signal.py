@@ -49,6 +49,7 @@ async def send_text(recipient, body, *, continuation_check=None):
                     "number": number,
                     "recipients": [recipient],
                     "message": body[start : start + 3500],
+                    "text_mode": "styled",
                 },
                 timeout=(5, 30),
                 allow_redirects=False,

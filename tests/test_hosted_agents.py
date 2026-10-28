@@ -468,6 +468,7 @@ def test_signal_accepts_confirmed_send_responses(monkeypatch, body):
     monkeypatch.setattr(signal.requests, "post", post)
     asyncio.run(signal.send_text("+491234567891", "Hello"))
     post.assert_called_once()
+    assert post.call_args.kwargs["json"]["text_mode"] == "styled"
     response.close.assert_called_once()
 
 
