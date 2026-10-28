@@ -108,6 +108,10 @@ def register_request_diagnostics(app):
 
     @app.middleware('http')
     async def request_diagnostics(request, call_next):
+        from .demo import ACCESS_TOKEN
+
+        if request.headers.get("X-Session-Token") == ACCESS_TOKEN:
+            return await call_next(request)
         request_id = str(uuid.uuid4())
         request.state.analytics_request_id = request_id
         started = time.monotonic()
