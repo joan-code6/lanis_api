@@ -359,8 +359,9 @@ async def turn(gid, text, *, scheduled=False):
         formatting = ""
         if initial["channel"] == "signal":
             formatting = (
-                "Signal delivers these replies as plain text. Do not use Markdown emphasis "
-                "markers (such as **bold**, *bold*, or _italic_), headings, tables, or code fences. "
+                "Signal replies use styled text: **bold**, *italic*, ~strikethrough~, "
+                "`monospace`, and ||spoiler||. Do not use Markdown headings, tables, "
+                "or code fences around normal text. "
                 "Use short paragraphs, line breaks, and simple dash bullets."
             )
         elif initial["channel"] == "whatsapp":
