@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse
 import requests
 
 from schulportal_hessen.tools.cryptor import Cryptor
+from schulportal_hessen.tools.safe_fetch import fetch_document
 from .submissions import _is_login_response, extract_entry_uploads, meinunterricht_get_submissions as _get_submissions
 
 
@@ -636,7 +637,9 @@ def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:
     """
     Fetch details for a specific entry/link from mein Unterricht
 
-    This method can fetch any linked page like external apps, forms, or detailed views.
+    Only HTTPS Schulportal entry pages (meinunterricht.php, index.php and
+    dateiverteilung.php) are permitted. Redirects and nonpublic destinations
+    are rejected; documents are limited to 2 MiB.
 
     Args:
         url: The URL/path to fetch (e.g., "index.php?a=f&e=l4", "dateiverteilung.php", etc.)
@@ -653,15 +656,12 @@ def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:
         return {"success": False, "error": "Not logged in"}
 
     try:
-        # Handle relative URLs
-        if not url.startswith("http"):
-            if not url.startswith("/"):
-                url = "/" + url
-            full_url = f"{self.BASE_START_URL}{url}"
-        else:
-            full_url = url
-
-        response = self.session.get(full_url)
+        full_url = urljoin("https://start.schulportal.hessen.de/", url)
+        parsed = urlparse(full_url)
+        if (parsed.scheme != "https" or parsed.netloc != "start.schulportal.hessen.de"
+                or parsed.path not in {"/meinunterricht.php", "/index.php", "/dateiverteilung.php"}):
+            raise ValueError("Only Schulportal course entry pages are allowed")
+        response = fetch_document(self.session, full_url)
         response.raise_for_status()
 
         # Try to parse as JSON first

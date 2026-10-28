@@ -9,7 +9,7 @@ do not create a duplicate just to upload this package.
 - `plugins/lanis/plugin.json`: listing, starter prompts, five positive and three
   negative review cases, initial release notes.
 - `plugins/lanis/assets/icon.png`: canonical red LANIS mark, 512 × 512 PNG.
-- `scripts/build_agent_plugin.py`: verifies live discovery and builds the ZIP.
+- Packaging scripts have been discontinued; verify discovery and package contents manually.
 - `tests/test_agent_plugin_builder.py`: validates metadata failure paths, archive
   inventory, icon references and review-case inventory with fake discovery.
 
@@ -120,17 +120,11 @@ ZIP, review cases or demo recording. Reviewers must not need your email/phone.
 
 Once the inputs and deployment gate are complete:
 
-```sh
-python scripts/build_agent_plugin.py \
-  --issuer https://lanis-backend.joancode.dev \
-  --output /tmp/lanis-plugin.zip --submission
-python -m zipfile -l /tmp/lanis-plugin.zip
-```
-
-The archive must contain only `lanis/plugin.json`, `lanis/mcp.json` and
-`lanis/assets/icon.png`. Inspect the manifest in the actual ZIP, not only the
-source. The builder deliberately refuses to package an unreachable or mismatched
-issuer. Never use fake discovery to create a purported production upload.
+Package the reviewed source in `plugins/lanis/` after manually verifying live
+OAuth discovery, dynamic registration, issuer and scope shapes. The archive must
+contain only `lanis/plugin.json`, `lanis/mcp.json` and `lanis/assets/icon.png`.
+Inspect the manifest in the actual ZIP. Never use fake discovery to create a
+purported production upload.
 
 Use the official **With MCP** submission path and existing plugin identity.
 Upload the complete package, select the verified publisher, verify imported

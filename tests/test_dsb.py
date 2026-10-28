@@ -54,8 +54,12 @@ class FakeClient:
     dsb_logged_in = True
     dsb_session = FakeSession()
 
+    def dsb_get_plan_urls(self, **_):
+        return {"success": True, "plan_urls": ["https://example.invalid/plan.htm"]}
 
-def test_dsb_plan_response_includes_last_updated() -> None:
+
+def test_dsb_plan_response_includes_last_updated(monkeypatch) -> None:
+    monkeypatch.setattr("schulportal_hessen.external.dsb.api.fetch_document", lambda *_: FakeResponse())
     result = dsb_get_substitution_plan(
         FakeClient(), plan_url="https://example.invalid/plan.htm"
     )

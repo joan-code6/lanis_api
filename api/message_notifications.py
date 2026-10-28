@@ -10,12 +10,15 @@ import json
 import logging
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta
 from html import unescape
 from typing import Any, Awaitable, Callable, Dict, List, Tuple
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import requests
 from fastapi.concurrency import run_in_threadpool
 
 from .auth_db import (
@@ -31,6 +34,10 @@ from .auth_db import (
 from .message_read_state import overlay_headers
 
 logger = logging.getLogger("message_notifications")
+
+MAX_PUSH_SUBSCRIPTIONS = 10
+_PUSH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="webpush")
+_PUSH_SLOTS = threading.BoundedSemaphore(4)
 
 SCHEDULER_TICK_SECONDS = 60
 MAX_CONCURRENT_USER_POLLS = 4
@@ -425,6 +432,8 @@ def push_configured() -> bool:
 def is_trusted_push_endpoint(endpoint: str) -> bool:
     """Allow only HTTPS endpoints exposed by known browser push services."""
     try:
+        if not isinstance(endpoint, str) or len(endpoint) > 4096 or "#" in endpoint or "\\" in endpoint or any(ord(c) <= 32 for c in endpoint):
+            return False
         parsed = urlsplit(endpoint)
         hostname = parsed.hostname
         port = parsed.port
@@ -434,8 +443,8 @@ def is_trusted_push_endpoint(endpoint: str) -> bool:
     if (
         parsed.scheme.lower() != "https"
         or not hostname
-        or parsed.username
-        or parsed.password
+        or parsed.username is not None
+        or parsed.password is not None
         or port not in (None, 443)
     ):
         return False
@@ -445,6 +454,37 @@ def is_trusted_push_endpoint(endpoint: str) -> bool:
         normalized_hostname.endswith(suffix)
         for suffix in TRUSTED_PUSH_ENDPOINT_SUFFIXES
     )
+
+
+def normalize_push_endpoint(endpoint: str) -> str:
+    if not is_trusted_push_endpoint(endpoint):
+        raise ValueError("Invalid Web Push endpoint")
+    parsed = urlsplit(endpoint)
+    canonical = urlunsplit(("https", parsed.hostname.rstrip(".").lower(), parsed.path or "/", parsed.query, ""))
+    # Match Requests' wire representation (dot segments and unreserved escapes).
+    return requests.Request("GET", canonical).prepare().url
+
+
+def _send_push_reserved(subscription, payload):
+    try:
+        return _send_push_sync(subscription, payload)
+    finally:
+        _PUSH_SLOTS.release()
+
+
+async def _dispatch_push(subscription, payload):
+    # Admit at most four deliveries across all users/requests. Excess work is
+    # retried by the scheduler instead of queueing on the API's worker pool.
+    if not _PUSH_SLOTS.acquire(blocking=False):
+        raise RuntimeError("Push delivery capacity reached")
+    try:
+        future = asyncio.get_running_loop().run_in_executor(
+            _PUSH_EXECUTOR, _send_push_reserved, subscription, payload
+        )
+    except BaseException:
+        _PUSH_SLOTS.release()
+        raise
+    return await asyncio.shield(future)
 
 
 def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -489,6 +529,13 @@ async def _send_push_payloads(
             await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
             continue
+        if len(trusted_deliveries) >= MAX_PUSH_SUBSCRIPTIONS:
+            statuses[endpoint] = "retry"
+            continue
+        normalized = normalize_push_endpoint(endpoint)
+        if any(normalize_push_endpoint(saved) == normalized for saved in trusted_deliveries):
+            statuses[endpoint] = "retry"
+            continue
         trusted_deliveries[endpoint] = delivery
 
     if not trusted_deliveries:
@@ -500,7 +547,7 @@ async def _send_push_payloads(
 
     results = await asyncio.gather(
         *(
-            run_in_threadpool(_send_push_sync, subscription, payload)
+            _dispatch_push(subscription, payload)
             for subscription, payload in trusted_deliveries.values()
         ),
         return_exceptions=True,
