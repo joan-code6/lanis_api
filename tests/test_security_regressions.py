@@ -21,6 +21,7 @@ from schulportal_hessen.applets.mein_unterricht.api import (
 from schulportal_hessen.applets.stundenplan.api import parse_timetable_html
 from schulportal_hessen.external.dsb import api as dsb
 from schulportal_hessen.tools import safe_fetch
+from schulportal_hessen.tools.transport import TransportObservation, observation
 
 
 @pytest.mark.parametrize(
@@ -107,7 +108,7 @@ def test_fetch_pins_checked_address_preserves_tls_host_and_bounds_transport(
 @pytest.mark.parametrize("status,body", [(302, b""), (200, b"x" * 1025)])
 def test_document_redirect_and_size_limits(monkeypatch, status, body):
     monkeypatch.setattr(
-        safe_fetch, "public_https_url", lambda _: ("plans.example", "93.184.216.34")
+        safe_fetch, "public_https_url", lambda _: ("plans.example", ("93.184.216.34",))
     )
     monkeypatch.setattr(safe_fetch, "MAX_DOCUMENT_BYTES", 1024)
     response = requests.Response()
@@ -116,6 +117,130 @@ def test_document_redirect_and_size_limits(monkeypatch, status, body):
     monkeypatch.setattr(requests.Session, "send", lambda *_a, **_k: response)
     with requests.Session() as session, pytest.raises(ValueError):
         safe_fetch.fetch_document(session, "https://plans.example/plan")
+
+
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_fetch_tries_only_vetted_addresses_in_resolver_order(monkeypatch, exhausted):
+    ips = ["2606:4700:4700::1111", "93.184.216.34"]
+    lookups, connections = [], []
+    connected = object()
+
+    def resolve(*args, **_kwargs):
+        lookups.append(args[0])
+        return [
+            (
+                socket.AF_INET6 if ":" in ip else socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                (ip, 443),
+            )
+            for ip in ips
+        ]
+
+    def connect(address, *_args, **_kwargs):
+        connections.append(address[0])
+        if exhausted or address[0] == ips[0]:
+            raise OSError("address unreachable")
+        return connected
+
+    def send(transport, prepared, **_kwargs):
+        pool = transport.get_adapter(prepared.url).pool
+        connection = pool.ConnectionCls("plans.example", port=443)
+        if exhausted:
+            with pytest.raises(OSError, match="unreachable"):
+                connection._new_conn()
+        else:
+            assert connection._new_conn() is connected
+        response = requests.Response()
+        response.status_code = 200
+        response._content, response._content_consumed = b"plan", True
+        return response
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(safe_fetch, "create_connection", connect)
+    monkeypatch.setattr(requests.Session, "send", send)
+    with requests.Session() as session:
+        safe_fetch.fetch_document(session, "https://plans.example/plan")
+    assert lookups == ["plans.example"]
+    assert connections == ips
+
+
+@pytest.mark.parametrize(
+    "failure,unavailable,security",
+    [
+        (requests.ReadTimeout("timeout"), True, False),
+        (requests.ConnectionError("connection failed"), True, False),
+        (requests.exceptions.SSLError("invalid certificate"), False, True),
+        (503, True, False),
+        (401, False, True),
+        (403, False, True),
+        (200, False, False),
+    ],
+)
+@pytest.mark.parametrize("stream_failure", [False, True])
+def test_pinned_transport_preserves_outage_and_security_observations(
+    monkeypatch, failure, unavailable, security, stream_failure
+):
+    monkeypatch.setattr(
+        safe_fetch, "public_https_url", lambda _: ("plans.example", ("93.184.216.34",))
+    )
+
+    def send(*_args, **_kwargs):
+        if isinstance(failure, Exception) and not stream_failure:
+            raise failure
+        response = requests.Response()
+        response.status_code = failure if isinstance(failure, int) else 200
+        response._content, response._content_consumed = b"plan", True
+        if isinstance(failure, Exception):
+
+            def chunks(*_args, **_kwargs):
+                raise failure
+
+            response.iter_content = chunks
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    current = TransportObservation()
+    token = observation.set(current)
+    try:
+        with requests.Session() as session:
+            if failure == 200:
+                assert (
+                    safe_fetch.fetch_document(
+                        session, "https://plans.example/plan"
+                    ).content
+                    == b"plan"
+                )
+            else:
+                with pytest.raises(requests.RequestException):
+                    safe_fetch.fetch_document(session, "https://plans.example/plan")
+        assert current.unavailable is unavailable
+        assert current.security_failure is security
+    finally:
+        observation.reset(token)
+
+
+def test_pinned_transport_observes_dns_failure_and_honors_fail_fast(monkeypatch):
+    calls = []
+
+    def resolve(*_args, **_kwargs):
+        calls.append(True)
+        raise socket.gaierror("lookup failed")
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    current = TransportObservation(fail_fast=True)
+    token = observation.set(current)
+    try:
+        with requests.Session() as session:
+            with pytest.raises(requests.ConnectionError, match="lookup failed"):
+                safe_fetch.fetch_document(session, "https://plans.example/plan")
+            assert current.unavailable and not current.security_failure
+            with pytest.raises(requests.ConnectionError, match="Earlier"):
+                safe_fetch.fetch_document(session, "https://plans.example/plan")
+        assert calls == [True]
+    finally:
+        observation.reset(token)
 
 
 def test_dsb_authorizes_explicit_and_discovered_plans(monkeypatch):

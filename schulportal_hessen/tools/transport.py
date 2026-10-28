@@ -23,26 +23,41 @@ observation: ContextVar[TransportObservation | None] = ContextVar(
 )
 
 
+def _observe_response(current, response):
+    if current is not None and response is not None:
+        if response.status_code in (401, 403):
+            current.security_failure = True
+        elif response.status_code >= 500:
+            current.unavailable = True
+
+
+def observe_request(send):
+    """Preserve outage/security facts across ordinary and pinned transports."""
+    current = observation.get()
+    if current and current.fail_fast and current.unavailable:
+        raise requests.ConnectionError("Earlier Schulportal request unavailable")
+    try:
+        response = send()
+    except requests.exceptions.SSLError:
+        if current:
+            current.security_failure = True
+        raise
+    except (requests.Timeout, requests.ConnectionError):
+        if current:
+            current.unavailable = True
+        raise
+    except requests.HTTPError as error:
+        # Bounded document reads raise before returning failed responses.
+        _observe_response(current, error.response)
+        raise
+    _observe_response(current, response)
+    return response
+
+
 class ObservedSession(requests.Session):
     def request(self, method, url, **kwargs):
-        current = observation.get()
-        if current and current.fail_fast and current.unavailable:
-            raise requests.ConnectionError("Earlier Schulportal request unavailable")
         # An unavailable upstream must eventually return control to the caller.
         kwargs.setdefault("timeout", (5, 15))
-        try:
-            response = super().request(method, url, **kwargs)
-        except requests.exceptions.SSLError:
-            if current:
-                current.security_failure = True
-            raise
-        except (requests.Timeout, requests.ConnectionError):
-            if current:
-                current.unavailable = True
-            raise
-        if current:
-            if response.status_code in (401, 403):
-                current.security_failure = True
-            elif response.status_code >= 500:
-                current.unavailable = True
-        return response
+        return observe_request(
+            lambda: super(ObservedSession, self).request(method, url, **kwargs)
+        )

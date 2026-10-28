@@ -168,6 +168,50 @@ def test_sdk_caught_timeout_falls_back_with_original_timestamp_and_recovers(setu
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("failure", ["timeout", "down", "tls", "forbidden"])
+def test_pinned_course_entry_preserves_outage_snapshot_policy(setup, monkeypatch, failure):
+    from schulportal_hessen.applets.mein_unterricht.api import meinunterricht_get_entry_details
+    from schulportal_hessen.tools import safe_fetch
+
+    app, manager, _store, state, headers = setup
+    monkeypatch.setattr(safe_fetch, "public_https_url", lambda _: ("start.schulportal.hessen.de", ("93.184.216.34",)))
+
+    def send(*_args, **_kwargs):
+        if state.mode == "timeout":
+            raise requests.ReadTimeout("timeout")
+        if state.mode == "tls":
+            raise requests.exceptions.SSLError("certificate invalid")
+        response = requests.Response()
+        response.status_code = {"down": 503, "forbidden": 403}.get(state.mode, 200)
+        response._content, response._content_consumed = b'{"lesson": "Math"}', True
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+
+    @app.get("/meinunterricht/entry")
+    async def entry(url: str, auth=Depends(api_module.local_auth_dependency)):
+        client = SimpleNamespace(logged_in=True, session=requests.Session())
+        return await api_module.run_in_threadpool(meinunterricht_get_entry_details, client, url)
+
+    async def scenario():
+        target = "/meinunterricht/entry?url=meinunterricht.php"
+        fresh = await asgi_request(app, "GET", target, headers)
+        assert fresh.json()["success"]
+        assert fresh.headers["x-lanis-cache"] == "fresh"
+        manager._cache.clear()
+        state.mode = failure
+        result = await asgi_request(app, "GET", target, headers)
+        if failure in {"timeout", "down"}:
+            assert result.json() == fresh.json()
+            assert result.headers["x-lanis-cache"] == "stale"
+            assert result.headers["x-lanis-fetched-at"] == fresh.headers["x-lanis-fetched-at"]
+        else:
+            assert not result.json()["success"]
+            assert "x-lanis-cache" not in result.headers
+
+    asyncio.run(scenario())
+
+
 def test_failed_session_restore_can_serve_an_authenticated_snapshot(setup, monkeypatch):
     _app, _manager, store, state, headers = setup
 

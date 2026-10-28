@@ -10,10 +10,12 @@ from urllib3.connection import HTTPSConnection
 from urllib3.connectionpool import HTTPSConnectionPool
 from urllib3.util.connection import create_connection
 
+from .transport import observe_request
+
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 
 
-def public_https_url(url: str) -> tuple[str, str]:
+def public_https_url(url: str) -> tuple[str, tuple[str, ...]]:
     if not isinstance(url, str) or any(ord(c) <= 32 for c in url) or "\\" in url:
         raise ValueError("Invalid document URL")
     parsed = urlsplit(url)
@@ -27,26 +29,39 @@ def public_https_url(url: str) -> tuple[str, str]:
     ):
         raise ValueError("Document URL must use HTTPS without credentials or fragments")
     host = parsed.hostname.encode("idna").decode("ascii")
-    addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    ips = {entry[4][0] for entry in addresses}
+    try:
+        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as error:
+        raise requests.ConnectionError("Document destination lookup failed") from error
+    # Preserve resolver order while removing duplicate socket addresses.
+    ips = tuple(dict.fromkeys(entry[4][0] for entry in addresses))
     if not ips or any(not ipaddress.ip_address(ip).is_global for ip in ips):
         raise ValueError("Document destination must resolve to public addresses")
-    return host, min(ips)
+    return host, ips
 
 
 def fetch_document(session: requests.Session, url: str) -> requests.Response:
-    host, address = public_https_url(url)
+    return observe_request(lambda: _fetch_document(session, url))
+
+
+def _fetch_document(session: requests.Session, url: str) -> requests.Response:
+    host, addresses = public_https_url(url)
 
     class PinnedConnection(HTTPSConnection):
         def _new_conn(self):
             # Keep the original hostname for TLS/SNI and certificate checking,
             # while connecting to the address that passed the policy check.
-            return create_connection(
-                (address, self.port),
-                self.timeout,
-                source_address=self.source_address,
-                socket_options=self.socket_options,
-            )
+            for index, address in enumerate(addresses):
+                try:
+                    return create_connection(
+                        (address, self.port),
+                        self.timeout,
+                        source_address=self.source_address,
+                        socket_options=self.socket_options,
+                    )
+                except OSError:
+                    if index == len(addresses) - 1:
+                        raise
 
     class PinnedAdapter(HTTPAdapter):
         def __init__(self):
