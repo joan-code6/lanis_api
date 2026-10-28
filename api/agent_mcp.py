@@ -391,7 +391,7 @@ async def run(scope, fn, *, write=False):
                 **diagnostics,
                 "success": False,
                 "error": "INTERNAL_ERROR",
-                "next_step": "Explain that LANIS encountered an internal error, report the diagnostic ID and stage, and do not claim the school portal is down.",
+                "next_step": "Explain that LANIS encountered an internal error, report the diagnostic ID and stage.",
             }
         try:
             async with store.database(True) as db:
