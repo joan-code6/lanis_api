@@ -2516,7 +2516,7 @@ def test_connection_status_does_not_dispatch_or_discover_school_tools(monkeypatc
 
     async def scenario():
         monkeypatch.setattr(agent_mcp, "identity", AsyncMock(return_value={
-            "name": "Review connection", "scopes": ["schoolwork:read"]
+            "name": "Review connection", "user_id": "5201:alice", "scopes": ["schoolwork:read"]
         }))
         forbidden = AsyncMock(side_effect=AssertionError("Metadata must not dispatch"))
         monkeypatch.setattr(agent_mcp, "run", forbidden)
@@ -2524,14 +2524,14 @@ def test_connection_status_does_not_dispatch_or_discover_school_tools(monkeypatc
         result = await agent_mcp.lanis_connection()
         assert set(result) == {
             "success", "connection_name", "scopes", "current_time", "timezone",
-            "settings_url",
+            "settings_url", "demo", "writes_simulated",
         }
         assert result["timezone"] == "Europe/Berlin"
         assert result["scopes"] == ["schoolwork:read"]
         forbidden.assert_not_called()
         tools = {t.name: t for t in await agent_mcp.mcp.list_tools()}
         schema = tools["lanis_connection"].outputSchema
-        assert set(schema["properties"]) == set(result)
+        assert set(schema["properties"]) == set(result) | {"demo", "writes_simulated"}
         assert set(schema["required"]) == set(result)
         modules = tools["lanis_modules"]
         assert "modules" in modules.outputSchema["properties"]

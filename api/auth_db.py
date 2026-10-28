@@ -338,6 +338,8 @@ async def initialize() -> None:
         await db.execute("DELETE FROM analytics_diagnostics WHERE expires_at <= ?", (int(time.time()),))
         from .agent_store import SCHEMA
         await db.executescript(SCHEMA)
+        from .hosted_store import SCHEMA as HOSTED_SCHEMA
+        await db.executescript(HOSTED_SCHEMA)
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -1794,6 +1796,11 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
         "whatsapp_links",
         "whatsapp_ai_conversations",
         "whatsapp_pending_actions",
+        "hosted_pairings",
+        "hosted_links",
+        "hosted_schedules",
+        "hosted_runs",
+        "hosted_actions",
         "agent_requests",
         "agent_grants",
         "agent_tokens",

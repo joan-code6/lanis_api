@@ -118,6 +118,7 @@ TOOL_MODULES = {
         "wahlen_get_overview",
     ),
 }
+_hosted_grant = ContextVar("hosted_agent_grant", default=None)
 _required_module = ContextVar("agent_required_module", default=None)
 
 
@@ -223,6 +224,15 @@ def tool(scope=None, *, write=False, destructive=False, **kwargs):
 
         @wraps(fn)
         async def guarded(*args, **kw):
+            from .demo.agents import call_tool, is_demo_user
+
+            grant = await identity(scope)
+            if is_demo_user(grant["user_id"]) and fn.__name__ != "lanis_connection":
+                from inspect import signature
+
+                bound = signature(fn).bind(*args, **kw)
+                bound.apply_defaults()
+                return await call_tool(fn.__name__, bound.arguments)
             token = _required_module.set(requirement)
             try:
                 return await fn(*args, **kw)
@@ -248,8 +258,14 @@ def tool(scope=None, *, write=False, destructive=False, **kwargs):
 
 
 async def identity(scope=None):
-    access = get_access_token()
-    grant = await authenticate(access.token) if access else None
+    hosted = _hosted_grant.get()
+    if hosted:
+        from .hosted_store import grant as hosted_grant
+
+        grant = await hosted_grant(hosted)
+    else:
+        access = get_access_token()
+        grant = await authenticate(access.token) if access else None
     if not grant:
         raise ValueError(
             "CONNECTION_REVOKED: Reconnect LANIS in your agent and approve access through the LANIS sign-in screen."
@@ -370,8 +386,12 @@ async def lanis_connection() -> ConnectionStatus:
     from zoneinfo import ZoneInfo
 
     grant = await identity()
+    from .demo.agents import is_demo_user
+
     return {
         "success": True,
+        "demo": is_demo_user(grant["user_id"]),
+        "writes_simulated": is_demo_user(grant["user_id"]),
         "connection_name": grant["name"],
         "scopes": grant["scopes"],
         "current_time": datetime.now(ZoneInfo("Europe/Berlin")).isoformat(),
@@ -567,7 +587,15 @@ async def available_tools(grant):
     async def read(auth):
         return {"success": True, "methods": sorted(await account_modules(auth))}
 
-    result = await run(None, read)
+    from .demo.agents import is_demo_user
+
+    if is_demo_user(grant["user_id"]):
+        result = {
+            "success": True,
+            "methods": sorted({m for m in TOOL_MODULES.values() if m}),
+        }
+    else:
+        result = await run(None, read)
     methods = set(result.get("methods", []))
     tools = [
         t

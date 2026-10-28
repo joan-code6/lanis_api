@@ -280,59 +280,17 @@ Polling remains subject to each account's active time window, interval, unread-m
 
 ## WhatsApp assistant
 
-The hosted API can optionally expose a WhatsApp assistant. Users link
-their WhatsApp account from **Settings → WhatsApp-Assistent** with a ten-minute,
-single-use code. The code is sent through WhatsApp, so Schulportal credentials
-never pass through Meta. Message previews are disabled by default, `STOP`
-immediately removes the link, and duplicate webhook deliveries are ignored.
+WhatsApp is now managed in **Settings → Agents**, alongside Signal. Both channels
+use the shared backend harness, central AI access, approved MCP permissions and
+persistent scheduled tasks. Existing WhatsApp users must reconnect to approve
+the new permission model. See [hosted agent setup and migration](docs/hosted-agents.md).
 
-When AI is configured, the assistant uses an OpenRouter-compatible iterative
-tool loop. It can reason between tool calls and access the same account-scoped
-school areas as the LANIS UI, including timetable, substitutions, courses,
-attendance, homework, exams, calendar, messages, files, elections, preferences,
-and semantic search. Changes are never executed from a model tool call alone:
-the backend creates an encrypted, short-lived proposal that the user must
-confirm explicitly in WhatsApp. Recent conversation messages are encrypted,
-limited to twelve messages, expire after 24 hours, and are deleted on unlink.
-Replying to or marking an existing message as read requires message previews to
-be enabled so the assistant can verify the exact conversation target.
-
-Configure the AI provider with exactly these three values. `ai_endpoint` must
-be a complete HTTPS Chat Completions URL:
-
-```dotenv
-ai_endpoint=https://ai.hackclub.com/proxy/v1/chat/completions
-ai_api_key=replace-with-a-development-or-production-key
-ai_default_model=openai/gpt-5.6-luna
-```
-
-If AI is unavailable, known basic information requests fall back to the
-deterministic assistant. API keys, raw prompts, reasoning details, tool results,
-and message contents are not logged.
-
-Configure a Meta WhatsApp Business Platform / Cloud API application with:
-
-```dotenv
-WHATSAPP_ACCESS_TOKEN=replace-with-a-permanent-system-user-token
-WHATSAPP_PHONE_NUMBER_ID=replace-with-the-cloud-api-phone-number-id
-WHATSAPP_VERIFY_TOKEN=replace-with-a-random-webhook-verification-token
-WHATSAPP_APP_SECRET=replace-with-the-meta-app-secret
-# Keep this explicit so Graph API upgrades are intentional.
-WHATSAPP_GRAPH_API_VERSION=vXX.X
-# Digits only or international notation; formatting characters are removed.
-WHATSAPP_PUBLIC_NUMBER=491234567890
-LANIS_UI_BASE_URL=https://lanis.arg-server.de
-```
-
-In the Meta application, set the callback URL to
-`https://<api-host>/whatsapp/webhook` and subscribe the WhatsApp Business Account
-to `messages`. The endpoint validates Meta's `X-Hub-Signature-256` against the
-raw request body and ignores events addressed to another phone-number ID.
-
-All six `WHATSAPP_*` values above are required before account pairing is exposed.
-The public number is returned only as a `wa.me` link; the API never exposes the
-access token, app secret, or verification token.
-
+The Meta Cloud API transport keeps its existing environment variables:
+`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`,
+`WHATSAPP_APP_SECRET`, `WHATSAPP_GRAPH_API_VERSION` (e.g. `vXX.X`), and
+`WHATSAPP_PUBLIC_NUMBER`. Set the supported Graph version for your Meta app.
+Register `https://<api-host>/whatsapp/webhook` and subscribe to messages; retain
+the configured app secret for webhook signature verification.
 
 ## Deployment
 
@@ -447,3 +405,10 @@ Claude connectors and other MCP clients can connect through a shared
 OAuth-protected `/mcp` endpoint. The public ChatGPT plugin is planned; operator
 custom-MCP testing and publication requirements are documented separately. Users approve and manage each connection
 in LANIS Settings → Agents. See [setup, permissions, and plugin packaging](docs/agents.md).
+
+## Shared Signal / WhatsApp agents
+
+The backend-hosted agent runtime now lives under **Settings → Agents**. Both
+messaging channels use the central AI configuration, approved LANIS MCP scopes,
+encrypted conversations, and durable cron/one-time tasks. Existing WhatsApp users
+must approve a new connection. See [setup, migration, APIs and operational limits](docs/hosted-agents.md).

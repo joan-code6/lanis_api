@@ -7,6 +7,8 @@ from typing_extensions import Required, TypedDict
 
 class ConnectionStatus(TypedDict):
     success: bool
+    demo: bool
+    writes_simulated: bool
     connection_name: str
     scopes: list[str]
     current_time: str
@@ -21,9 +23,11 @@ class SchoolApp(TypedDict):
 
 class SchoolAppInventory(TypedDict, total=False):
     success: Required[bool]
-    modules: list[SchoolApp]
-    coverage: str
-    error: str
+    modules: list[SchoolApp] | None
+    coverage: str | None
+    error: str | None
     error_kind: str | None
-    next_step: str
+    next_step: str | None
+    demo: bool | None
+    writes_simulated: bool | None
     details: Any

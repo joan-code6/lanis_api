@@ -10,6 +10,7 @@ services:
       - .env
     environment:
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env or the environment}"
+      SIGNAL_BRIDGE_URL: "${SIGNAL_BRIDGE_URL:-http://signal-bridge:8080}"
     volumes:
       - lanis-data:/app/data
     read_only: true
@@ -21,5 +22,25 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  signal-bridge:
+    profiles: [signal]
+    tmpfs:
+      - /run:uid=1000,gid=1000,mode=0755,exec
+    image: "${SIGNAL_BRIDGE_IMAGE:-bbernhard/signal-cli-rest-api:0.101}"
+    restart: unless-stopped
+    environment:
+      MODE: json-rpc
+      JSON_RPC_IGNORE_ATTACHMENTS: "true"
+      JSON_RPC_IGNORE_STORIES: "true"
+      JSON_RPC_IGNORE_AVATARS: "true"
+      JSON_RPC_IGNORE_STICKERS: "true"
+    ports:
+      - "127.0.0.1:${SIGNAL_BRIDGE_PORT:-8081}:8080"
+    volumes:
+      - signal-data:/home/.local/share/signal-cli
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
+  signal-data:
   lanis-data:
