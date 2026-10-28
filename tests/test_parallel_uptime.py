@@ -143,6 +143,35 @@ def test_shared_cycle_survives_cancelled_waiter(monkeypatch):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("mixed", [False, True])
+def test_cycle_preserves_only_unanimous_maintenance_reason(monkeypatch, tmp_path, mixed):
+    async def scenario():
+        database = UserMetricsDB(tmp_path / "metrics.db")
+        monkeypatch.setattr(uptime, "user_metrics_db", database)
+        monkeypatch.setattr(uptime, "_monitor_accounts", lambda: accounts(4))
+        monkeypatch.setattr(uptime, "_schedule_discord_notification", lambda check: None)
+
+        async def fake_round(selected, labels):
+            return [
+                {"account": labels[account[:2]], **result("down"),
+                 "error": "timeout" if mixed and index == 0 else "maintenance"}
+                for index, account in enumerate(selected)
+            ]
+
+        async def no_wait(seconds):
+            pass
+
+        monkeypatch.setattr(uptime, "_probe_round", fake_round)
+        monkeypatch.setattr(uptime.asyncio, "sleep", no_wait)
+        check = await uptime._run_uptime_cycle()
+        expected = "confirmed" if mixed else "maintenance"
+        assert check["status"] == "down"
+        assert check["error"] == expected
+        assert (await database.get_uptime_checks())[0]["error"] == expected
+
+    asyncio.run(scenario())
+
+
 def test_recovery_requires_two_scheduled_cycles_and_survives_unknown(
     monkeypatch, tmp_path
 ):

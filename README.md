@@ -103,6 +103,16 @@ update user activity. Incidents require two healthy scheduled cycles to recover.
 The private admin portal exposes stored rounds, confidence, scope, and 90-day
 availability summaries at `GET /admin/uptime`; the public status projection
 contains only aggregate information.
+
+Before logging in, each probe checks the start page for the Schulportal maintenance
+heading/title, including maintenance pages returned with HTTP 200. Detected
+maintenance is recorded as `down` with error code `maintenance`; login and module
+requests are skipped. The aggregate cycle preserves that reason when all
+confirmation probes report maintenance. Normal authenticated checks resume when
+the maintenance page disappears; the existing two-cycle recovery rule still
+applies. A failed start-page request falls back to authenticated checks. The
+announced end time is not yet extracted or treated as proof of recovery.
+
 Configure `LANIS_UPTIME_DISCORD_WEBHOOK_URL` to
 receive one alert when the service becomes unavailable and one recovery message
 when it becomes operational again; repeated checks during the same incident are
