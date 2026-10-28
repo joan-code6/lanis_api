@@ -194,7 +194,7 @@ def test_local_signing_failure_retains_devices_and_allows_a_retry(monkeypatch):
     async def delete(*args):
         deleted.append(args)
 
-    monkeypatch.setattr(notifications, "run_in_threadpool", send)
+    monkeypatch.setattr(notifications, "_dispatch_push", send)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete)
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
 
@@ -240,7 +240,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
         await auth_db.save_push_subscription(
             "user-a",
             {
-                "endpoint": "https://push.example/subscription",
+                "endpoint": "https://fcm.googleapis.com/subscription",
                 "keys": {"p256dh": "public-key", "auth": "auth-key"},
             },
             session["session_id"],
@@ -300,7 +300,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
         }
         assert await auth_db.get_push_subscriptions("user-a") == [
             {
-                "endpoint": "https://push.example/subscription",
+                "endpoint": "https://fcm.googleapis.com/subscription",
                 "keys": {"p256dh": "public-key", "auth": "auth-key"},
             }
         ]
@@ -1249,7 +1249,10 @@ def test_push_delivery_retries_when_any_device_has_a_transient_failure(monkeypat
 
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
     monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
-    monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
+    monkeypatch.setattr(
+        notifications, "_dispatch_push",
+        lambda subscription, payload: run_in_threadpool(None, subscription, payload),
+    )
 
     async def scenario():
         return await notifications._send_push_to_subscriptions(
@@ -1281,6 +1284,10 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
 
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
     monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
+    monkeypatch.setattr(
+        notifications, "_dispatch_push",
+        lambda subscription, payload: run_in_threadpool(None, subscription, payload),
+    )
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
 
@@ -1306,6 +1313,10 @@ def test_push_delivery_drops_untrusted_stored_endpoints(monkeypatch):
         deleted.append((user_id, endpoint))
 
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(
+        notifications, "_dispatch_push",
+        lambda subscription, payload: run_in_threadpool(None, subscription, payload),
+    )
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
 
@@ -1358,6 +1369,10 @@ def test_message_poll_persists_delivery_state_when_stale_cleanup_fails(monkeypat
     monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
     monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
+    monkeypatch.setattr(
+        notifications, "_dispatch_push",
+        lambda subscription, payload: run_in_threadpool(None, subscription, payload),
+    )
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
 

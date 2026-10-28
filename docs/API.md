@@ -410,7 +410,9 @@ Args:
     username: DSBmobile username or school identifier (e.g. {username}).
     password: DSBmobile password (e.g. {password}).
     plan_index: Which iframe plan URL to parse (default: 0).
-    plan_url: Explicit plan URL to fetch (overrides plan_index).
+    plan_url: Plan URL from authenticated DSB discovery (overrides plan_index).
+        Only public HTTPS destinations without redirects are permitted;
+        documents are limited to 2 MiB and nested tables are rejected.
 
 Returns:
     Dict with the plan URL, title, last-updated timestamp, parsed tables,
@@ -635,7 +637,9 @@ Args:
     username: DSBmobile username or school identifier.
     password: DSBmobile password.
     plan_index: Which plan URL to parse (default: 0).
-    plan_url: Explicit plan URL to fetch (overrides plan_index).
+    plan_url: Plan URL from authenticated DSB discovery (overrides plan_index).
+        Only public HTTPS destinations without redirects are permitted;
+        documents are limited to 2 MiB and nested tables are rejected.
     include_raw: Include raw HTML in response.
     klasse: Filter results by class name (e.g. "05A", "10C").
 

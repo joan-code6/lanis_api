@@ -115,17 +115,19 @@ else
     fi
 
     echo ">>> Starting uvicorn (host=${HOST}, port=${PORT})"
+    DIRECT_LOG="$(mktemp "${TMPDIR:-/tmp}/lanis-api.XXXXXXXX.log")"
+    echo "  Log: ${DIRECT_LOG}"
     nohup "${PYTHON_BIN}" -m uvicorn api.api:app \
         --host "${HOST}" \
         --port "${PORT}" \
         --no-access-log \
-        > /tmp/lanis-api.log 2>&1 &
+        > "${DIRECT_LOG}" 2>&1 &
 
     sleep 1
     if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then
         echo "=== Server running on ${HOST}:${PORT} ==="
     else
-        echo "!!! Server may have failed to start — check /tmp/lanis-api.log"
+        echo "!!! Server may have failed to start — check ${DIRECT_LOG}"
     fi
 fi
 

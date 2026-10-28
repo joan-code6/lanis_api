@@ -163,16 +163,10 @@ Remote MCP publication uses the portal’s **With MCP** path. The ZIP includes
 private app bindings or credentials. See the [publishing preparation guide](agent-publication.md)
 for the exact remaining inputs, review walkthrough and deployment gate.
 
-After the API and UI are deployed, build against the verified public issuer:
-
-```sh
-python scripts/build_agent_plugin.py --issuer https://YOUR_PUBLIC_API_ORIGIN --output /tmp/lanis-plugin.zip
-```
-
-The builder verifies live OAuth discovery, dynamic registration and scope shapes
-before writing the archive. It does not upload, publish or deploy anything. A
-successful build is not a completed submission: publisher details, listing URLs,
-a working demo and reviewer access must also be ready.
+The portable plugin source is in `plugins/lanis/`. Packaging and demo-export
+scripts have been discontinued. Verify live discovery and the archive contents
+manually before any submission. Publisher details, listing URLs, a working demo
+and reviewer access must also be ready.
 
 Official references: [ChatGPT MCP plugins](https://developers.openai.com/plugins/build/mcp-server),
 [plugin authentication](https://developers.openai.com/plugins/build/auth),

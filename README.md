@@ -6,7 +6,7 @@
 
 Unofficial Python client and REST API integrations for Schulportal Hessen (SPH).
 The PyPI package contains the reusable Python client; the repository also includes
-the optional hosted API server and a terminal UI.
+the optional hosted API server.
 
 The client is actively developed against the portal's web interfaces. Portal
 changes can occasionally require a new package release.
@@ -24,7 +24,6 @@ This monorepo contains the following components:
 
 1. **sph_client** / **schulportal_hessen** contains the reusable Python client
 2. **api** wraps the client in a REST API with caching and additional services
-3. **TUI** contains a terminal interface that is currently not actively maintained
 
 ## Supported Modules:
 

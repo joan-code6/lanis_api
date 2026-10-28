@@ -2386,10 +2386,20 @@ async def save_push_subscription(
     session_id: str,
 ) -> None:
     """Associate a browser push subscription with a user."""
+    from .message_notifications import MAX_PUSH_SUBSCRIPTIONS, normalize_push_endpoint
+
+    subscription = {**subscription, "endpoint": normalize_push_endpoint(subscription["endpoint"])}
     user_id = _canonical_user_id(user_id)
     keys = subscription.get("keys") or {}
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT endpoint FROM push_subscriptions WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                existing = {row[0] for row in await cursor.fetchall()}
+            if subscription["endpoint"] not in existing and len(existing) >= MAX_PUSH_SUBSCRIPTIONS:
+                raise ValueError("Push subscription limit reached; remove an existing device first")
             await db.execute(
                 """
                 INSERT INTO push_subscriptions
@@ -2441,12 +2451,19 @@ async def get_push_subscriptions(user_id: str) -> List[Dict[str, Any]]:
 
 async def delete_push_subscription(user_id: str, endpoint: str) -> None:
     """Remove one browser push subscription."""
+    from .message_notifications import normalize_push_endpoint
+
+    try:
+        normalized = normalize_push_endpoint(endpoint)
+    except ValueError:
+        # Legacy invalid endpoints still need to be removable by dispatch.
+        normalized = endpoint
     user_id = _canonical_user_id(user_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                "DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?",
-                (user_id, endpoint),
+                "DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint IN (?, ?)",
+                (user_id, endpoint, normalized),
             )
             await db.commit()
 

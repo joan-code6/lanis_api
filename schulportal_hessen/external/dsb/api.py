@@ -11,6 +11,8 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
+from schulportal_hessen.tools.safe_fetch import MAX_DOCUMENT_BYTES, fetch_document
+
 
 BASE_DSB_URL = "https://www.dsbmobile.de/"
 
@@ -164,7 +166,7 @@ def _parse_last_updated(html: str) -> Optional[datetime.datetime]:
 
 
 def _parse_table(table: Any) -> Dict[str, Any]:
-    header_cells = table.find_all("th")
+    header_cells = [cell for cell in table.find_all("th") if cell.find_parent("table") is table]
     headers = (
         [cell.get_text(" ", strip=True) for cell in header_cells]
         if header_cells
@@ -172,11 +174,11 @@ def _parse_table(table: Any) -> Dict[str, Any]:
     )
 
     rows = []
-    body_rows = table.find_all("tr")
+    body_rows = [row for row in table.find_all("tr") if row.find_parent("table") is table]
     start_index = 1 if headers and body_rows else 0
 
     for row in body_rows[start_index:]:
-        cells = row.find_all(["td", "th"])
+        cells = row.find_all(["td", "th"], recursive=False)
         values = [cell.get_text(" ", strip=True) for cell in cells]
         if not any(values):
             continue
@@ -210,7 +212,16 @@ def _decode_dsb_response(response: requests.Response) -> str:
 
 
 def _parse_plan_tables(html: str) -> Dict[str, Any]:
+    if len(html.encode("utf-8")) > MAX_DOCUMENT_BYTES:
+        raise ValueError("Plan exceeds size limit")
     soup = BeautifulSoup(html, "html.parser")
+    # Reject nested tables before extracting repeated descendant text. This
+    # also bounds parent traversal and date-heading lookup work.
+    table_nodes = soup.find_all("table")
+    if len(table_nodes) > 100 or len(soup.find_all(["td", "th"])) > 20000:
+        raise ValueError("Plan exceeds table or cell limit")
+    if any(table.find_parent("table") is not None for table in table_nodes):
+        raise ValueError("Nested plan tables are not supported")
     title_tag = soup.find(["h1", "h2", "h3"])
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
 
@@ -541,7 +552,9 @@ def dsb_get_substitution_plan(
         username: DSBmobile username or school identifier.
         password: DSBmobile password.
         plan_index: Which plan URL to parse (default: 0).
-        plan_url: Explicit plan URL to fetch (overrides plan_index).
+        plan_url: Plan URL from authenticated DSB discovery (overrides plan_index).
+            Only public HTTPS destinations without redirects are permitted;
+            documents are limited to 2 MiB and nested tables are rejected.
         include_raw: Include raw HTML in response.
         klasse: Filter results by class name (e.g. "05A", "10C").
 
@@ -558,25 +571,27 @@ def dsb_get_substitution_plan(
         lock = threading.RLock()
 
     with lock:
+        # Caller-selected references must belong to this authenticated DSB menu.
+        plan_urls_result = self.dsb_get_plan_urls(username=username, password=password)
+        if not plan_urls_result.get("success"):
+            return plan_urls_result
+        plan_urls = list(plan_urls_result.get("plan_urls") or [])
+        html_plan_url = plan_urls_result.get("html_plan_url")
+        if html_plan_url and html_plan_url not in plan_urls:
+            plan_urls.append(html_plan_url)
+        if plan_url is not None and plan_url not in plan_urls:
+            return {"success": False, "error": "Plan URL is not authorized by DSB discovery"}
         if plan_url is None:
-            plan_urls_result = self.dsb_get_plan_urls(username=username, password=password)
-            if not plan_urls_result.get("success"):
-                return plan_urls_result
-
-            if plan_url is None:
-                plan_url = plan_urls_result.get("html_plan_url")
-            if not plan_url:
-                plan_urls = plan_urls_result.get("plan_urls", [])
-                if plan_index < 0 or plan_index >= len(plan_urls):
-                    return {
-                        "success": False,
-                        "error": f"plan_index out of range. Found {len(plan_urls)} plan URLs.",
-                    }
+            if html_plan_url:
+                plan_url = html_plan_url
+            elif 0 <= plan_index < len(plan_urls):
                 plan_url = plan_urls[plan_index]
+            else:
+                return {"success": False, "error": "plan_index out of range"}
 
         session = _get_dsb_session(self)
         try:
-            response = session.get(plan_url, timeout=15)
+            response = fetch_document(session, plan_url)
             response.raise_for_status()
 
             raw_html = _decode_dsb_response(response)
@@ -595,7 +610,7 @@ def dsb_get_substitution_plan(
                 "last_updated": last_updated.isoformat() if last_updated else None,
                 "tables": tables,
             }
-        except requests.RequestException as e:
+        except (requests.RequestException, ValueError, OSError) as e:
             return {
                 "success": False,
                 "error": f"Failed to fetch substitution plan: {str(e)}",
