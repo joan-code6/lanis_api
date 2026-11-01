@@ -198,3 +198,25 @@ def test_apps_redirect_without_following_is_expiry(monkeypatch, location):
             "https://start.schulportal.hessen.de/startseite.php?a=ajax&f=apps",
             allow_redirects=False,
         )
+
+
+@pytest.mark.parametrize("attachment", [False, True])
+def test_streamed_html_download_does_not_read_body(monkeypatch, attachment):
+    class StreamingResponse(requests.Response):
+        @property
+        def text(self):
+            raise AssertionError("Transport must not consume the download stream")
+
+    response = StreamingResponse()
+    response.status_code = 200
+    response.url = "https://start.schulportal.hessen.de/dateispeicher.php"
+    response.headers["Content-Type"] = "text/html"
+    if attachment:
+        response.headers["Content-Disposition"] = 'attachment; filename="lesson.html"'
+
+    def request(self, method, url, **kwargs):
+        assert kwargs["stream"] is True
+        return response
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    assert ObservedSession().get(response.url, stream=True) is response

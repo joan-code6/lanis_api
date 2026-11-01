@@ -90,6 +90,8 @@ class ObservedSession(requests.Session):
         if (
             parsed.hostname == "start.schulportal.hessen.de"
             and parsed.path != "/startseite.php"
+            and not kwargs.get("stream", False)
+            and "attachment" not in response.headers.get("Content-Disposition", "").lower()
             and "text/html" in response.headers.get("Content-Type", "")
             and "Datenbankauswahl nicht möglich" in response.text
         ):
