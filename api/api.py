@@ -2971,12 +2971,7 @@ async def app_launch(
     token: str = "",
     x_session_token: Optional[str] = Header(None, alias="X-Session-Token"),
 ):
-    """Launch OAuth/SSO apps by resolving the OAuth flow to a callback URL.
-
-    Returns an HTML page that sets the initial auth cookie via a redirect
-    through the app's domain, then navigates to the OAuth callback URL to
-    complete authentication in the user's browser.
-    """
+    """Start external authentication in the browser that will use the app."""
     session_token = x_session_token or token
     if not session_token:
         raise HTTPException(status_code=401, detail="X-Session-Token header or token query parameter required")
@@ -2990,115 +2985,47 @@ async def app_launch(
 
     client = session_data.client
 
-    # Look up the app
+    # Read the portal catalog without resolving every external app's redirects.
+    # Resolution can fail or consume one-time authentication URLs before launch.
     try:
-        modules = await run_in_threadpool(client.get_available_modules)
-    except Exception:
-        modules = []
-
-    module = next((m for m in modules if m.get("name", "").lower() == app_name.lower()), None)
-    if not module:
-        module = next((m for m in modules if app_name.lower() in m.get("name", "").lower()), None)
-    if not module:
+        catalog = await run_in_threadpool(client.get_apps)
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="Could not load portal apps") from error
+    if not catalog.get("success"):
+        raise HTTPException(status_code=502, detail="Could not load portal apps")
+    entries = catalog.get("data", {}).get("entrys", [])
+    module = next(
+        (entry for entry in entries
+         if str(entry.get("Name") or "").strip().casefold() == app_name.strip().casefold()),
+        None,
+    )
+    if module is None:
         raise HTTPException(status_code=404, detail=f"App '{app_name}' not found")
-
-    portal_url = module.get("url", "")
-    if not portal_url:
+    link = module.get("link")
+    if not link:
         raise HTTPException(status_code=404, detail="No portal URL")
+    portal_url = urljoin(client.BASE_START_URL.rstrip("/") + "/", link)
 
-    # Follow flow to get OAuth URLs
-    launch_data = await run_in_threadpool(_build_launch_urls, client, portal_url)
-    if not launch_data:
-        raise HTTPException(status_code=502, detail="Failed to build launch URLs")
+    from api.app_launch import browser_launch_url
+    try:
+        destination = await run_in_threadpool(browser_launch_url, client, portal_url)
+    except (ValueError, http_requests.RequestException) as error:
+        raise HTTPException(status_code=502, detail="Could not start app login") from error
 
     try:
         await user_metrics_db.record_module_open(
             session_data.school_id,
             session_data.username,
-            str(module.get("name") or app_name),
+            str(module.get("Name") or app_name),
         )
     except Exception:
         logger.warning("Could not record module usage", exc_info=True)
 
-    html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{app_name}</title></head>
-<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#f5f5f5">
-<div style="text-align:center"><p>Redirecting to {app_name}&hellip;</p></div>
-<script>
-(function(){{
-    var cookieUrl = {json.dumps(launch_data["cookie_url"])};
-    var callbackUrl = {json.dumps(launch_data["callback_url"])};
-
-    // Step 1: set initial auth cookie by loading the cookie-set URL
-    var img = new Image();
-    img.onload = img.onerror = function() {{
-        // Step 2: cookie is set, now visit the callback to complete auth
-        setTimeout(function(){{ window.location.replace(callbackUrl); }}, 200);
-    }};
-    img.src = cookieUrl;
-}})();
-</script>
-</body></html>"""
-
-    return Response(content=html, media_type="text/html")
-
-
-def _build_launch_urls(client: SchulportalHessenAPI, portal_url: str) -> Optional[Dict[str, str]]:
-    """Follow OAuth flow to extract cookie-set and callback URLs.
-
-    The cookie-set URL (first page that redirects to the target app's
-    domain) sets the initial auth cookie via its redirect response.
-    The callback URL then exchanges the OAuth code for the final session.
-
-    Returns dict with cookie_url and callback_url, or None on failure.
-    """
-    oauth_indicators = ("vidis", "oauth", "openid", "oidc")
-    portal_hosts = ("schulportal.hessen.de", "login.schulportal.hessen.de")
-    current_url = portal_url
-    cookie_url = None
-    callback_url = None
-    seen_oauth = False
-
-    for _ in range(12):
-        try:
-            resp = client.session.get(current_url, allow_redirects=False, timeout=10, stream=True)
-            resp.close()
-        except Exception:
-            break
-
-        if resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("Location", "")
-            if not location:
-                break
-            next_url = urljoin(current_url, location)
-            next_host = urlparse(next_url).hostname or ""
-
-            if not seen_oauth:
-                if any(ind in next_url.lower() for ind in oauth_indicators):
-                    seen_oauth = True
-
-            # Capture the first redirect that lands on the target app's domain
-            # (this response sets the initial auth cookie)
-            if cookie_url is None and next_host:
-                if not any(next_host.endswith(h) for h in portal_hosts) and "vidis" not in next_host:
-                    cookie_url = next_url
-
-            if seen_oauth and "code=" in next_url:
-                if "vidis" not in next_host and not any(next_host.endswith(h) for h in portal_hosts):
-                    callback_url = next_url
-                    break
-
-            current_url = next_url
-        else:
-            break
-
-    if not cookie_url:
-        cookie_url = portal_url
-
-    if not callback_url:
-        callback_url = current_url
-
-    return {"cookie_url": cookie_url, "callback_url": callback_url}
+    return Response(status_code=303, headers={
+        "Location": destination,
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+    })
 
 
 __all__ = ["app", "app_proxy"]

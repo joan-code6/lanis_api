@@ -148,9 +148,8 @@ class SchulportalHessenAPI:
         """Follow redirects for a URL and return the final destination.
 
         Manually follows redirects step by step. For OAuth/OIDC flows
-        (vidis, oauth, openid) the auth-callback URL (containing the
-        OAuth code parameter) is returned so the user's browser can
-        receive auth cookies directly from the target application.
+        (vidis, oauth, openid), returns the original portal URL so app
+        launch can start authentication in the user's browser.
         Simple redirects are resolved to their final destination.
         Falls back to the original URL on any error.
 
@@ -164,8 +163,8 @@ class SchulportalHessenAPI:
         Returns
         -------
         str
-            The final URL after redirects, or the auth-callback URL for
-            OAuth flows, or the original URL if resolution fails.
+            The final URL for plain links, or the original portal URL
+            for OAuth flows and failed resolutions.
         """
         oauth_indicators = ("vidis", "oauth", "openid", "oidc")
         portal_hosts = ("schulportal.hessen.de", "login.schulportal.hessen.de")
@@ -199,13 +198,10 @@ class SchulportalHessenAPI:
                     next_url = urljoin(current_url, location)
                     next_host = urlparse(next_url).hostname or ""
 
-                    # In an OAuth flow: return the callback URL that
-                    # contains the authorization code — visiting it
-                    # in the browser sets the target app's auth cookies
-                    if seen_oauth and "code=" in next_url and next_host:
-                        portal_base = "schulportal.hessen.de"
-                        if portal_base not in next_host and "vidis" not in next_host.lower():
-                            return next_url
+                    # OAuth state and cookies must be created by the browser.
+                    # Do not follow or cache one-time authorization callbacks.
+                    if seen_oauth or any(ind in next_url.lower() for ind in oauth_indicators):
+                        return url
 
                     current_url = next_url
                 else:
