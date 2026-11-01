@@ -232,27 +232,13 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
 
 def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool) -> None:
     """Send one uptime transition notification to the configured webhook."""
-    features = check.get("features") or []
-    feature_status = ", ".join(
-        f"{feature.get('name', 'feature')}: {feature.get('status', 'unknown')}"
-        for feature in features
-    )
-    if recovered:
-        content = (
-            f"✅ **{UPTIME_SERVICE_NAME} ist wieder erreichbar.**\n"
-            f"Alle synthetischen Checks sind wieder erfolgreich ({feature_status or 'keine Details'})."
-        )
-    else:
-        error_text = f" · Fehler: `{check['error']}`" if check.get("error") else ""
-        content = (
-            f"🚨 **{UPTIME_SERVICE_NAME} ist beeinträchtigt.**\n"
-            f"Status: `{check.get('status', 'unknown')}`"
-            f"{error_text}\n"
-            f"Checks: {feature_status or 'keine Details'}"
-        )
+    from .public_status import incident_id
+    identifier = incident_id(check["checked_at"])
+    url = f"https://lanis.arg-server.de/status/incident/{identifier}"
+    title = "✅ Schulportal wieder erreichbar" if recovered else "🔴 Schulportal beeinträchtigt"
     response = requests.post(
         webhook_url,
-        json={"content": content, "allowed_mentions": {"parse": []}},
+        json={"content": f"**{title}**\n[Details ansehen]({url})", "allowed_mentions": {"parse": []}, "flags": 4},
         timeout=get_uptime_timeout_seconds(),
     )
     response.raise_for_status()

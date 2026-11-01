@@ -37,6 +37,7 @@ def _check(row: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
     # module/account names, URLs, or other fields unsuitable for public access.
     features = row.get("features") or []
     return {
+        "id": incident_id(checked_at),
         "checked_at": _iso(checked_at),
         "status": row.get("status")
         if row.get("status") in {"up", "down", "degraded"}
@@ -208,3 +209,19 @@ async def get_public_status() -> dict[str, Any]:
         _cache_configuration = configuration
         _cache_deadline = time.monotonic() + ttl
         return result
+
+
+def incident_id(value: Any) -> str:
+    timestamp = _timestamp(value)
+    if timestamp is None:
+        raise ValueError("Invalid incident timestamp")
+    return timestamp.strftime("%Y%m%dT%H%M%S%fZ")
+
+
+async def get_public_incident(identifier: str) -> dict[str, Any] | None:
+    rows = await uptime.user_metrics_db.get_uptime_checks(limit=-1)
+    for row in rows:
+        timestamp = _timestamp(row.get("checked_at"))
+        if timestamp and incident_id(timestamp) == identifier:
+            return _check(row, timestamp)
+    return None

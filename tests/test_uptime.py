@@ -182,8 +182,9 @@ def test_discord_alerts_only_on_issue_and_recovery_transitions(monkeypatch, tmp_
         )
         monkeypatch.setattr(uptime.requests, "post", fake_post)
 
-        healthy = {"status": "up", "error": None, "features": []}
+        healthy = {"checked_at": "2026-09-03T10:10:00", "status": "up", "error": None, "features": []}
         issue = {
+            "checked_at": "2026-09-03T10:05:00",
             "status": "down",
             "error": "login_failed",
             "features": [{"name": "login", "status": "down"}],
