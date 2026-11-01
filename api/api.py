@@ -871,6 +871,22 @@ class AuthManager:
         if data:
             data.client.close()
 
+    async def discard_expired_upstream_sessions(self, user_id, expired_sessions):
+        """Discard only the client which actually hit the upstream login gate.
+
+        Concurrent readers may already have restored a replacement client.
+        Keep LANIS tokens and good cached data: upstream expiry is not logout.
+        """
+        user_id = canonicalize_user_id(user_id)
+        async with self._lock:
+            data = self._schulportal_clients.get(user_id)
+            if data and data.client.session in expired_sessions:
+                self._schulportal_clients.pop(user_id)
+            else:
+                data = None
+        if data:
+            data.client.close()
+
     async def drop_schulportal_session(self, user_id: str) -> None:
         """Close and remove a Schulportal session."""
         user_id = canonicalize_user_id(user_id)
@@ -973,6 +989,8 @@ class AuthManager:
         if isinstance(data, dict) and data.get("success") is False:
             return
         current = observation.get()
+        if current and current.security_failure:
+            return
         if current and current.cache_user_id == user_id and snapshots.version(user_id, current.cache_path) != current.cache_version:
             return
         cache_key = self._make_cache_key(user_id, endpoint, params)
@@ -1008,6 +1026,9 @@ class AuthManager:
     ) -> bool:
         """Store a response unless the endpoint was invalidated while fetching it."""
         if isinstance(data, dict) and data.get("success") is False:
+            return False
+        current = observation.get()
+        if current and current.security_failure:
             return False
         async with self._lock:
             version_key = (user_id, endpoint)
