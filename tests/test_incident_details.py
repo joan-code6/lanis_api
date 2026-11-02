@@ -66,3 +66,24 @@ def test_discord_link_uses_public_incident_projection(monkeypatch):
     asyncio.run(uptime._notify_discord_on_transition(rows[-1]))
     assert sent[0]["incident_id"] == "20261101T100200000000Z"
     assert asyncio.run(public_status.get_public_incident(sent[0]["incident_id"])) is not None
+
+
+def test_png_renderer_runs_outside_event_loop(monkeypatch):
+    import sys
+    import threading
+    import types
+    from api import api as routes
+    event_loop_thread = threading.get_ident()
+    snapshot = {"generated_at": "example"}
+    async def status(): return snapshot
+    def render(data):
+        assert threading.get_ident() != event_loop_thread
+        assert data is snapshot
+        return b"example-png"
+    module = types.ModuleType("api.status_image")
+    module.render_status_image = render
+    monkeypatch.setitem(sys.modules, "api.status_image", module)
+    monkeypatch.setattr(routes, "get_public_status", status)
+    response = asyncio.run(routes.public_status_image())
+    assert response.body == b"example-png"
+    assert response.media_type == "image/png"

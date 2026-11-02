@@ -5732,4 +5732,5 @@ async def public_status_image():
     from .status_image import render_status_image
     from fastapi.responses import Response
     data = await get_public_status()
-    return Response(render_status_image(data), media_type="image/png", headers={"Cache-Control": "public, max-age=30"})
+    image_bytes = await run_in_threadpool(render_status_image, data)
+    return Response(image_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=30"})
