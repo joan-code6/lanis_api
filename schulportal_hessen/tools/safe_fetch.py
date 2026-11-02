@@ -10,7 +10,7 @@ from urllib3.connection import HTTPSConnection
 from urllib3.connectionpool import HTTPSConnectionPool
 from urllib3.util.connection import create_connection
 
-from .transport import observe_request
+from .transport import check_portal_session, observe_request
 
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 MAX_CONNECT_ATTEMPTS = 4
@@ -97,8 +97,12 @@ def _fetch_document(session: requests.Session, url: str) -> requests.Response:
         )
         try:
             if 300 <= response.status_code < 400:
+                check_portal_session(session, response, url, stream=True)
                 raise ValueError("Document redirects are not permitted")
-            response.raise_for_status()
+            # Authorization failures must be observed before reading an error
+            # body: a later read timeout must not enable stale private data.
+            if response.status_code in (401, 403):
+                response.raise_for_status()
             body = bytearray()
             for chunk in response.iter_content(64 * 1024):
                 body.extend(chunk)
@@ -107,6 +111,8 @@ def _fetch_document(session: requests.Session, url: str) -> requests.Response:
             response._content = bytes(body)
             response._content_consumed = True
             session.cookies.update(response.cookies)
+            check_portal_session(session, response, url)
+            response.raise_for_status()
             return response
         finally:
             response.close()

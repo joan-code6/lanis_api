@@ -1,0 +1,407 @@
+import asyncio
+
+import pytest
+import requests
+
+from schulportal_hessen.tools.transport import (
+    ObservedSession,
+    TransportObservation,
+    UpstreamSessionExpired,
+    observation,
+)
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["stundenplan.php", "meinunterricht.php", "kalender.php", "nachrichten.php"],
+)
+def test_login_gate_never_reaches_module_parser(monkeypatch, module):
+    def request(self, method, url, **kwargs):
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://start.schulportal.hessen.de/forward.php"
+        response._content = (
+            '<h1>Login nötig</h1><a id="loginButton">Zum Login</a>'.encode()
+        )
+        response.encoding = "utf-8"
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    session = ObservedSession()
+    current = TransportObservation()
+    reset = observation.set(current)
+    try:
+        with pytest.raises(UpstreamSessionExpired):
+            session.get("https://start.schulportal.hessen.de/" + module)
+        assert current.expired_sessions == [session]
+        assert current.security_failure
+        assert not current.unavailable
+    finally:
+        observation.reset(reset)
+
+
+def test_expiry_discard_preserves_concurrently_restored_client():
+    from types import SimpleNamespace
+
+    from api.api import AuthManager
+
+    async def scenario():
+        manager = AuthManager()
+        old_session = ObservedSession()
+        replacement = SimpleNamespace(client=SimpleNamespace(session=ObservedSession()))
+        manager._schulportal_clients["5201:student"] = replacement
+        await manager.discard_expired_upstream_sessions("5201:student", [old_session])
+        assert manager._schulportal_clients["5201:student"] is replacement
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "path", ["/stundenplan", "/meinunterricht", "/kalender", "/nachrichten/headers"]
+)
+@pytest.mark.parametrize("persistent", [False, True])
+def test_read_recovery_is_bounded_and_cannot_return_false_success(
+    monkeypatch, path, persistent
+):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from test_outage_cache import asgi_request
+
+    from api import api as api_module
+    from api.outage_cache import OutageCacheRoute
+
+    state = SimpleNamespace(calls=0, discarded=0)
+    session = ObservedSession()
+
+    async def auth(_token):
+        return SimpleNamespace(user_id="5201:student")
+
+    async def discard(user_id, expired):
+        assert user_id == "5201:student"
+        assert expired == [session]
+        state.discarded += 1
+
+    monkeypatch.setattr(api_module, "local_auth_dependency", auth)
+    monkeypatch.setattr(
+        api_module,
+        "sessions",
+        SimpleNamespace(discard_expired_upstream_sessions=discard),
+    )
+    app = FastAPI()
+    app.router.route_class = OutageCacheRoute
+
+    @app.get(path)
+    async def read():
+        state.calls += 1
+        if persistent or state.calls == 1:
+            current = observation.get()
+            current.expired_sessions.append(session)
+            current.security_failure = True
+            # Some parsers previously treated login HTML as an empty success.
+            return {"success": True, "entries": []}
+        return {"success": True, "entries": ["restored"]}
+
+    result = asyncio.run(asgi_request(app, "GET", path, {"X-Session-Token": "token"}))
+    assert state.calls == 2
+    assert state.discarded == (2 if persistent else 1)
+    if persistent:
+        assert result.status_code == 503
+        assert result.headers["retry-after"] == "5"
+    else:
+        assert result.status_code == 200
+        assert result.json()["entries"] == ["restored"]
+
+
+def test_expired_client_is_removed_without_revoking_local_login():
+    from types import SimpleNamespace
+
+    from api.api import AuthManager
+
+    async def scenario():
+        manager = AuthManager()
+        session = ObservedSession()
+        closed = []
+        client = SimpleNamespace(session=session, close=lambda: closed.append(True))
+        manager._schulportal_clients["5201:student"] = SimpleNamespace(client=client)
+        await manager.set_cache("5201:student", "/kalender", {"success": True})
+        await manager.discard_expired_upstream_sessions("5201:student", [session])
+        assert "5201:student" not in manager._schulportal_clients
+        assert closed == [True]
+        assert await manager.get_cached("5201:student", "/kalender") == {
+            "success": True
+        }
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_database_error_requires_positive_authentication_probe(monkeypatch, expired):
+    calls = []
+
+    def request(self, method, url, **kwargs):
+        calls.append(url)
+        response = requests.Response()
+        response.status_code = 200
+        response.url = url
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
+        response.encoding = "utf-8"
+        response._content_consumed = True
+        if "meinunterricht.php" in url:
+            response._content = "<h1>Fehler</h1>Datenbankauswahl nicht möglich".encode()
+        elif expired:
+            response.url = "https://start.schulportal.hessen.de/index.php"
+            response.history = [requests.Response()]
+            response._content = b"<html>School selection</html>"
+        else:
+            response._content = b'{"error":"0","entrys":[]}'
+        return response
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    session = ObservedSession()
+    current = TransportObservation()
+    reset = observation.set(current)
+    try:
+        if expired:
+            with pytest.raises(UpstreamSessionExpired):
+                session.get("https://start.schulportal.hessen.de/meinunterricht.php")
+            assert current.expired_sessions == [session]
+        else:
+            response = session.get(
+                "https://start.schulportal.hessen.de/meinunterricht.php"
+            )
+            assert "Datenbankauswahl" in response.text
+            assert not current.expired_sessions
+        assert len(calls) == 2
+    finally:
+        observation.reset(reset)
+
+
+@pytest.mark.parametrize(
+    "location", ["/index.php", "https://login.schulportal.hessen.de/"]
+)
+def test_apps_redirect_without_following_is_expiry(monkeypatch, location):
+    def request(self, method, url, **kwargs):
+        assert kwargs["allow_redirects"] is False
+        response = requests.Response()
+        response.status_code = 302
+        response.url = url
+        response.headers["Location"] = location
+        response._content = b""
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    with pytest.raises(UpstreamSessionExpired):
+        ObservedSession().get(
+            "https://start.schulportal.hessen.de/startseite.php?a=ajax&f=apps",
+            allow_redirects=False,
+        )
+
+
+@pytest.mark.parametrize("attachment", [False, True])
+def test_streamed_html_download_does_not_read_body(monkeypatch, attachment):
+    class StreamingResponse(requests.Response):
+        @property
+        def text(self):
+            raise AssertionError("Transport must not consume the download stream")
+
+    response = StreamingResponse()
+    response.status_code = 200
+    response.url = "https://start.schulportal.hessen.de/dateispeicher.php"
+    response.headers["Content-Type"] = "text/html"
+    if attachment:
+        response.headers["Content-Disposition"] = 'attachment; filename="lesson.html"'
+
+    def request(self, method, url, **kwargs):
+        assert kwargs["stream"] is True
+        return response
+
+    monkeypatch.setattr(requests.Session, "request", request)
+    assert ObservedSession().get(response.url, stream=True) is response
+
+
+def test_streamed_forward_response_does_not_read_body(monkeypatch):
+    class StreamingResponse(requests.Response):
+        @property
+        def text(self):
+            raise AssertionError("Must not buffer streamed forward response")
+
+    response = StreamingResponse()
+    response.status_code = 200
+    response.url = "https://start.schulportal.hessen.de/forward.php"
+    monkeypatch.setattr(requests.Session, "request", lambda *a, **kw: response)
+    assert (
+        ObservedSession().get(
+            "https://start.schulportal.hessen.de/dateispeicher.php", stream=True
+        )
+        is response
+    )
+
+
+def test_security_failure_blocks_successful_payload_in_both_cache_writers():
+    from api.api import AuthManager
+
+    async def scenario():
+        manager = AuthManager()
+        reset = observation.set(TransportObservation(security_failure=True))
+        try:
+            version = await manager.get_cache_version("5201:student", "/kalender")
+            await manager.set_cache("5201:student", "/kalender", {"success": True})
+            stored = await manager.set_cache_if_current_version(
+                "5201:student", "/kalender", {"success": True}, "", version
+            )
+            assert stored is False
+            assert await manager.get_cached("5201:student", "/kalender") is None
+        finally:
+            observation.reset(reset)
+
+    asyncio.run(scenario())
+
+
+def test_next_request_discards_client_after_consumed_write_expiry(monkeypatch):
+    from types import SimpleNamespace
+
+    from api import api as api_module
+
+    closed = []
+    old_session = ObservedSession()
+    old_session.upstream_expired = True
+
+    class FreshClient:
+        def login(self, *args):
+            return {"success": True}
+
+        def close(self):
+            pass
+
+    async def credentials(_):
+        return {"school_id": "5201", "username": "student", "password": "test"}
+
+    monkeypatch.setattr(api_module, "SchulportalHessenAPI", FreshClient)
+    monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", credentials)
+
+    async def scenario():
+        manager = api_module.AuthManager()
+        now = api_module.datetime.utcnow()
+        manager._schulportal_clients["5201:student"] = (
+            api_module.SchulportalSessionData(
+                client=SimpleNamespace(
+                    session=old_session, close=lambda: closed.append(True)
+                ),
+                created_at=now,
+                last_used=now,
+                username="student",
+                school_id="5201",
+            )
+        )
+        result = await manager._get_or_create_schulportal_client("5201:student")
+        assert isinstance(result.client, FreshClient)
+        assert closed == [True]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", [200, 500])
+@pytest.mark.parametrize("expired", [False, True])
+def test_pinned_entry_probes_expiry_without_losing_source_session(
+    monkeypatch, status, expired
+):
+    from schulportal_hessen.tools import safe_fetch
+
+    probes = []
+    monkeypatch.setattr(
+        safe_fetch,
+        "public_https_url",
+        lambda _: ("start.schulportal.hessen.de", ("93.184.216.34",)),
+    )
+
+    def send(_transport, prepared, **kwargs):
+        assert kwargs["allow_redirects"] is False
+        response = requests.Response()
+        response.status_code = status
+        response.url = prepared.url
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
+        response.encoding = "utf-8"
+        response._content = "Datenbankauswahl nicht möglich".encode()
+        response._content_consumed = True
+        return response
+
+    def request(_session, _method, url, **_kwargs):
+        probes.append(url)
+        response = requests.Response()
+        response.status_code = 200
+        response.url = (
+            "https://start.schulportal.hessen.de/index.php" if expired else url
+        )
+        response.history = [requests.Response()] if expired else []
+        response._content, response._content_consumed = b"{}", True
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    monkeypatch.setattr(requests.Session, "request", request)
+    source = ObservedSession()
+    current = TransportObservation(fail_fast=True)
+    reset = observation.set(current)
+    try:
+        if expired:
+            with pytest.raises(UpstreamSessionExpired):
+                safe_fetch.fetch_document(
+                    source, "https://start.schulportal.hessen.de/meinunterricht.php"
+                )
+            assert current.expired_sessions == [source]
+            assert source.upstream_expired
+            assert current.security_failure and not current.unavailable
+        elif status == 500:
+            with pytest.raises(requests.HTTPError):
+                safe_fetch.fetch_document(
+                    source, "https://start.schulportal.hessen.de/meinunterricht.php"
+                )
+            assert current.unavailable and not current.security_failure
+        else:
+            assert (
+                safe_fetch.fetch_document(
+                    source, "https://start.schulportal.hessen.de/meinunterricht.php"
+                ).status_code
+                == 200
+            )
+            assert not current.expired_sessions
+        assert len(probes) == 1
+    finally:
+        observation.reset(reset)
+
+
+def test_pinned_entry_login_redirect_is_expiry_without_following_it(monkeypatch):
+    from schulportal_hessen.tools import safe_fetch
+
+    calls = []
+    monkeypatch.setattr(
+        safe_fetch,
+        "public_https_url",
+        lambda _: ("start.schulportal.hessen.de", ("93.184.216.34",)),
+    )
+
+    def send(_transport, prepared, **kwargs):
+        calls.append(prepared.url)
+        assert kwargs["allow_redirects"] is False
+        response = requests.Response()
+        response.status_code, response.url = 302, prepared.url
+        response.headers["Location"] = "https://login.schulportal.hessen.de/"
+        response._content, response._content_consumed = b"", True
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    source = ObservedSession()
+    current = TransportObservation()
+    reset = observation.set(current)
+    try:
+        with pytest.raises(UpstreamSessionExpired):
+            safe_fetch.fetch_document(
+                source, "https://start.schulportal.hessen.de/meinunterricht.php"
+            )
+        assert current.expired_sessions == [source]
+        assert current.security_failure
+        assert calls == ["https://start.schulportal.hessen.de/meinunterricht.php"]
+    finally:
+        observation.reset(reset)

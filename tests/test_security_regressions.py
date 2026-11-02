@@ -259,6 +259,32 @@ def test_pinned_transport_observes_dns_failure_and_honors_fail_fast(monkeypatch)
         observation.reset(token)
 
 
+@pytest.mark.parametrize("status", [401, 403])
+def test_authorization_failure_is_observed_before_reading_error_body(
+    monkeypatch, status
+):
+    monkeypatch.setattr(
+        safe_fetch, "public_https_url", lambda _: ("plans.example", ("93.184.216.34",))
+    )
+    response = requests.Response()
+    response.status_code = status
+    response._content, response._content_consumed = b"", True
+
+    def chunks(*_args, **_kwargs):
+        raise AssertionError("Authorization error body must not be read")
+
+    response.iter_content = chunks
+    monkeypatch.setattr(requests.Session, "send", lambda *_a, **_k: response)
+    current = TransportObservation()
+    token = observation.set(current)
+    try:
+        with requests.Session() as session, pytest.raises(requests.HTTPError):
+            safe_fetch.fetch_document(session, "https://plans.example/plan")
+        assert current.security_failure and not current.unavailable
+    finally:
+        observation.reset(token)
+
+
 def test_dsb_authorizes_explicit_and_discovered_plans(monkeypatch):
     calls = []
     client = SimpleNamespace(
