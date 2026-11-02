@@ -377,7 +377,10 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
             break
 
         rows = await user_metrics_db.get_uptime_checks(limit=-1)
-        incidents = group_uptime_incidents(rows)
+        from .public_status import _project_observations
+        now = _utcnow().replace(tzinfo=timezone.utc)
+        projected = [observation for _, observation in _project_observations(rows, now)]
+        incidents = group_uptime_incidents(projected)
         notification = dict(check)
         if incidents:
             notification["incident_id"] = incidents[-1]["id"]
