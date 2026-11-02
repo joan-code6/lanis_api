@@ -1,82 +1,61 @@
-# Android closed beta: rollout and operator runbook
+# Android closed beta: self-service Google Groups
 
-Package: `de.joancode.lanis`. Candidate opt-in link:
-`https://play.google.com/apps/testing/de.joancode.lanis`.
+Package: `de.joancode.lanis`. Users join
+https://groups.google.com/g/lanis-beta/about with their Play Store Google account,
+then explicitly opt into https://play.google.com/apps/testing/de.joancode.lanis
+with that same account before downloading. Google Group membership establishes
+eligibility only. LANIS does not verify membership, opt-in, installation or feedback.
+Some supervised child accounts cannot join Google Groups; do not promise access
+for every student. No Google password, OAuth or Groups API is involved.
 
-## Verified scope and activation gate
+## Activation gate and operator-reported state
 
-No Play Console changes or private-track inspection were performed by this implementation.
-Last operator-provided state: 1.0.2 (versionCode 3) on INTERNAL;
-CLOSED Alpha had no release and zero testers. This is not evidence of a live
-closed test. Keep invitations disabled until the operator completes the checks below.
+Coordination comments on UI PR #125 report that Alpha uses
+`lanis-beta@googlegroups.com`, the group permits joining and its public `/about`
+page is readable without signing in. Conversations/member lists/posting remain
+private. Version 1.0.2 (code 3) was submitted to CLOSED Alpha review, with prechecks
+running. These are operator reports, not an independently verified live release.
+Recruitment MUST remain off until approval and actual closed-test access are verified.
+This agent changed no Play Console/group settings and deployed nothing.
 
-Google documentation:
+## Rollout and configuration
+
+1. Review/deploy lanis_api #98 through the normal separately approved process,
+   then lanis_ui #125. The old admin PR #15 is superseded; no operator queue is needed.
+2. Backend startup creates `android_beta_preferences` with only account ID,
+   permanent invitation dismissal and cooldown-until timestamp. If the old
+   `android_beta` table exists, startup preserves recruitment preferences then drops
+   that obsolete registry (including emails, approvals and acknowledgement state).
+   Migration is idempotent. Existing DB backups retain their normal retention policy;
+   do not restore obsolete email registries into live use. No backfill or cron.
+3. `ANDROID_BETA_ENABLED=false` is the default and must stay false during review.
+   Optional `ANDROID_BETA_GROUP_URL` defaults to the group `/about` URL above.
+   `ANDROID_BETA_JOIN_URL` defaults to the package's testing URL above.
+4. The Console owner verifies that the CLOSED Alpha release is approved/published,
+   intended countries/feedback settings are correct, and the Google Group remains
+   selected for that CLOSED track. Do not change Console/group settings from this task.
+5. With a real eligible Google account, join the group, sign into the same account
+   on the closed opt-in page, explicitly join, and verify download. An account in
+   internal testing may need to leave the internal test first to verify closed access.
+6. Only after those checks, enable recruitment through the normal approved config
+   rollout. Confirm Android-browser invitation after dashboard load and native
+   Capacitor exclusion. Both links remain available in Settings even while disabled,
+   with explicit wording that the closed release is not yet available.
+
+## Ongoing operation
+
+There are no daily approvals, email exports, allowlist uploads or notification emails.
+Users join the group and test themselves. Collect genuine feedback via the existing
+feedback channel and monitor actual CLOSED enrollment in Google Play. The goal is
+at least 12 real testers continuously opted in for 14 days; recruit a buffer.
+Internal testing does not satisfy that requirement. Link clicks, invitation dismissal
+and self-confirmation must never be counted as membership, enrollment or installation.
+
+Showing an invitation or selecting Später stores a seven-day cooldown. Nicht mehr
+anzeigen stores a permanent invitation preference. Settings always retains both
+links. Account export includes these preferences; account deletion removes them.
+Disable recruitment with `ANDROID_BETA_ENABLED=false` if access becomes unavailable.
+
+Google references:
 - https://support.google.com/googleplay/android-developer/answer/9845334
 - https://support.google.com/googleplay/android-developer/answer/14151465
-
-Internal testing does not meet the closed-test production-access requirement.
-The goal is at least 12 real testers continuously opted into the CLOSED test
-for 14 days. Registration, allowlisting, popup acknowledgement and link clicks
-are not proof of opt-in, installation, participation or feedback.
-
-## Rollout order (separate approval; nothing deployed by these PRs)
-
-1. Review the lanis_api PR, then deploy it through the normal approved process.
-   Startup `auth_db.initialize()` adds the `android_beta` table with unique account,
-   opaque request ID and unique normalized email indexes. No manual migration or
-   backfill. Back up `data/auth.db` normally. Rollback can leave the unused table.
-2. Deploy lanis_admin, then lanis_ui after backend availability is confirmed.
-   Both use their existing backend URL and session/admin authentication settings.
-3. Set backend `ANDROID_BETA_ENABLED=false` (the default) during preparation.
-   `ANDROID_BETA_JOIN_URL` defaults to the candidate link above; replace it with
-   the actual CLOSED opt-in URL copied from Play Console. There is no cron or Play API.
-4. In Play Console select this package, Testing > Closed testing > Alpha.
-   Create/select the closed track and publish an eligible signed release there.
-   Verify review/publication is complete and the intended countries are available.
-   Select/create the email tester list for this CLOSED track, save it and record
-   all pre-existing tester addresses. Configure a real feedback channel.
-5. Copy the CLOSED opt-in URL from that track. Verify with an allowlisted Google
-   account that it explicitly offers joining this closed test, followed by download.
-   If that account is enrolled in internal testing, leave internal testing first
-   and verify the closed track enrollment; an internal install does not count.
-6. Only then enable `ANDROID_BETA_ENABLED=true` via the normal approved deployment
-   configuration process. Verify signup in Android Chrome and exclusion in Capacitor.
-
-## Daily manual approvals
-
-1. Open Android-Beta in the private admin portal. Filter Ausstehend.
-2. Copy pending addresses and add them to the existing CLOSED tester list in Play
-   Console. Alternatively paste ALL current Play Console tester addresses into the
-   export panel, confirm preservation and download the full CSV. The export unions
-   those addresses with all registered pending and approved addresses, deduplicates,
-   and emits one address per line, no header and no UTF-8 BOM.
-3. CSV uploads can REPLACE an existing Play list. Inspect the full union before
-   upload; preserve testers who registered outside LANIS too. Export never approves.
-4. Save changes in Play Console and verify they apply to the closed track.
-5. Back in the portal select exactly those requests and choose Freischalten, then
-   confirm that the addresses were added. A changed or withdrawn request rejects
-   the entire approval batch; reload and process the current addresses.
-6. Approved users see the invitation on their next Android-browser visit/resume.
-   Settings retains their opt-in link. They must explicitly join using the listed
-   Google account before downloading. There are no notification emails.
-7. Collect genuine feedback and monitor real closed-test enrollment in Play Console.
-   Keep at least 12 testers continuously enrolled for 14 days; recruit a buffer.
-   Do not infer enrollment or fill in fabricated feedback from LANIS statuses.
-
-## Corrections, withdrawal and privacy
-
-Changing email resets approval and creates a new revision. Withdrawal clears the
-email and approval; deletion removes the entire row and account-related audit
-entries through existing cleanup. Account exports include the user's beta state.
-Remove obsolete/withdrawn/deleted addresses from Play Console manually when
-appropriate: the application cannot change an external allowlist. Exports preserve
-existing addresses rather than silently removing external testers.
-
-Signup conflicts return a generic message without an account identity. Ordinary
-users can read/change only their own state. Full lists, exports and approval use
-existing admin permissions, lifecycle gates and audits. No Google credentials or
-OAuth are involved. Prompt dismissal is permanent until registration; Später
-sets a seven-day account-backed cooldown. Settings remains accessible either way.
-
-Disable invitations with `ANDROID_BETA_ENABLED=false` to pause recruitment and
-join links. Existing users can still read their state and withdraw.

@@ -122,7 +122,7 @@ class AdminLifecycleRoute(APIRoute):
 
             async with AsyncExitStack() as stack:
                 # Enter the bulk gate before actor access, matching deletion's order.
-                if self.path.startswith("/admin/android-beta") or self.path in {"/admin/users", "/admin/schools/{school_id:path}", "/admin/feedback", "/admin/feedback/{report_id}"}:
+                if self.path in {"/admin/users", "/admin/schools/{school_id:path}", "/admin/feedback", "/admin/feedback/{report_id}"}:
                     await stack.enter_async_context(admin_bulk_read_gate)
                 await stack.enter_async_context(_admin_account_access(*lock_ids))
                 await admin_dependency(token)  # Recheck persisted jti after waiting.
@@ -1054,41 +1054,3 @@ async def analytics_user_investigation(user_id: str, principal: AdminPrincipal =
             raise HTTPException(404, 'No consenting analytics data found for this account')
         await _record_admin_action(principal.user_id, 'analytics.account.investigate', user_id)
         return JSONResponse({'user_id': user_id, **metadata}, headers={'Cache-Control': 'no-store'})
-
-
-class BetaApprovalItem(BaseModel):
-    request_id: str = Field(max_length=64)
-    revision: str = Field(max_length=64)
-
-
-class BetaApproval(BaseModel):
-    requests: list[BetaApprovalItem] = Field(min_length=1, max_length=500)
-
-
-class BetaExport(BaseModel):
-    existing_addresses: list[str] = Field(default_factory=list, max_length=10000)
-
-
-@router.get("/android-beta")
-async def admin_beta_list(principal: AdminPrincipal = Depends(admin_dependency)):
-    from . import beta
-    await _record_admin_action(principal.user_id, "android_beta.list")
-    return {"requests": await beta.listing()}
-
-
-@router.post("/android-beta/approve")
-async def admin_beta_approve(payload: BetaApproval, principal: AdminPrincipal = Depends(admin_dependency)):
-    from . import beta
-    owners = await beta.approve(payload.requests)
-    for owner in owners:
-        await _record_admin_action(principal.user_id, "android_beta.approve", owner)
-    return {"success": True}
-
-
-@router.post("/android-beta/export")
-async def admin_beta_export(payload: BetaExport, principal: AdminPrincipal = Depends(admin_dependency)):
-    from . import beta
-    rows = await beta.listing()
-    result = beta.export_csv(rows, payload.existing_addresses)
-    await _record_admin_action(principal.user_id, "android_beta.export")
-    return {"csv": result}

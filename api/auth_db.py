@@ -330,6 +330,8 @@ async def initialize() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         from .beta import SCHEMA as BETA_SCHEMA
         await db.executescript(BETA_SCHEMA)
+        from .beta import migrate_legacy
+        await migrate_legacy(db)
         from .analytics_store import SCHEMA as ANALYTICS_SCHEMA
         await db.executescript(ANALYTICS_SCHEMA)
         async with db.execute("PRAGMA table_info(analytics_diagnostics)") as cursor:
@@ -1776,7 +1778,7 @@ async def delete_user_data(user_id: str) -> Dict[str, int]:
     """Atomically delete all user-owned rows from the authentication database."""
     user_id = _canonical_user_id(user_id)
     tables = (
-        "android_beta",
+        "android_beta_preferences",
         "analytics_requests",
         "analytics_diagnostics",
         "analytics_accounts",

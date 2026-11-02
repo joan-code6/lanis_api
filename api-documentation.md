@@ -1480,18 +1480,12 @@ and cadence retain their existing `LANIS_UPTIME_*` configuration; no additional
 production setup is performed by this endpoint. `/health` reports only current
 LANIS API reachability. LANIS's historical availability is not measured here.
 
-## Android closed beta (authenticated accounts)
+## Android closed beta recruitment preferences
 
-`GET /settings/android-beta` returns only the authenticated account's normalized
-email, `none|pending|approved` status, revision, approval notification state,
-invitation eligibility, availability and closed opt-in URL.
-`POST /settings/android-beta` accepts `action` (`signup`, `withdraw`, `later`,
-`dismiss`, `acknowledge`), optional `email`, and `revision` for acknowledgement.
-Uses `X-Session-Token`; the account is never selected from the payload.
-
-Protected operator endpoints (`X-Admin-Token`): `GET /admin/android-beta`,
-`POST /admin/android-beta/approve` with `requests: [{request_id, revision}]`, and
-`POST /admin/android-beta/export` with `existing_addresses: string[]`.
-Approval is atomic and rejects stale registrations with 409. Export returns
-`{csv: string}` without changing approval. See `docs/android-closed-beta.md` for
-configuration, activation checks, CSV preservation and daily manual operation.
+`GET /settings/android-beta` returns configurable availability, group/about and
+closed-test URLs, plus the account's `dismissed`, `prompt_after` and
+`invitation_due` preferences. `POST /settings/android-beta` accepts only `action`:
+`presented` or `later` starts a seven-day cooldown; `dismiss` suppresses invitations.
+Uses `X-Session-Token`; ownership comes exclusively from the authenticated account.
+No emails, Google membership, Play enrollment, installs or link clicks are stored.
+No admin beta endpoints remain. See `docs/android-closed-beta.md`.

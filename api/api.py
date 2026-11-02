@@ -5744,9 +5744,7 @@ async def _whatsapp_command_response(
 
 
 class BetaChange(BaseModel):
-    action: Literal["signup", "withdraw", "later", "dismiss", "acknowledge"]
-    email: str | None = Field(default=None, max_length=254)
-    revision: str | None = Field(default=None, max_length=64)
+    action: Literal["presented", "later", "dismiss"]
 
 
 @app.get("/settings/android-beta")
@@ -5758,4 +5756,4 @@ async def android_beta_status(auth: AuthSession = Depends(local_auth_dependency)
 @app.post("/settings/android-beta")
 async def android_beta_change(payload: BetaChange, auth: AuthSession = Depends(local_auth_dependency)):
     from . import beta
-    return await beta.change(auth.user_id, payload.action, payload.email, payload.revision)
+    return await beta.change(auth.user_id, payload.action)
