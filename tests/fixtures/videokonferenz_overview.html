@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="de">
+  <body>
+    <h1>Videokonferenz</h1>
+    <p class="text-success">Ansicht aktuell seit 08:14 Uhr</p>
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th>Lerngruppe</th>
+          <th>Lehrkräfte</th>
+          <th>Aktion</th>
+          <th>Links</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr data-room-id="mathe-10a">
+          <td>Mathematik 10a</td>
+          <td><span class="label">FRA</span><span class="label">BEI</span></td>
+          <td><a class="btn btn-success" href="/videokonferenz.php?a=join&amp;room=42">Raum betreten</a></td>
+          <td><a href="https://example.edu/regeln">Raumregeln</a></td>
+        </tr>
+        <tr>
+          <td>Deutsch 10a</td>
+          <td>WIN, SOM</td>
+          <td><a class="btn btn-danger" href="videokonferenz.php?a=wait&amp;kurs=91">Raum nicht offen</a></td>
+          <td><a href="javascript:alert(1)">Unsicherer Link</a></td>
+        </tr>
+        <tr>
+          <td>Klassenrat 10a</td>
+          <td>SOM</td>
+          <td><button class="btn btn-default" disabled>Raum geschlossen</button></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>

@@ -1,4 +1,4 @@
-"""Small OpenRouter-compatible tool-calling agent used by WhatsApp.
+"""Central OpenRouter-compatible tool-calling engine for hosted LANIS agents.
 
 The model can only request explicitly registered tools. Tool execution stays in
 LANIS so the model never receives credentials or arbitrary backend access.
@@ -110,7 +110,7 @@ class OpenRouterClient:
                         "Authorization": f"Bearer {self.config.api_key}",
                         "Content-Type": "application/json",
                         "HTTP-Referer": "https://lanis.arg-server.de",
-                        "X-OpenRouter-Title": "LANIS WhatsApp Assistant",
+                        "X-OpenRouter-Title": "LANIS Agents",
                     },
                     json=payload,
                     timeout=(5, 75),

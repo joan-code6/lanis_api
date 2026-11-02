@@ -14,6 +14,8 @@ Run locally:
 
 import asyncio
 from collections import deque
+from contextvars import ContextVar
+from contextlib import asynccontextmanager
 import copy
 import hashlib
 import hmac
@@ -22,6 +24,7 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Deque, Dict, List, Literal, Optional
@@ -29,11 +32,27 @@ from urllib.parse import quote, urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import requests as http_requests
-from fastapi import Body, Depends, FastAPI, Form, Header, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
+from starlette.routing import Route
 
 try:
     from pydantic import field_validator
@@ -41,9 +60,17 @@ except ImportError:  # Pydantic v1
     from pydantic import validator as field_validator
 
 import jwt
+from dotenv import load_dotenv
+
+# Configure import-time services (including MCP) before local modules capture URLs.
+load_dotenv()
 
 from schulportal_hessen.base import SchulportalHessenAPI
 
+from .analytics_routes import router as analytics_router, register_request_diagnostics
+from .agents import router as agents_router
+from .hosted_agents import router as hosted_agents_router
+from .agent_mcp import mcp, mcp_app
 from .queue import task_queue, Task, TaskPriority
 from .queue.task_queue import TaskQueue
 from .identity import (
@@ -52,31 +79,44 @@ from .identity import (
     normalize_school_id,
     normalize_username,
 )
-from .discord import notify_new_user
+from .discord import notify_feedback, notify_new_user
+from . import feedback_db
+from .feedback_db import FeedbackRateLimitError
 from .metrics import user_metrics_db
 from .dsb_snapshot import dsb_snapshot_db, run_dsb_scheduler
-from .uptime import run_uptime_scheduler
+from .uptime import drain_uptime_notification_tasks, run_uptime_scheduler, stop_uptime_cycle
 from .public_status import get_public_status
 from .documentation import router as documentation_router
 from .homepage import router as homepage_router
-from .admin import AdminPrincipal, admin_dependency, router as admin_router
+from .school_pages import router as school_pages_router
+from .admin import AdminLifecycleRoute, AdminPrincipal, admin_dependency, router as admin_router
 from .auth_db import (
+    _revoke_expired_sessions,
     DEFAULT_SIDEBAR_ORDER,
     allow_whatsapp_message,
+    purge_expired_whatsapp_rate_limits,
+    purge_expired_account_deletion_markers,
+    clear_whatsapp_rate_limit,
     initialize as auth_db_initialize,
     store_refresh_token,
     get_refresh_token,
     get_refresh_token_by_user_id,
     get_refresh_token_by_session_id,
+    fence_interrupted_deletion,
     delete_refresh_token,
     delete_user_tokens,
+    delete_refresh_token_by_session_id,
     delete_push_subscription,
-    delete_user_push_subscriptions,
     get_notification_preferences,
     save_notification_preferences,
     get_user_preferences,
     save_user_preferences,
+    deactivate_and_purge_dashboard_notifications,
+    sync_dashboard_notifications,
+    mark_dashboard_notifications_read,
     save_push_subscription,
+    add_cached_file_reference,
+    has_cached_file_reference,
     get_class_link_overrides,
     save_class_link,
     delete_class_link,
@@ -98,8 +138,12 @@ from .auth_db import (
     save_whatsapp_preferences,
     whatsapp_link_matches_sync,
 )
+from .daily_cache import run_daily_cache, warming
+from .message_read_state import current_activity, mark_opened, overlay_headers, record_body, observed_body
 from .outage_cache import OutageCacheRoute, snapshots
 from .account_data import (
+    AccountDeletionCleanupError,
+    AccountDeletionSessionChanged,
     account_lifecycle_lock,
     build_account_export,
     delete_account_data,
@@ -117,6 +161,7 @@ from .file_cache import (
     get_meta,
     get_content_path,
     purge_expired_files,
+    purge_staged_files,
 )
 from .timetable_enrichment import enrich_timetable
 from .timetable_substitutions import (
@@ -137,6 +182,12 @@ from .message_notifications import (
     is_trusted_push_endpoint,
     validate_notification_preferences,
     vertretungsplan_notification_options,
+)
+from .dashboard_notifications import (
+    dsb_plan_items,
+    message_items,
+    native_plan_items,
+    source_counts,
 )
 from .whatsapp import (
     IncomingWhatsAppMessage,
@@ -160,9 +211,6 @@ from .whatsapp import (
 )
 from .ai_agent import AIConfig, AIProviderError, AgentTool, run_agent
 
-from dotenv import load_dotenv
-load_dotenv()
-
 logger = logging.getLogger("api")
 
 # Pending WhatsApp work is bounded by the dispatcher below. Keeping the backing
@@ -177,23 +225,33 @@ WHATSAPP_MAX_PENDING_PER_SENDER = 10
 @dataclass
 class _WhatsAppSenderQueue:
     messages: Deque[IncomingWhatsAppMessage] = field(default_factory=deque)
+    active_message: IncomingWhatsAppMessage | None = None
+    cancelled: bool = False
 
 
 _whatsapp_sender_queues: Dict[str, _WhatsAppSenderQueue] = {}
 _whatsapp_dispatch_lock = asyncio.Lock()
 _whatsapp_pending_messages = 0
+_active_whatsapp_sender_queue: ContextVar[_WhatsAppSenderQueue | None] = ContextVar(
+    'active_whatsapp_sender_queue', default=None,
+)
 
 
 async def clear_whatsapp_user_queue(user_id: str) -> None:
-    """Remove queued WhatsApp messages belonging to a LANIS account."""
+    """Remove queued messages and cancel active WhatsApp turns for an account."""
     global _whatsapp_pending_messages
     candidates: set[str] = set()
     async with _whatsapp_dispatch_lock:
         for sender_queue in _whatsapp_sender_queues.values():
             candidates.update(message.sender_id for message in sender_queue.messages)
+            if sender_queue.active_message is not None:
+                candidates.add(sender_queue.active_message.sender_id)
     owned_senders = set()
     for sender_id in candidates:
         link = await get_whatsapp_link_for_sender(sender_id)
+        if link is None:
+            from .hosted_store import link as hosted_link
+            link = await hosted_link("whatsapp", sender_id)
         if link and link.get("user_id") == canonicalize_user_id(user_id):
             owned_senders.add(hashlib.sha256(sender_id.encode()).hexdigest())
     if not owned_senders:
@@ -202,7 +260,9 @@ async def clear_whatsapp_user_queue(user_id: str) -> None:
         for sender_key in list(owned_senders):
             sender_queue = _whatsapp_sender_queues.pop(sender_key, None)
             if sender_queue is not None:
+                sender_queue.cancelled = True
                 _whatsapp_pending_messages -= len(sender_queue.messages)
+                sender_queue.messages.clear()
 
 
 SESSION_TTL_SECONDS = 1 * 60 * 60  # expire inactive Schulportal sessions after 1 hour
@@ -262,6 +322,7 @@ class LoginResponse(BaseModel):
     school_id: str
     username: str
     encryption_ready: bool
+    is_first_school_user: bool = False
     expires_in: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60
 
 
@@ -276,6 +337,11 @@ class TokenRefreshResponse(BaseModel):
 
 class AccountDeleteRequest(BaseModel):
     confirmation: str
+
+
+class AccountDeletionRecoveryRequest(BaseModel):
+    access_token: str = Field(..., max_length=4096)
+    refresh_token: str = Field('', max_length=4096)
 
 
 class NotificationPreferencesRequest(BaseModel):
@@ -351,7 +417,7 @@ class WahlenSubmissionRequest(BaseModel):
 class AppearancePreferencesRequest(BaseModel):
     theme_mode: Optional[Literal["system", "light", "dark", "oled"]] = None
     theme_color: Optional[
-        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan"]
+        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan", "coral", "blush", "moss"]
     ] = None
 
 
@@ -359,6 +425,14 @@ class DashboardPreferencesRequest(BaseModel):
     pinned_modules: Optional[List[str]] = None
     hidden_modules: Optional[List[str]] = None
     view_mode: Optional[Literal["grid", "list"]] = None
+    show_search: Optional[bool] = None
+    show_subtitle: Optional[bool] = None
+    notifications_enabled: Optional[bool] = None
+    notification_messages_enabled: Optional[bool] = None
+    notification_native_enabled: Optional[bool] = None
+    notification_dsb_enabled: Optional[bool] = None
+    notification_show_read: Optional[bool] = None
+    notification_limit: Optional[Literal[5, 10, 20, 50]] = None
 
     @field_validator("pinned_modules", "hidden_modules")
     def validate_module_preferences(cls, value):
@@ -367,11 +441,32 @@ class DashboardPreferencesRequest(BaseModel):
         return value
 
 
+class DashboardNotificationReadRequest(BaseModel):
+    notification_ids: List[str] = Field(default_factory=list)
+
+    @field_validator("notification_ids")
+    def validate_notification_ids(cls, value):
+        if len(value) > 100:
+            raise ValueError("At most 100 dashboard notifications can be updated")
+        cleaned = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        if any(len(item) > 100 for item in cleaned):
+            raise ValueError("Dashboard notification ID is too long")
+        return cleaned
+
+
+class DashboardNotificationReadAllRequest(BaseModel):
+    sources: List[Literal["messages", "native", "dsb"]] = Field(
+        default_factory=list
+    )
+
+
 SidebarItemId = Literal[
     "search",
     "dashboard",
     "messages",
+    "videokonferenz",
     "dateispeicher",
+    "dateiverteilung",
     "vertretungsplan",
     "dsb",
     "courses",
@@ -387,6 +482,7 @@ SidebarItemId = Literal[
 class SidebarPreferencesRequest(BaseModel):
     order: Optional[List[str]] = None
     hidden_items: Optional[List[SidebarItemId]] = None
+    show_feedback_button: Optional[bool] = None
 
     @field_validator("order")
     def validate_order(cls, value):
@@ -405,11 +501,49 @@ class SidebarPreferencesRequest(BaseModel):
         return value
 
 
+class FeedbackSupportContext(BaseModel):
+    release: str = Field(pattern=r'^(?:local|[a-f0-9]{7,40})$')
+    page: str = Field(max_length=100, pattern=r'^/[a-zA-Z0-9_:/-]*$')
+    request_ids: List[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator('request_ids')
+    @classmethod
+    def validate_request_ids(cls, value):
+        import uuid
+        try:
+            return [str(uuid.UUID(item)) for item in value]
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError('Invalid request reference')
+
+
+class FeedbackSubmissionRequest(BaseModel):
+    category: Literal["feature", "bug", "general"]
+    title: str = Field(..., min_length=1, max_length=120)
+    details: str = Field(..., min_length=1, max_length=5000)
+    page: Optional[str] = Field(None, max_length=300)
+    support_context: Optional[FeedbackSupportContext] = None
+
+
 class TimetablePreferencesRequest(BaseModel):
     view_mode: Optional[Literal["rolling", "week"]] = None
     layout_mode: Optional[Literal["cards", "compact"]] = None
+    show_substitutions: Optional[bool] = None
     show_homework: Optional[bool] = None
     show_exams: Optional[bool] = None
+    class_colors: Optional[Dict[str, str]] = None
+
+    @field_validator("class_colors")
+    def validate_class_colors(cls, value):
+        if value is None:
+            return value
+        if len(value) > 100:
+            raise ValueError("At most 100 timetable class colors are allowed")
+        for class_key, color in value.items():
+            if not class_key or len(class_key) > 180:
+                raise ValueError("Timetable class color keys must be 1 to 180 characters")
+            if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                raise ValueError("Timetable class colors must use six-digit hex values")
+        return {class_key: color.lower() for class_key, color in value.items()}
 
 
 class HomeworkPreferencesRequest(BaseModel):
@@ -473,6 +607,7 @@ class AuthSession:
     user_id: str
     school_id: str
     username: str
+    session_id: str = ''
 
 
 @dataclass
@@ -518,12 +653,10 @@ class AuthManager:
     # -- JWT helpers -------------------------------------------------
 
     def create_access_token(
-        self,
-        user_id: str,
-        school_id: str,
-        username: str,
-        session_id: str,
+        self, user_id: str, school_id: str, username: str, session_id: str
     ) -> str:
+        if not session_id:
+            raise ValueError("session_id is required for access tokens")
         user_id = canonicalize_user_id(user_id)
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         payload = {
@@ -532,6 +665,7 @@ class AuthManager:
             "username": username,
             "iat": datetime.utcnow(),
             "exp": expire,
+            "jti": session_id,
         }
         if not session_id:
             raise ValueError("session_id is required for access tokens")
@@ -587,6 +721,7 @@ class AuthManager:
             for key in [key for key in self._cache_versions if key[0] == user_id]:
                 self._cache_versions.pop(key, None)
         snapshots.delete_user_data(user_id)
+        await snapshots.flush(user_id)
         return {"cache_entries": cache_count, "snapshot_entries": snapshot_count}
 
     # -- Schulportal client cache ------------------------------------
@@ -741,10 +876,10 @@ class AuthManager:
         user_id = canonicalize_user_id(user_id)
         async with self._lock:
             data = self._schulportal_clients.pop(user_id, None)
-        await self.invalidate_user_cache(user_id)
         if data:
             # Logout is a local revocation even when Schulportal is unreachable.
             data.client.close()
+        await self.invalidate_user_cache(user_id)
 
     async def shutdown(self) -> None:
         async with self._lock:
@@ -780,6 +915,8 @@ class AuthManager:
     async def get_cached(
         self, user_id: str, endpoint: str, params: str = ""
     ) -> Optional[Any]:
+        if warming.get() and not user_id.startswith('dsb-school:'):
+            return None
         await self._purge_expired_cache()
         cache_key = self._make_cache_key(user_id, endpoint, params)
 
@@ -802,6 +939,8 @@ class AuthManager:
     async def get_cached_with_revalidate(
         self, user_id: str, endpoint: str, params: str = ""
     ) -> tuple:
+        if warming.get():
+            return None, False
         await self._purge_expired_cache()
         cache_key = self._make_cache_key(user_id, endpoint, params)
 
@@ -847,11 +986,13 @@ class AuthManager:
                 params=params,
             )
 
-    async def get_cache_version(self, user_id: str, endpoint: str) -> int:
-        """Return the current version for an endpoint's cache entries."""
+    async def get_cache_version(
+        self, user_id: str, endpoint: str, *, advance: bool = False
+    ) -> int:
+        """Capture a cache generation, advancing it when a fresh read supersedes older reads."""
         async with self._lock:
             key = (user_id, endpoint)
-            if key not in self._cache_versions:
+            if advance or key not in self._cache_versions:
                 self._cache_generation += 1
                 self._cache_versions[key] = self._cache_generation
             return self._cache_versions[key]
@@ -886,14 +1027,13 @@ class AuthManager:
 
     async def invalidate_endpoint_cache(self, user_id: str, endpoint: str) -> None:
         """Invalidate all cached parameter variants for one endpoint."""
-        snapshots.invalidate_endpoint(user_id, endpoint)
+        snapshots.invalidate_endpoint(user_id, endpoint, preserve=True)
+        # Live refreshes retain the last successful outage snapshot.
+        # Successful reads replace it atomically; failed reads leave it available.
         async with self._lock:
             version_key = (user_id, endpoint)
-            if version_key in self._cache_versions:
-                self._cache_versions[version_key] += 1
-            else:
-                self._cache_generation += 1
-                self._cache_versions[version_key] = self._cache_generation
+            self._cache_generation += 1
+            self._cache_versions[version_key] = self._cache_generation
             expired = [
                 key
                 for key, entry in self._cache.items()
@@ -909,15 +1049,18 @@ class AuthManager:
                 key for key in self._cache_versions if key[0] == user_id
             ]
             for version_key in version_keys:
-                self._cache_versions[version_key] += 1
+                self._cache_generation += 1
+                self._cache_versions[version_key] = self._cache_generation
             expired = [
                 key for key, entry in self._cache.items() if entry.user_id == user_id
             ]
             for key in expired:
                 self._cache.pop(key)
+        await snapshots.flush(user_id)
 
 
 sessions = AuthManager()
+_daily_cache_task = None
 _dsb_scheduler_task = None
 _message_notification_task = None
 _uptime_scheduler_task = None
@@ -925,19 +1068,27 @@ _whatsapp_history_cleanup_task = None
 _file_cache_cleanup_task = None
 _whatsapp_unlink_confirmation_tasks: set[asyncio.Task] = set()
 _account_export_last: Dict[str, datetime] = {}
+_account_export_in_flight: set[str] = set()
 _account_export_lock = asyncio.Lock()
 
 
 async def clear_account_export_state(user_id: str) -> None:
     """Remove the in-memory export rate-limit marker for a deleted account."""
     async with _account_export_lock:
-        _account_export_last.pop(canonicalize_user_id(user_id), None)
+        user_id = canonicalize_user_id(user_id)
+        _account_export_last.pop(user_id, None)
+        _account_export_in_flight.discard(user_id)
 
 
 async def _run_whatsapp_history_cleanup() -> None:
     while True:
         try:
+            from .analytics_store import purge_expired as purge_analytics_diagnostics
+            await purge_analytics_diagnostics()
+            await _revoke_expired_sessions()
             await purge_expired_whatsapp_ai_history()
+            await purge_expired_whatsapp_rate_limits()
+            await purge_expired_account_deletion_markers()
         except Exception:
             logger.warning("WhatsApp history cleanup failed", exc_info=True)
         await asyncio.sleep(3600)
@@ -946,7 +1097,15 @@ async def _run_whatsapp_history_cleanup() -> None:
 async def _run_file_cache_cleanup() -> None:
     while True:
         try:
-            await run_in_threadpool(purge_expired_files)
+            from .auth_db import active_file_references
+            from .uptime import run_uptime_check
+
+            if (await run_uptime_check()).get('status') == 'up':
+                from .auth_db import _lock as auth_store_lock
+
+                async with auth_store_lock:
+                    protected = await active_file_references()
+                    await run_in_threadpool(purge_expired_files, protected)
         except Exception:
             logger.warning("File cache cleanup failed", exc_info=True)
         await asyncio.sleep(3600)
@@ -963,7 +1122,7 @@ async def fetch_and_store_user_data(
     school_id = normalize_school_id(school_id)
     username = normalize_username(username)
     lifecycle_lock = await account_lifecycle_lock(user_id)
-    async with lifecycle_lock:
+    async with lifecycle_lock.shared():
         try:
             if not await get_refresh_token_by_session_id(session_id):
                 return
@@ -993,10 +1152,162 @@ async def fetch_and_store_user_data(
             logger.error(f"Error storing user metrics for {username}@{school_id}: {e}")
 
 
+async def notify_new_user_if_account_active(
+    user_id: str, session_id: str, school_id: str, username: str
+) -> None:
+    """Serialize the personal-data webhook side effect with account deletion."""
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock.shared():
+        if await get_refresh_token_by_session_id(session_id) is None:
+            return
+        await notify_new_user(school_id, username)
+
+
 # --- FastAPI App ---
 
 app = FastAPI(title="Schulportal Hessen API", version="0.2.0")
 app.router.route_class = OutageCacheRoute
+register_request_diagnostics(app)
+
+
+@app.get("/agent-icon.png", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+async def agent_icon():
+    """Same-origin LANIS identity for connector clients and favicon discovery."""
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        Path(__file__).resolve().parent / "static/agent-icon.png",
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+
+MAX_DATEISPEICHER_DOWNLOAD_BYTES = 256 * 1024 * 1024
+
+
+class DownloadTooLargeError(Exception):
+    pass
+
+
+def _copy_download_stream_to_file(stream, destination) -> None:
+    """Detach an upstream download from its session before serving it."""
+    try:
+        total_bytes = 0
+        for chunk in stream:
+            if chunk:
+                total_bytes += len(chunk)
+                if total_bytes > MAX_DATEISPEICHER_DOWNLOAD_BYTES:
+                    raise DownloadTooLargeError
+                destination.write(chunk)
+        destination.seek(0)
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+
+
+def _iter_open_file(file_handle):
+    try:
+        while chunk := file_handle.read(64 * 1024):
+            yield chunk
+    finally:
+        file_handle.close()
+
+
+@app.middleware("http")
+async def serialize_account_requests(request: Request, call_next):
+    """Keep concurrent authenticated work inside the account deletion barrier."""
+    from .demo import dispatch
+
+    demo_response = await dispatch(request)
+    if demo_response is not None:
+        return demo_response
+    from .demo import ACCESS_TOKEN
+
+    if request.headers.get("X-Session-Token") == ACCESS_TOKEN and (
+        request.url.path == "/agents" or request.url.path.startswith("/agents/")
+    ):
+        return await call_next(request)
+    if (
+        request.url.path == "/login"
+        or request.url.path == "/mcp"  # MCP owns its bearer identity and lifecycle lease.
+        or request.url.path == "/account/deletion/recover"
+        or request.url.path == "/admin"
+        or request.url.path.startswith("/admin/")
+        or (request.method == "DELETE" and request.url.path == "/account")
+    ):
+        return await call_next(request)
+    token = request.headers.get("X-Session-Token") or request.query_params.get(
+        "token"
+    )
+    if not token:
+        return await call_next(request)
+    try:
+        payload = sessions.decode_access_token(token)
+        user_id = canonicalize_user_id(payload["sub"])
+    except Exception:
+        # Let the normal auth dependency return the appropriate error response.
+        return await call_next(request)
+    lifecycle_lock = (await account_lifecycle_lock(user_id)).shared()
+    await lifecycle_lock.acquire()
+    try:
+        stored = await get_refresh_token_by_session_id(payload.get('jti') or '')
+    except BaseException:
+        request.state.account_lease_user_id = None
+        lifecycle_lock.release()
+        raise
+    if not stored or canonicalize_user_id(stored['user_id']) != user_id:
+        # Public routes may still accept this request. Let route authentication
+        # reject the obsolete token, without holding a lock during body parsing.
+        request.state.account_lease_user_id = None
+        lifecycle_lock.release()
+        return await call_next(request)
+    request.state.account_lease_user_id = user_id
+    try:
+        response = await call_next(request)
+    except BaseException:
+        request.state.account_lease_user_id = None
+        lifecycle_lock.release()
+        raise
+
+    body_iterator = getattr(response, "body_iterator", None)
+    if (request.url.path.startswith("/dateispeicher/file/")
+        or request.url.path == "/dateiverteilung/file") and response.headers.get("X-LANIS-Cache") not in {"hit", "fresh"}:
+        # The upstream stream is fully detached to a temporary file before the
+        # route returns, so a slow client no longer needs this lock.
+        request.state.account_lease_user_id = None
+        lifecycle_lock.release()
+        return response
+    if body_iterator is None:
+        request.state.account_lease_user_id = None
+        lifecycle_lock.release()
+        return response
+
+    release_after_file_open = request.url.path.startswith("/meinunterricht/file/")
+    lock_held = True
+
+    async def stream_while_locked():
+        nonlocal lock_held
+        try:
+            async for chunk in body_iterator:
+                if release_after_file_open and lock_held:
+                    # Starlette's FileResponse opens and reads the file before
+                    # yielding the first body chunk. Its descriptor remains
+                    # readable after account deletion unlinks the cache path.
+                    request.state.account_lease_user_id = None
+                    lifecycle_lock.release()
+                    lock_held = False
+                yield chunk
+        finally:
+            if lock_held:
+                request.state.account_lease_user_id = None
+                lifecycle_lock.release()
+
+    response.body_iterator = stream_while_locked()
+    return response
 
 
 async def local_auth_dependency(
@@ -1013,12 +1324,16 @@ async def local_auth_dependency(
         stored = None
     if not stored:
         raise HTTPException(status_code=401, detail="No valid session found — please log in again")
-    return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"])
+    return AuthSession(client=None, user_id=user_id, school_id=stored["school_id"], username=stored["username"], session_id=session_id)
 
 
 @app.get("/cache/status")
 async def cache_status(auth: AuthSession = Depends(local_auth_dependency)):
-    return snapshots.status(auth.user_id)
+    from .auth_db import get_cache_sync_state
+
+    result = snapshots.status(auth.user_id)
+    result['sync'] = await get_cache_sync_state(auth.user_id)
+    return result
 
 
 async def client_dependency(
@@ -1033,17 +1348,19 @@ async def client_dependency(
     else:
         user_id = identity.user_id
     session_data = await sessions._get_or_create_schulportal_client(user_id)
-    try:
-        await user_metrics_db.record_activity(
-            session_data.school_id, session_data.username
-        )
-    except Exception:
-        logger.warning("Could not record authenticated activity", exc_info=True)
+    if not warming.get():
+        try:
+            await user_metrics_db.record_activity(
+                session_data.school_id, session_data.username
+            )
+        except Exception:
+            logger.warning("Could not record authenticated activity", exc_info=True)
     return AuthSession(
         client=session_data.client,
         user_id=user_id,
         school_id=session_data.school_id,
         username=session_data.username,
+        session_id=identity.session_id,
     )
 
 
@@ -1145,34 +1462,70 @@ app.add_middleware(
         "http://localhost:4173",
         "http://localhost:5173",
         "https://lanis.arg-server.de",
+        "https://lanis-ui.bennetjoanwegener.workers.dev",
+        "https://lanis-admin.bennetjoanwegener.workers.dev",
+        *([os.getenv("LANIS_AGENT_UI_ORIGIN").rstrip("/")] if os.getenv("LANIS_AGENT_UI_ORIGIN") else []),
         *(
             [os.getenv("LANIS_ADMIN_ORIGIN").rstrip("/")]
             if os.getenv("LANIS_ADMIN_ORIGIN")
             else []
         ),
     ],
-    allow_origin_regex=r"^https://.*\.surge\.sh$|^https://.*\.appwrite\.network$|^http://(?:localhost|127\.0\.0\.1):\d+$|^http://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$",
+    allow_origin_regex=r"^https://(?:[a-z0-9]+-)*lanis-(?:ui|admin)-preview\.bennetjoanwegener\.workers\.dev$|^https://.*\.surge\.sh$|^https://.*\.appwrite\.network$|^http://(?:localhost|127\.0\.0\.1):\d+$|^http://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At"],
+    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At", "X-LANIS-Request-ID"],
 )
 
+# The MCP SDK owns its task group for the complete ASGI lifespan.
+_existing_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _agents_lifespan(application):
+    async with _existing_lifespan(application):
+        async with mcp.session_manager.run():
+            from . import hosted_agents, signal
+            background = [asyncio.create_task(hosted_agents.scheduler())]
+            if signal.configured():
+                background.append(asyncio.create_task(signal.receive_loop()))
+            try:
+                yield
+            finally:
+                for task in background:
+                    task.cancel()
+                await asyncio.gather(*background, return_exceptions=True)
+
+
+app.router.lifespan_context = _agents_lifespan
+app.include_router(agents_router)
+app.include_router(hosted_agents_router)
+# A path route preserves /mcp without a trailing-slash redirect on POST.
+app.router.routes.append(Route("/mcp", endpoint=mcp_app, methods=["GET", "POST", "DELETE"]))
+
+app.include_router(analytics_router)
 app.include_router(documentation_router)
 app.include_router(admin_router)
 app.include_router(homepage_router)
+app.include_router(school_pages_router)
 
 
 @app.on_event("startup")
 async def _startup() -> None:
     """Initialize stores and start the API's background schedulers."""
-    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
+    global _daily_cache_task, _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
     await auth_db_initialize()
+    await run_in_threadpool(purge_staged_files)
+    from .auth_db import DB_PATH
+    await run_in_threadpool(snapshots.enable_persistence, DB_PATH)
     await purge_expired_whatsapp_ai_history()
     await user_metrics_db.initialize()
     await dsb_snapshot_db.initialize()
+    await feedback_db.initialize()
     await task_queue.start()
     await whatsapp_task_queue.start()
+    _daily_cache_task = asyncio.create_task(run_daily_cache())
     _dsb_scheduler_task = await run_dsb_scheduler()
     _message_notification_task = await run_message_notification_scheduler(
         sessions._get_or_create_schulportal_client,
@@ -1191,13 +1544,19 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _cleanup_sessions() -> None:
     """Cancel background schedulers and close active sessions cleanly."""
-    global _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
+    global _daily_cache_task, _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
+    if _daily_cache_task:
+        _daily_cache_task.cancel()
+        await asyncio.gather(_daily_cache_task, return_exceptions=True)
     if _dsb_scheduler_task:
         _dsb_scheduler_task.cancel()
     if _message_notification_task:
         _message_notification_task.cancel()
     if _uptime_scheduler_task:
         _uptime_scheduler_task.cancel()
+        await asyncio.gather(_uptime_scheduler_task, return_exceptions=True)
+    await stop_uptime_cycle()
+    await drain_uptime_notification_tasks()
     if _whatsapp_history_cleanup_task:
         _whatsapp_history_cleanup_task.cancel()
     if _file_cache_cleanup_task:
@@ -1216,6 +1575,7 @@ async def _cleanup_sessions() -> None:
                 confirmation_task.cancel()
             await asyncio.gather(*pending_confirmations, return_exceptions=True)
     await sessions.shutdown()
+    await snapshots.close()
 
 
 # --- Public Endpoints ---
@@ -1232,7 +1592,10 @@ async def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/metrics/stats", deprecated=True)
+legacy_admin_router = APIRouter(route_class=AdminLifecycleRoute)
+
+
+@legacy_admin_router.get("/metrics/stats", deprecated=True)
 async def get_metrics_stats(
     _: AdminPrincipal = Depends(admin_dependency),
 ) -> Dict[str, Any]:
@@ -1247,6 +1610,8 @@ async def get_metrics_stats(
         "whatsapp_queue": _whatsapp_queue_stats(),
     }
 
+
+app.include_router(legacy_admin_router)
 
 # --- Auth Endpoints ---
 
@@ -1282,6 +1647,9 @@ async def _login_account(
     if not refresh_data or not refresh_data.get("session_id"):
         raise HTTPException(status_code=500, detail="Could not initialize login session")
     session_id = refresh_data["session_id"]
+    from .account_data import clear_account_deletion_marker
+
+    await clear_account_deletion_marker(user_id)
     await task_queue.allow_user_tasks(user_id)
 
     # 3. Issue short-term access token (JWT)
@@ -1300,20 +1668,34 @@ async def _login_account(
     )
 
     # 5. Record successful logins independently of profile collection.
+    is_first_school_user = False
     try:
         is_new_user = await user_metrics_db.record_login(school_id, username)
         if is_new_user:
             await task_queue.add_task(
                 Task(
                     name=f"notify_new_user:{username}@{school_id}",
-                    func=notify_new_user,
-                    args=(school_id, normalize_username(username)),
+                    func=notify_new_user_if_account_active,
+                    args=(
+                        user_id,
+                        session_id,
+                        school_id,
+                        normalize_username(username),
+                    ),
+                    user_id=user_id,
                     priority=TaskPriority.LOW,
                     max_retries=2,
                 )
             )
     except Exception:
         logger.warning("Could not record login metric", exc_info=True)
+
+    try:
+        is_first_school_user = await user_metrics_db.is_first_school_user(
+            school_id, username
+        )
+    except Exception:
+        logger.warning("Could not identify first school user", exc_info=True)
 
     # 6. Queue background metrics fetch
     user_data_task = Task(
@@ -1332,6 +1714,7 @@ async def _login_account(
         school_id=school_id,
         username=username,
         encryption_ready=encryption_ready,
+        is_first_school_user=is_first_school_user,
     )
 
 
@@ -1368,10 +1751,7 @@ async def refresh_endpoint(payload: TokenRefreshRequest) -> TokenRefreshResponse
 async def logout_endpoint(
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, str]:
-    await delete_user_tokens(auth.user_id)
-    await delete_user_push_subscriptions(auth.user_id)
-    await delete_whatsapp_link(auth.user_id)
-    await sessions.drop_schulportal_session(auth.user_id)
+    await delete_refresh_token_by_session_id(auth.session_id)
     return {"status": "logged_out"}
 
 
@@ -1380,22 +1760,37 @@ async def export_account_endpoint(
     auth: AuthSession = Depends(local_auth_dependency),
 ) -> Response:
     """Download the LANIS-held account data without authentication secrets."""
-    now = datetime.utcnow()
+    user_id = canonicalize_user_id(auth.user_id)
     async with _account_export_lock:
-        previous = _account_export_last.get(auth.user_id)
+        now = datetime.utcnow()
+        previous = _account_export_last.get(user_id)
         if previous and (now - previous).total_seconds() < 600:
             raise HTTPException(status_code=429, detail="Export is limited to once every 10 minutes")
-        _account_export_last[auth.user_id] = now
-    export = await build_account_export(auth.user_id)
-    return Response(
-        content=json.dumps(export, ensure_ascii=False),
-        media_type="application/json",
-        headers={
-            "Content-Disposition": 'attachment; filename="lanis-account-export.json"',
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-        },
-    )
+        if user_id in _account_export_in_flight:
+            raise HTTPException(status_code=429, detail="An export is already being prepared")
+        _account_export_in_flight.add(user_id)
+    succeeded = False
+    try:
+        export = await build_account_export(user_id)
+        content = json.dumps(export, ensure_ascii=False)
+        response = Response(
+            content=content,
+            media_type="application/json",
+            headers={
+                "Content-Disposition": 'attachment; filename="lanis-account-export.json"',
+                "Cache-Control": "no-store",
+                "Pragma": "no-cache",
+            },
+        )
+        async with _account_export_lock:
+            _account_export_last[user_id] = datetime.utcnow()
+            _account_export_in_flight.discard(user_id)
+        succeeded = True
+        return response
+    finally:
+        if not succeeded:
+            async with _account_export_lock:
+                _account_export_in_flight.discard(user_id)
 
 
 @app.delete("/account")
@@ -1407,7 +1802,15 @@ async def delete_account_endpoint(
     if payload.confirmation != "DELETE":
         raise HTTPException(status_code=400, detail='confirmation must be exactly "DELETE"')
     try:
-        report = await delete_account_data(auth.user_id)
+        report = await delete_account_data(
+            auth.user_id, school_id=auth.school_id, username=auth.username,
+            expected_session_id=auth.session_id,
+        )
+    except AccountDeletionSessionChanged as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except AccountDeletionCleanupError as error:
+        logger.exception("Account deletion cleanup failed for %s", auth.user_id)
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except Exception:
         logger.exception("Account deletion failed for %s", auth.user_id)
         raise HTTPException(status_code=500, detail="Account deletion failed")
@@ -1416,6 +1819,45 @@ async def delete_account_endpoint(
         "deleted": report.deleted,
         "upstream_sph_data_deleted": report.upstream_sph_data_deleted,
     }
+
+
+@app.post('/account/deletion/recover')
+async def recover_account_deletion(payload: AccountDeletionRecoveryRequest) -> Response:
+    """Settle an interrupted DELETE before allowing browser data to be restored.
+
+    An expired, signed JWT is accepted only to identify the original session.
+    It cannot authorize deletion or data access. Recovery waits for an active
+    deletion, or rotates a surviving session to fence any delayed DELETE.
+    """
+    try:
+        identity = jwt.decode(
+            payload.access_token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+            options={'verify_exp': False, 'require': ['exp', 'sub', 'jti']},
+        )
+        user_id = canonicalize_user_id(identity['sub'])
+    except (jwt.InvalidTokenError, ValueError, TypeError) as error:
+        raise HTTPException(status_code=401, detail='Invalid recovery identity') from error
+    lock = await account_lifecycle_lock(user_id)
+    async with lock:
+        try:
+            stored = await fence_interrupted_deletion(
+                user_id, identity['jti'], payload.refresh_token,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        result = {'state': 'revoked'}
+        if stored:
+            result = {
+                'state': 'cancelled',
+                'access_token': sessions.create_access_token(
+                    user_id, stored['school_id'], stored['username'], stored['session_id'],
+                ),
+                'expires_in': ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            }
+        return Response(
+            json.dumps(result), media_type='application/json',
+            headers={'Cache-Control': 'no-store'},
+        )
 
 
 # --- DSB Endpoints ---
@@ -1474,32 +1916,52 @@ def _fetch_modules(client: SchulportalHessenAPI) -> Dict[str, object]:
     }
 
 
-async def _revalidate_endpoint(
-    user_id: str, endpoint: str, fetch_func
-) -> None:
-    try:
-        fresh_data = await run_in_threadpool(fetch_func)
-        if not isinstance(fresh_data, dict) or not fresh_data.get("success"):
+async def _revalidate_account_endpoint(user_id: str, session_id: str, endpoint: str) -> None:
+    """Refresh cached portal data while deletion waits for all upstream work.
+
+    Queued tasks carry identifiers only. The private client is acquired after
+    the lifecycle lock and original session validation, so obsolete queued work
+    cannot retain a bound client or fetch data after deletion/re-login.
+    """
+    lock = await account_lifecycle_lock(user_id)
+    async with lock.shared():
+        stored = await get_refresh_token_by_session_id(session_id)
+        if not stored or canonicalize_user_id(stored['user_id']) != user_id:
             return
-        cached_data = await sessions.get_cached(user_id, endpoint)
-        if cached_data is not None and not _responses_equal(cached_data, fresh_data):
-            await sessions.set_cache(user_id, endpoint, fresh_data, is_long_term=True)
-    except Exception:
-        pass
+        try:
+            session_data = await sessions._get_or_create_schulportal_client(user_id)
+            client = session_data.client
+            if endpoint == '/modules':
+                fresh_data = await run_in_threadpool(_fetch_modules, client)
+            else:
+                fetch = {'/apps': client.get_apps, '/benutzer': client.benutzer_get_data}[endpoint]
+                fresh_data = await run_in_threadpool(fetch)
+            if not isinstance(fresh_data, dict) or not fresh_data.get('success'):
+                return
+            cached_data = await sessions.get_cached(user_id, endpoint)
+            if cached_data is not None and not _responses_equal(cached_data, fresh_data):
+                await sessions.set_cache(user_id, endpoint, fresh_data, is_long_term=True)
+        except Exception:
+            logger.debug('Background account cache refresh failed', exc_info=True)
 
 
-async def _revalidate_modules(user_id: str, client: SchulportalHessenAPI) -> None:
+async def _schedule_account_revalidation(auth: AuthSession, endpoint: str) -> None:
+    """Queue refresh work without capturing the request's private client."""
+    if not auth.session_id:
+        return
     try:
-        fresh_data = await run_in_threadpool(_fetch_modules, client)
-        if not fresh_data.get("success"):
-            return
-        cached_data = await sessions.get_cached(user_id, "/modules")
-        if cached_data is not None and not _responses_equal(cached_data, fresh_data):
-            await sessions.set_cache(
-                user_id, "/modules", fresh_data, is_long_term=True
-            )
-    except Exception:
-        pass
+        await task_queue.add_task(Task(
+            name=f'revalidate:{endpoint}',
+            user_id=auth.user_id,
+            func=_revalidate_account_endpoint,
+            args=(auth.user_id, auth.session_id, endpoint),
+            priority=TaskPriority.LOW,
+            max_retries=0,
+            retain_completed=False,
+        ))
+    except asyncio.QueueFull:
+        # Cached responses remain available when background capacity is full.
+        logger.debug('Skipped background cache refresh because the queue is full')
 
 
 @app.get("/apps")
@@ -1511,9 +1973,7 @@ async def get_apps(
     )
 
     if needs_revalidation:
-        asyncio.create_task(
-            _revalidate_endpoint(auth.user_id, "/apps", auth.client.get_apps)
-        )
+        await _schedule_account_revalidation(auth, '/apps')
 
     if cached_data is not None:
         return cached_data
@@ -1533,9 +1993,7 @@ async def get_modules(
     )
 
     if needs_revalidation:
-        asyncio.create_task(
-            _revalidate_modules(auth.user_id, auth.client)
-        )
+        await _schedule_account_revalidation(auth, '/modules')
 
     if cached_data is not None:
         return cached_data
@@ -1543,6 +2001,22 @@ async def get_modules(
     result = await run_in_threadpool(_fetch_modules, auth.client)
     if result.get("success"):
         await sessions.set_cache(auth.user_id, "/modules", result, is_long_term=True)
+    return result
+
+
+@app.get("/videokonferenz")
+async def get_videokonferenz(
+    response: Response,
+    refresh: bool = False,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return fresh rooms; user-bound join URLs must never enter response caches."""
+    # ``refresh`` remains accepted so clients can share a refresh-shaped API
+    # with other modules, but this endpoint intentionally always contacts SPH.
+    response.headers["Cache-Control"] = "private, no-store"
+    result = await run_in_threadpool(auth.client.videokonferenz_get_rooms)
+    if not result.get("success") and result.get("error_kind") == "authentication":
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
     return result
 
 
@@ -1632,11 +2106,7 @@ async def get_user_data(
     )
 
     if needs_revalidation:
-        asyncio.create_task(
-            _revalidate_endpoint(
-                auth.user_id, "/benutzer", auth.client.benutzer_get_data
-            )
-        )
+        await _schedule_account_revalidation(auth, '/benutzer')
 
     if cached_data is not None:
         return cached_data
@@ -1889,6 +2359,7 @@ async def get_timetable_view(
     plan_mode: Literal["personal", "all"] = "personal",
     week_type: Optional[Literal["A", "B"]] = None,
     refresh: bool = False,
+    show_substitutions: bool = True,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
     """Resolve dates, custom lessons and substitutions using source response caches.
@@ -1906,59 +2377,60 @@ async def get_timetable_view(
     changes = []
     sources = []
     own_class = ""
-    try:
-        modules = await get_modules(auth=auth)
-        if not modules.get("success"):
-            raise ValueError("Module unavailable")
-        dsb_available = native_available = False
-        for module in modules.get("modules") or []:
-            label = f"{module.get('name', '')} {module.get('url', '')} {module.get('direct_url', '')}".lower()
-            is_dsb = "dsb" in label
-            dsb_available |= is_dsb
-            native_available |= not is_dsb and "vertretungsplan" in label
-        if native_available or dsb_available:
-            try:
-                preferences, _ = await get_user_preferences(auth.user_id)
-                own_class = str(
-                    (preferences.get("vertretungsplan") or {}).get("class_override") or ""
-                ).strip()
-                if not own_class:
-                    profile = await get_user_data(auth=auth)
-                    if not profile.get("success"):
-                        raise ValueError("Profile unavailable")
-                    own_class = vertretungsplan_notification_options(profile, {})["own_class"]
-            except Exception:
-                # Source loading can still succeed, including lessons that
-                # supply their own class. Never discard both sources here.
-                sources.append({"name": "Klassenzuordnung", "error": True})
-        for name, enabled, fetch, normalize in (
-            (
-                "Schulportal",
-                native_available,
-                get_vertretungsplan,
-                native_substitutions,
-            ),
-            (
-                "DSB",
-                dsb_available,
-                get_school_dsb_plan,
-                lambda plan: dsb_substitutions(plan.get("tables") or []),
-            ),
-        ):
-            if not enabled:
-                continue
-            try:
-                plan = await fetch(refresh=refresh, auth=auth)
-                if not plan.get("success") or plan.get("available") is False:
-                    raise ValueError("Plan unavailable")
-                changes.extend(normalize(plan))
-                sources.append(
-                    {"name": name, "error": False, "updated": plan.get("last_updated")}
-                )
-            except Exception:
-                sources.append({"name": name, "error": True})
-    except Exception:
-        sources.append({"name": "Vertretungspläne", "error": True})
+    if show_substitutions:
+        try:
+            modules = await get_modules(auth=auth)
+            if not modules.get("success"):
+                raise ValueError("Module unavailable")
+            dsb_available = native_available = False
+            for module in modules.get("modules") or []:
+                label = f"{module.get('name', '')} {module.get('url', '')} {module.get('direct_url', '')}".lower()
+                is_dsb = "dsb" in label
+                dsb_available |= is_dsb
+                native_available |= not is_dsb and "vertretungsplan" in label
+            if native_available or dsb_available:
+                try:
+                    preferences, _ = await get_user_preferences(auth.user_id)
+                    own_class = str(
+                        (preferences.get("vertretungsplan") or {}).get("class_override") or ""
+                    ).strip()
+                    if not own_class:
+                        profile = await get_user_data(auth=auth)
+                        if not profile.get("success"):
+                            raise ValueError("Profile unavailable")
+                        own_class = vertretungsplan_notification_options(profile, {})["own_class"]
+                except Exception:
+                    # Source loading can still succeed, including lessons that
+                    # supply their own class. Never discard both sources here.
+                    sources.append({"name": "Klassenzuordnung", "error": True})
+            for name, enabled, fetch, normalize in (
+                (
+                    "Schulportal",
+                    native_available,
+                    get_vertretungsplan,
+                    native_substitutions,
+                ),
+                (
+                    "DSB",
+                    dsb_available,
+                    get_school_dsb_plan,
+                    lambda plan: dsb_substitutions(plan.get("tables") or []),
+                ),
+            ):
+                if not enabled:
+                    continue
+                try:
+                    plan = await fetch(refresh=refresh, auth=auth)
+                    if not plan.get("success") or plan.get("available") is False:
+                        raise ValueError("Plan unavailable")
+                    changes.extend(normalize(plan))
+                    sources.append(
+                        {"name": name, "error": False, "updated": plan.get("last_updated")}
+                    )
+                except Exception:
+                    sources.append({"name": name, "error": True})
+        except Exception:
+            sources.append({"name": "Vertretungspläne", "error": True})
     result = resolve_timetable(
         timetable,
         changes,
@@ -1982,6 +2454,40 @@ async def get_account_preferences(
         "stored": stored,
         "preferences": preferences,
     }
+
+
+@app.post("/feedback")
+async def submit_feedback(
+    payload: FeedbackSubmissionRequest,
+    background_tasks: BackgroundTasks,
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Dict[str, object]:
+    from .analytics_store import validate_support_context
+    title = payload.title.strip()
+    details = payload.details.strip()
+    if not title or not details:
+        raise HTTPException(status_code=422, detail="Titel und Beschreibung sind erforderlich.")
+    page = payload.page.strip() if payload.page else None
+    if page and not page.startswith("/"):
+        page = None
+    if page:
+        page = page.split("?", 1)[0].split("#", 1)[0][:300]
+    try:
+        report = await feedback_db.create_feedback(
+            category=payload.category,
+            title=title,
+            details=details,
+            page=page,
+            submitter_user_id=auth.user_id,
+            **({'support_context': await validate_support_context(auth.user_id, payload.support_context.model_dump())} if payload.support_context else {}),
+        )
+    except FeedbackRateLimitError as error:
+        raise HTTPException(
+            status_code=429,
+            detail="Du hast in kurzer Zeit zu oft Feedback gesendet. Bitte versuche es später erneut.",
+        ) from error
+    background_tasks.add_task(notify_feedback, report)
+    return {"success": True, "id": report["id"]}
 
 
 @app.patch("/settings/preferences")
@@ -2037,7 +2543,7 @@ async def update_account_preferences(
 
 @app.get("/settings/timetable/lessons")
 async def get_custom_timetable_lessons(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     return {
         "success": True,
@@ -2161,15 +2667,110 @@ async def download_dateispeicher_file(
     response_headers = {"Content-Disposition": content_disposition}
     media_type = result.get("content_type") or "application/octet-stream"
     if stream is not None:
+        buffered_file = tempfile.SpooledTemporaryFile(
+            max_size=16 * 1024 * 1024, mode="w+b"
+        )
+        try:
+            await run_in_threadpool(
+                _copy_download_stream_to_file, stream, buffered_file
+            )
+        except DownloadTooLargeError as error:
+            buffered_file.close()
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File exceeds the 256 MiB download limit",
+            ) from error
+        except Exception as error:
+            buffered_file.close()
+            logger.warning("Could not buffer dateispeicher download", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to download file",
+            ) from error
         return StreamingResponse(
-            content=stream,
+            content=_iter_open_file(buffered_file),
             media_type=media_type,
             headers=response_headers,
+            background=BackgroundTask(buffered_file.close),
+        )
+    if len(content) > MAX_DATEISPEICHER_DOWNLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File exceeds the 256 MiB download limit",
         )
     return Response(
         content=content,
         media_type=media_type,
         headers=response_headers,
+    )
+
+
+# --- Dateiverteilung ---
+
+
+@app.get("/dateiverteilung")
+async def get_dateiverteilung(
+    refresh: bool = False,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, "/dateiverteilung")
+        if cached is not None:
+            return cached
+
+    result = await run_in_threadpool(auth.client.dateiverteilung_get_overview)
+    if result.get("success"):
+        await sessions.set_cache(auth.user_id, "/dateiverteilung", result)
+    elif result.get("error_kind") == "authentication":
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+    return result
+
+
+@app.get("/dateiverteilung/file")
+async def download_dateiverteilung_file(
+    url: str = Query(..., min_length=1, max_length=2048),
+    auth: AuthSession = Depends(client_dependency),
+):
+    result = await run_in_threadpool(auth.client.dateiverteilung_download_file, url)
+    stream = result.get("stream")
+    if not result.get("success") or stream is None:
+        error_kind = result.get("error_kind")
+        if error_kind == "validation":
+            error_status = status.HTTP_400_BAD_REQUEST
+        elif error_kind == "authentication":
+            await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+            error_status = status.HTTP_401_UNAUTHORIZED
+        elif result.get("upstream_status") == status.HTTP_404_NOT_FOUND:
+            error_status = status.HTTP_404_NOT_FOUND
+        else:
+            error_status = status.HTTP_502_BAD_GATEWAY
+        raise HTTPException(status_code=error_status, detail=result.get("error", "File not found"))
+
+    buffered_file = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b")
+    try:
+        await run_in_threadpool(_copy_download_stream_to_file, stream, buffered_file)
+    except DownloadTooLargeError as error:
+        buffered_file.close()
+        raise HTTPException(status_code=413, detail="File exceeds the 256 MiB download limit") from error
+    except BaseException as error:
+        buffered_file.close()
+        if not isinstance(error, Exception):
+            raise
+        raise HTTPException(status_code=502, detail="Failed to download file") from error
+    finally:
+        if callable(result.get("close")):
+            result["close"]()
+
+    filename = re.sub(r'[\r\n"]', "_", str(result.get("filename") or "dateiverteilung-datei"))
+    return StreamingResponse(
+        content=_iter_open_file(buffered_file),
+        media_type=result.get("content_type") or "application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+        background=BackgroundTask(buffered_file.close),
     )
 
 
@@ -2195,7 +2796,7 @@ async def get_lerngruppen(
 
 @app.get("/notifications/config")
 async def get_notification_config(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     """Return the public Web Push configuration for the signed-in user."""
     del auth
@@ -2209,7 +2810,7 @@ async def get_notification_config(
 
 @app.get("/notifications/preferences")
 async def get_user_notification_preferences(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     preferences = await get_notification_preferences(auth.user_id)
     preferences.pop("user_id", None)
@@ -2277,7 +2878,7 @@ async def register_notification_subscription(
             status_code=422,
             detail="Push subscription keys are invalid",
         )
-    await save_push_subscription(auth.user_id, subscription)
+    await save_push_subscription(auth.user_id, subscription, auth.session_id)
     return {"success": True}
 
 
@@ -2320,24 +2921,33 @@ async def _invalidate_message_caches(user_id: str) -> None:
 async def _update_message_cache_task(
     user_id: str,
     endpoint: str,
-    fetch_func,
+    session_id: str,
     params: dict,
     cache_params: str,
     cache_version: int,
 ):
-    try:
-        fresh_data = await run_in_threadpool(fetch_func, **params)
-        cached_data = await sessions.get_cached(user_id, endpoint, cache_params)
-        if cached_data is not None and not _responses_equal(cached_data, fresh_data):
-            await sessions.set_cache_if_current_version(
-                user_id,
-                endpoint,
-                fresh_data,
-                cache_params,
-                cache_version,
-            )
-    except Exception as e:
-        logger.error(f"Error updating message cache for {endpoint}: {e}")
+    """Refresh messages inside the deletion barrier using the original session."""
+    lock = await account_lifecycle_lock(user_id)
+    async with lock.shared():
+        stored = await get_refresh_token_by_session_id(session_id)
+        if not stored or canonicalize_user_id(stored['user_id']) != user_id:
+            return
+        try:
+            session_data = await sessions._get_or_create_schulportal_client(user_id)
+            method = {
+                '/nachrichten/headers': 'nachrichten_get_headers',
+                '/nachrichten/search': 'nachrichten_search_recipients',
+            }[endpoint]
+            fresh_data = await run_in_threadpool(getattr(session_data.client, method), **params)
+            if endpoint == '/nachrichten/headers':
+                fresh_data = await overlay_headers(user_id, fresh_data)
+            cached_data = await sessions.get_cached(user_id, endpoint, cache_params)
+            if cached_data is not None and not _responses_equal(cached_data, fresh_data):
+                await sessions.set_cache_if_current_version(
+                    user_id, endpoint, fresh_data, cache_params, cache_version,
+                )
+        except Exception as e:
+            logger.error(f"Error updating message cache for {endpoint}: {e}")
 
 
 @app.get("/nachrichten/headers")
@@ -2351,30 +2961,271 @@ async def get_message_headers(
     cache_params = _make_param_key(params)
     cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
-    task = Task(
-        name=f"update_message_cache:{endpoint}",
-        func=_update_message_cache_task,
-        args=(
-            auth.user_id,
-            endpoint,
-            auth.client.nachrichten_get_headers,
-            params,
-            cache_params,
-            cache_version,
-        ),
-        priority=TaskPriority.LOW,
-        max_retries=2,
-    )
-    await task_queue.add_task(task)
+    if not warming.get():
+        task = Task(
+            name=f"update_message_cache:{endpoint}",
+            retain_completed=False,
+            func=_update_message_cache_task,
+            args=(
+                auth.user_id,
+                endpoint,
+                auth.session_id,
+                params,
+                cache_params,
+                cache_version,
+            ),
+            user_id=auth.user_id,
+            priority=TaskPriority.LOW,
+            max_retries=2,
+        )
+        await task_queue.add_task(task)
     if cached is not None:
-        return cached
+        return await overlay_headers(auth.user_id, cached, fresh=False)
     result = await run_in_threadpool(
         auth.client.nachrichten_get_headers, get_type, last
     )
+    result = await overlay_headers(auth.user_id, result, preserve=warming.get())
     await sessions.set_cache_if_current_version(
         auth.user_id, endpoint, result, cache_params, cache_version
     )
     return result
+
+
+async def saved_dashboard_notification_inbox(user_id, *, sources=None, show_read=None):
+    """Render the current local inbox without contacting the portal during outages."""
+    from .auth_db import get_dashboard_notifications
+
+    preferences, _ = await get_user_preferences(user_id)
+    settings = preferences.get("dashboard") or {}
+    enabled = settings.get("notifications_enabled", True)
+    allowed = {
+        source
+        for source in ("messages", "native", "dsb")
+        if settings.get("notification_" + source + "_enabled", True)
+    }
+    if sources is not None:
+        allowed &= {source.strip() for source in sources.split(",")}
+    rows = await get_dashboard_notifications(user_id)
+    items = [
+        {
+            **row["payload"],
+            "created_at": row["first_seen_at"],
+            "read": row["read_at"] is not None,
+            "read_at": row["read_at"],
+        }
+        for row in rows
+        if enabled
+        and row["is_active"]
+        and row["source"] in allowed
+        and isinstance(row["payload"], dict)
+    ]
+    items.sort(
+        key=lambda item: (
+            str(item.get("occurred_at") or ""),
+            str(item.get("created_at") or ""),
+            str(item.get("id") or ""),
+        ),
+        reverse=True,
+    )
+    unread = [item for item in items if not item["read"]]
+    include_read = (
+        settings.get("notification_show_read", False)
+        if show_read is None
+        else str(show_read).lower() in {"true", "1", "yes", "on"}
+    )
+    return {
+        "success": True,
+        "enabled": enabled,
+        "notifications": (items if include_read else unread)[
+            : int(settings.get("notification_limit", 20))
+        ],
+        "unread_count": len(unread),
+        "source_counts": source_counts(items),
+        "unread_source_counts": source_counts(unread),
+        "errors": {},
+    }
+
+
+@app.get("/dashboard/notifications")
+async def get_dashboard_notification_inbox(
+    refresh: bool = False,
+    sources: Optional[str] = None,
+    show_read: Optional[bool] = None,
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    """Return the persisted, user-scoped dashboard notification inbox."""
+    preferences, _ = await get_user_preferences(auth.user_id)
+    dashboard_preferences = preferences.get("dashboard") or {}
+    if not dashboard_preferences.get("notifications_enabled", True):
+        await deactivate_and_purge_dashboard_notifications(auth.user_id)
+        return {
+            "success": True,
+            "enabled": False,
+            "notifications": [],
+            "unread_count": 0,
+            "source_counts": {"messages": 0, "native": 0, "dsb": 0},
+            "unread_source_counts": {"messages": 0, "native": 0, "dsb": 0},
+            "errors": {},
+        }
+
+    source_preferences = {
+        "messages": dashboard_preferences.get("notification_messages_enabled", True),
+        "native": dashboard_preferences.get("notification_native_enabled", True),
+        "dsb": dashboard_preferences.get("notification_dsb_enabled", True),
+    }
+    if sources is not None:
+        requested_sources = {
+            source.strip() for source in sources.split(",")
+            if source.strip() in {"messages", "native", "dsb"}
+        }
+        source_preferences = {
+            source: bool(enabled and source in requested_sources)
+            for source, enabled in source_preferences.items()
+        }
+    try:
+        modules_result = await get_modules(auth=auth)
+        if modules_result.get("success"):
+            descriptors = [
+                " ".join((
+                    str(module.get("name") or ""),
+                    str(module.get("url") or ""),
+                    str(module.get("direct_url") or ""),
+                )).casefold()
+                for module in modules_result.get("modules") or []
+                if isinstance(module, dict)
+            ]
+            available_sources = {
+                "messages": any("nachrichten" in value for value in descriptors),
+                "native": any(
+                    "vertretungsplan" in value and "dsb" not in value
+                    for value in descriptors
+                ),
+                "dsb": _school_dsb_credentials(auth.school_id) is not None,
+            }
+            source_preferences = {
+                source: bool(enabled and available_sources[source])
+                for source, enabled in source_preferences.items()
+            }
+    except Exception:
+        logger.exception("Dashboard notification module lookup failed")
+    items: List[Dict[str, Any]] = []
+    errors: Dict[str, str] = {}
+    refreshed_sources: List[str] = []
+
+    class_override = str(
+        (preferences.get("vertretungsplan") or {}).get("class_override") or ""
+    ).strip()
+    target_class = class_override
+    if not target_class and (source_preferences["native"] or source_preferences["dsb"]):
+        try:
+            profile_result = await get_user_data(auth=auth)
+            profile = profile_result.get("data") if profile_result.get("success") else {}
+            profile = profile if isinstance(profile, dict) else {}
+            target_class = str(
+                profile.get("klasse") or profile.get("class") or profile.get("Klasse") or ""
+            ).strip()
+        except Exception:
+            logger.exception("Dashboard notification profile lookup failed")
+
+    if not target_class:
+        for source in ("native", "dsb"):
+            if source_preferences[source]:
+                errors[source] = "Die eigene Klasse konnte nicht ermittelt werden."
+                source_preferences[source] = False
+
+    if source_preferences["messages"]:
+        try:
+            if refresh:
+                await _invalidate_message_caches(auth.user_id)
+            result = await get_message_headers(get_type="All", last=0, auth=auth)
+            if result.get("success"):
+                refreshed_sources.append("messages")
+                items.extend(message_items(result)[:200])
+            else:
+                errors["messages"] = str(result.get("error") or "Nachrichten konnten nicht geladen werden.")
+        except Exception:
+            logger.exception("Dashboard message notifications failed")
+            errors["messages"] = "Nachrichten konnten nicht geladen werden."
+
+    if source_preferences["native"]:
+        try:
+            result = await get_vertretungsplan(
+                include_raw=False, refresh=refresh, auth=auth
+            )
+            if result.get("success"):
+                refreshed_sources.append("native")
+                items.extend(native_plan_items(result, target_class)[:200])
+            else:
+                errors["native"] = str(result.get("error") or "Vertretungsplan konnte nicht geladen werden.")
+        except Exception:
+            logger.exception("Dashboard native plan notifications failed")
+            errors["native"] = "Vertretungsplan konnte nicht geladen werden."
+
+    if source_preferences["dsb"]:
+        try:
+            result = await get_school_dsb_plan(refresh=refresh, auth=auth)
+            if result.get("success"):
+                refreshed_sources.append("dsb")
+                items.extend(dsb_plan_items(result, target_class)[:200])
+            else:
+                errors["dsb"] = str(result.get("error") or "DSBmobile konnte nicht geladen werden.")
+        except Exception:
+            logger.exception("Dashboard DSB notifications failed")
+            errors["dsb"] = "DSBmobile konnte nicht geladen werden."
+
+    active_notifications = await sync_dashboard_notifications(
+        auth.user_id,
+        items,
+        include_read=True,
+        limit=600,
+        active_sources=refreshed_sources,
+    )
+    show_read_items = (
+        bool(dashboard_preferences.get("notification_show_read", False))
+        if show_read is None
+        else show_read
+    )
+    visible_notifications = (
+        active_notifications
+        if show_read_items
+        else [item for item in active_notifications if not item.get("read", False)]
+    )
+    notification_limit = int(dashboard_preferences.get("notification_limit", 20))
+    return {
+        "success": True,
+        "enabled": True,
+        "notifications": visible_notifications[:notification_limit],
+        "unread_count": sum(
+            not item.get("read", False) for item in active_notifications
+        ),
+        "source_counts": source_counts(active_notifications),
+        "unread_source_counts": source_counts(
+            [item for item in active_notifications if not item.get("read", False)]
+        ),
+        "errors": errors,
+    }
+
+
+@app.post("/dashboard/notifications/read")
+async def read_dashboard_notifications(
+    payload: DashboardNotificationReadRequest,
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Dict[str, object]:
+    updated = await mark_dashboard_notifications_read(
+        auth.user_id, payload.notification_ids
+    )
+    return {"success": True, "updated": updated}
+
+
+@app.post("/dashboard/notifications/read-all")
+async def read_all_dashboard_notifications(
+    payload: DashboardNotificationReadAllRequest,
+    auth: AuthSession = Depends(local_auth_dependency),
+) -> Dict[str, object]:
+    updated = await mark_dashboard_notifications_read(
+        auth.user_id, sources=payload.sources
+    )
+    return {"success": True, "updated": updated}
 
 
 @app.get("/nachrichten/search")
@@ -2390,15 +3241,17 @@ async def search_recipients(
     cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
     task = Task(
         name=f"update_message_cache:{endpoint}",
+        retain_completed=False,
         func=_update_message_cache_task,
         args=(
             auth.user_id,
             endpoint,
-            auth.client.nachrichten_search_recipients,
+            auth.session_id,
             fetch_params,
             cache_params,
             cache_version,
         ),
+        user_id=auth.user_id,
         priority=TaskPriority.LOW,
         max_retries=2,
     )
@@ -2418,31 +3271,23 @@ async def get_conversation(
     last: int = 0,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
+    if warming.get():
+        return {"success": False, "error": "Background conversation reads are disabled"}
     endpoint = "/nachrichten/conversation"
     params = {"conversation_id": conversation_id, "last": last}
     cache_params = _make_param_key(params)
     cache_version = await sessions.get_cache_version(auth.user_id, endpoint)
-    cached = await sessions.get_cached(auth.user_id, endpoint, cache_params)
-    task = Task(
-        name=f"update_message_cache:{endpoint}",
-        func=_update_message_cache_task,
-        args=(
-            auth.user_id,
-            endpoint,
-            auth.client.nachrichten_get_conversation,
-            params,
-            cache_params,
-            cache_version,
-        ),
-        priority=TaskPriority.LOW,
-        max_retries=2,
-    )
-    await task_queue.add_task(task)
-    if cached is not None:
-        return cached
+    # Cached bodies can predate the latest unread headers. Only a live body
+    # fetch may acknowledge the activity observed before this request.
+    activity = await current_activity(auth.user_id, conversation_id)
     result = await run_in_threadpool(
         auth.client.nachrichten_get_conversation, conversation_id, last
     )
+    if result.get('success') and last == 0:
+        await record_body(auth.user_id, conversation_id, result,
+                          background=warming.get(), activity=activity)
+    if result.get('success') and not warming.get() and last == 0:
+        await mark_opened(auth.user_id, conversation_id, expected_activity=activity)
     await sessions.set_cache_if_current_version(
         auth.user_id, endpoint, result, cache_params, cache_version
     )
@@ -2487,35 +3332,155 @@ async def mark_read(
     conversation_id: str = Body(..., description="Conversation uniqid to mark read"),
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    return await run_in_threadpool(
+    activity = await current_activity(auth.user_id, conversation_id)
+    body_hash = await observed_body(auth.user_id, conversation_id)
+    result = await run_in_threadpool(
         auth.client.nachrichten_mark_read, conversation_id
     )
+    if result.get('success'):
+        await mark_opened(auth.user_id, conversation_id,
+                          expected_activity=activity, body_hash=body_hash)
+    return result
 
 
 # --- Mein Unterricht ---
 
 
+_course_file_interests: dict[str, dict[str, tuple[str, str]]] = {}
+_course_file_interests_lock = asyncio.Lock()
+
+
+async def _queue_course_file_download(
+    user_id: str, download_url: str, file_hash: str, session_id: str
+) -> None:
+    async def download_for_task(
+        task_user_id: str, task_download_url: str, task_file_hash: str
+    ) -> None:
+        await _download_course_file(
+            task_user_id,
+            task_download_url,
+            task_file_hash,
+            task_generation=download_task.user_generation,
+            session_id=session_id,
+        )
+
+    download_task = Task(
+        name=f"download_file:{file_hash[:12]}",
+        func=download_for_task,
+        args=(user_id, download_url, file_hash),
+        user_id=user_id,
+        priority=TaskPriority.LOW,
+        max_retries=2,
+        on_cancel=lambda owner=user_id, pending_hash=file_hash: _reschedule_shared_course_file(
+            pending_hash, owner
+        ),
+    )
+    await task_queue.add_task(download_task)
+
+
+async def clear_course_file_interests(user_id: str) -> None:
+    """Withdraw an account even when another user owns the shared downloader."""
+    async with _course_file_interests_lock:
+        for interested in _course_file_interests.values():
+            interested.pop(user_id, None)
+
+
+async def _reschedule_shared_course_file(file_hash: str, cancelled_user_id: str) -> None:
+    """Replace a downloader only with a still-valid, originally interested session."""
+    async with _course_file_interests_lock:
+        _course_file_interests.get(file_hash, {}).pop(cancelled_user_id, None)
+    while True:
+        async with _course_file_interests_lock:
+            interested = _course_file_interests.get(file_hash, {})
+            replacement = next(iter(interested.items()), None)
+            if replacement is None:
+                _course_file_interests.pop(file_hash, None)
+                unmark_pending(file_hash)
+                return
+            replacement_user_id, (replacement_url, session_id) = replacement
+        stored = await get_refresh_token_by_session_id(session_id)
+        if (
+            not stored
+            or canonicalize_user_id(stored['user_id']) != replacement_user_id
+            or not await has_cached_file_reference(replacement_user_id, file_hash)
+        ):
+            async with _course_file_interests_lock:
+                interested = _course_file_interests.get(file_hash, {})
+                if interested.get(replacement_user_id) == (replacement_url, session_id):
+                    interested.pop(replacement_user_id, None)
+            continue
+        try:
+            mark_pending(file_hash)
+            # The task also validates this exact session under its lifecycle lock
+            # before fetching and saving, covering deletion after the checks here.
+            await _queue_course_file_download(
+                replacement_user_id, replacement_url, file_hash, session_id
+            )
+        except Exception:
+            async with _course_file_interests_lock:
+                _course_file_interests.pop(file_hash, None)
+                unmark_pending(file_hash)
+            logger.exception('Could not reschedule shared course file %s', file_hash[:12])
+        return
+
+
 async def _download_course_file(
-    user_id: str, download_url: str, file_hash: str
+    user_id: str,
+    download_url: str,
+    file_hash: str,
+    *,
+    task_generation: int | None = None,
+    session_id: str | None = None,
 ) -> None:
     if is_file_cached(file_hash):
         unmark_pending(file_hash)
+        async with _course_file_interests_lock:
+            _course_file_interests.pop(file_hash, None)
         return
 
-    write_pending_meta(file_hash, download_url)
-    session_data = await sessions._get_or_create_schulportal_client(user_id)
-    client = session_data.client
-    result = await run_in_threadpool(client.meinunterricht_download_file, download_url)
+    from .account_data import account_deletion_is_recent, account_lifecycle_lock
 
-    if result.get("success"):
-        save_file(
-            file_hash,
-            result["content"],
-            result.get("content_type", "application/octet-stream"),
-            result.get("filename", "download"),
-        )
-    else:
-        unmark_pending(file_hash)
+    lifecycle_lock = await account_lifecycle_lock(user_id)
+    async with lifecycle_lock.shared():
+        if (
+            await account_deletion_is_recent(user_id)
+            or (session_id is not None and not await get_refresh_token_by_session_id(session_id))
+            or not await task_queue.is_user_generation_current(
+                user_id, task_generation
+            )
+        ):
+            await _reschedule_shared_course_file(file_hash, user_id)
+            return
+        write_pending_meta(file_hash, download_url)
+        session_data = await sessions._get_or_create_schulportal_client(user_id)
+        client = session_data.client
+        # Keep the private upstream client inside the account lifecycle, just
+        # like profile revalidation. Browser delivery uses a detached file and
+        # does not keep this lock while the recipient receives the bytes.
+        result = await run_in_threadpool(client.meinunterricht_download_file, download_url)
+
+        if (
+            await account_deletion_is_recent(user_id)
+            or (session_id is not None and not await get_refresh_token_by_session_id(session_id))
+            or not await task_queue.is_user_generation_current(
+                user_id, task_generation
+            )
+        ):
+            await _reschedule_shared_course_file(file_hash, user_id)
+            return
+        if result.get("success"):
+            save_file(
+                file_hash,
+                result["content"],
+                result.get("content_type", "application/octet-stream"),
+                result.get("filename", "download"),
+            )
+        else:
+            unmark_pending(file_hash)
+        async with _course_file_interests_lock:
+            _course_file_interests.pop(file_hash, None)
+
+    if not result.get("success"):
         logger.warning(
             "File download failed for %s: %s", file_hash[:12], result.get("error")
         )
@@ -2646,42 +3611,76 @@ async def meinunterricht_course(
 ) -> Dict[str, object]:
     params = _make_param_key({"course_id": course_id})
 
-    cached = await sessions.get_cached(
+    result = await sessions.get_cached(
         auth.user_id, "/meinunterricht/course", params
     )
-    if cached is not None:
-        return cached
+    fetched_from_portal = result is None
+    if fetched_from_portal:
+        cache_version = await sessions.get_cache_version(auth.user_id, "/meinunterricht/course")
+        result = await run_in_threadpool(auth.client.meinunterricht_get_course, course_id)
 
-    result = await run_in_threadpool(auth.client.meinunterricht_get_course, course_id)
-
+    attachment_session_id = auth.session_id
+    if not attachment_session_id:
+        persisted = await get_refresh_token_by_user_id(auth.user_id)
+        attachment_session_id = (persisted or {}).get('session_id', '')
     if result.get("success") and "entries" in result:
         for entry in result["entries"]:
             for file_info in entry.get("files", []):
                 original_url = file_info.get("download_url", "")
-                if not original_url:
-                    continue
-
-                file_hash = get_file_hash(original_url)
+                file_hash = str(file_info.get("file_hash") or "")
+                if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
+                    if not original_url or f"/meinunterricht/file/" in original_url:
+                        continue
+                    file_hash = get_file_hash(original_url)
+                await add_cached_file_reference(auth.user_id, file_hash)
                 local_url = f"{PUBLIC_BASE_URL}/meinunterricht/file/{file_hash}"
                 file_info["download_url"] = local_url
                 file_info["url"] = local_url
                 file_info["file_hash"] = file_hash
 
-                if not is_file_cached(file_hash) and not is_file_pending(file_hash):
-                    mark_pending(file_hash)
-                    download_task = Task(
-                        name=f"download_file:{file_hash[:12]}",
-                        func=_download_course_file,
-                        args=(auth.user_id, original_url, file_hash),
-                        user_id=auth.user_id,
-                        priority=TaskPriority.LOW,
-                        max_retries=2,
-                    )
-                    await task_queue.add_task(download_task)
+                if (
+                    warming.get()
+                    and original_url
+                    and "/meinunterricht/file/" not in original_url
+                ):
+                    # Preserve the upstream target for a later authenticated click,
+                    # without scheduling a file transfer during synthetic warming.
+                    await run_in_threadpool(write_pending_meta, file_hash, original_url)
 
-    await sessions.set_cache(
-        auth.user_id, "/meinunterricht/course", result, params
-    )
+                if (
+                    not warming.get()
+                    and original_url
+                    and "/meinunterricht/file/" not in original_url
+                    and not is_file_cached(file_hash)
+                ):
+                    async with _course_file_interests_lock:
+                        _course_file_interests.setdefault(file_hash, {})[
+                            auth.user_id
+                        ] = (original_url, attachment_session_id)
+
+                if (
+                    not warming.get()
+                    and original_url
+                    and "/meinunterricht/file/" not in original_url
+                    and not is_file_cached(file_hash)
+                    and not is_file_pending(file_hash)
+                ):
+                    mark_pending(file_hash)
+                    try:
+                        await _queue_course_file_download(
+                            auth.user_id, original_url, file_hash, attachment_session_id
+                        )
+                    except Exception:
+                        unmark_pending(file_hash)
+                        async with _course_file_interests_lock:
+                            _course_file_interests.pop(file_hash, None)
+                        raise
+
+    if fetched_from_portal:
+        await sessions.set_cache_if_current_version(
+            auth.user_id, "/meinunterricht/course", result, params, cache_version
+        )
+
     return result
 
 
@@ -2692,32 +3691,47 @@ async def meinunterricht_file(
 ):
     from fastapi.responses import FileResponse
 
+    if not x_session_token:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not re.fullmatch(r"[a-f0-9]{64}", file_hash):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        identity = await local_auth_dependency(x_session_token)
+        user_id = identity.user_id
+        if not await has_cached_file_reference(user_id, file_hash):
+            raise HTTPException(status_code=404, detail="File not found")
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="File not found")
+
     meta = get_meta(file_hash)
     content_path = get_content_path(file_hash)
 
-    if content_path.exists() and meta and meta.get("content_type"):
+    if content_path.exists() and meta and meta.get("content_type") and not warming.get():
         return FileResponse(
             content_path,
             media_type=meta.get("content_type", "application/octet-stream"),
             filename=meta.get("filename", "download"),
         )
 
-    if not x_session_token:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    try:
-        identity = await local_auth_dependency(x_session_token)
-        user_id = identity.user_id
-        session_data = await sessions._get_or_create_schulportal_client(user_id)
-        client = session_data.client
-    except HTTPException:
-        raise HTTPException(status_code=404, detail="File not found")
-
     if meta and meta.get("download_url"):
+        try:
+            session_data = await sessions._get_or_create_schulportal_client(user_id)
+            client = session_data.client
+        except Exception:
+            logger.warning("Could not restore upstream session for file download")
+            raise HTTPException(status_code=404, detail="File not found")
         result = await run_in_threadpool(
             client.meinunterricht_download_file, meta["download_url"]
         )
         if result.get("success"):
+            if len(result.get('content', b'')) > MAX_DATEISPEICHER_DOWNLOAD_BYTES:
+                raise HTTPException(413, 'File exceeds the 256 MiB download limit')
+            from .account_data import account_deletion_is_recent
+
+            # Authenticated requests already hold the lifecycle lock in
+            # serialize_account_requests; avoid reacquiring its non-reentrant lock.
+            if await account_deletion_is_recent(user_id):
+                raise HTTPException(status_code=404, detail="File not found")
             save_file(
                 file_hash,
                 result["content"],
@@ -2767,13 +3781,203 @@ async def meinunterricht_weekly(
 @app.get("/meinunterricht/submissions")
 async def meinunterricht_submissions(
     auth: AuthSession = Depends(client_dependency),
+    refresh: bool = False,
 ) -> Dict[str, object]:
-    cached = await sessions.get_cached(auth.user_id, "/meinunterricht/submissions")
-    if cached is not None:
-        return cached
+    endpoint = "/meinunterricht/submissions"
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, endpoint)
+        if cached is not None:
+            return cached
 
+    cache_version = await sessions.get_cache_version(
+        auth.user_id, endpoint, advance=refresh
+    )
     result = await run_in_threadpool(auth.client.meinunterricht_get_submissions)
-    await sessions.set_cache(auth.user_id, "/meinunterricht/submissions", result)
+    if not result.get("success") and result.get("status_code") == 401:
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(status_code=401, detail=result.get("error", "Schulportal session expired"))
+    if result.get("success"):
+        await sessions.set_cache_if_current_version(
+            auth.user_id, endpoint, result, "", cache_version
+        )
+    return result
+
+
+@app.get("/meinunterricht/submissions/file/{file_ref}")
+async def meinunterricht_submission_file(
+    file_ref: str,
+    auth: AuthSession = Depends(client_dependency),
+):
+    """Proxy a submission file through the authenticated Schulportal session."""
+    from fastapi.responses import Response
+
+    result = await run_in_threadpool(
+        auth.client.meinunterricht_download_submission_file, file_ref
+    )
+    if not result.get("success"):
+        failure_status = result.get("status_code")
+        if failure_status not in {400, 401, 404, 502}:
+            failure_status = 502
+        if failure_status == 401:
+            await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(
+            status_code=failure_status,
+            detail=result.get("error", "Failed to download file"),
+        )
+
+    filename = re.sub(r'[\r\n"]', "_", str(result.get("filename") or "download"))
+    content_disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+    return Response(
+        content=result.get("content", b""),
+        media_type=result.get("content_type") or "application/octet-stream",
+        headers={"Content-Disposition": content_disposition},
+    )
+
+
+@app.get("/meinunterricht/submissions/{detail_ref}")
+async def meinunterricht_submission(
+    detail_ref: str,
+    auth: AuthSession = Depends(client_dependency),
+    refresh: bool = False,
+) -> Dict[str, object]:
+    endpoint = "/meinunterricht/submissions/detail"
+    params = _make_param_key({"detail_ref": detail_ref})
+    if not refresh:
+        cached = await sessions.get_cached(auth.user_id, endpoint, params)
+        if cached is not None:
+            return cached
+
+    cache_version = await sessions.get_cache_version(
+        auth.user_id, endpoint, advance=refresh
+    )
+    detail = await run_in_threadpool(
+        auth.client.meinunterricht_get_submission, detail_ref
+    )
+    if not detail.get("success") and detail.get("status_code") == 401:
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(status_code=401, detail=detail.get("error", "Schulportal session expired"))
+    result: Dict[str, object] = (
+        {
+            "success": True,
+            "submission": {key: value for key, value in detail.items() if key != "success"},
+        }
+        if detail.get("success")
+        else detail
+    )
+    if result.get("success"):
+        await sessions.set_cache_if_current_version(
+            auth.user_id, endpoint, result, params, cache_version
+        )
+    return result
+
+
+MAX_SUBMISSION_FILE_BYTES = 50 * 1024 * 1024
+MAX_SUBMISSION_TOTAL_BYTES = 50 * 1024 * 1024
+
+
+def _upload_file_size(upload_file: UploadFile) -> int:
+    current_position = upload_file.file.tell()
+    upload_file.file.seek(0, 2)
+    size = upload_file.file.tell()
+    upload_file.file.seek(current_position)
+    return size
+
+
+@app.post("/meinunterricht/submissions/upload")
+async def meinunterricht_submission_upload(
+    course_id: str = Form(..., min_length=1, max_length=200),
+    entry_id: str = Form(..., min_length=1, max_length=200),
+    upload_id: str = Form(..., min_length=1, max_length=200),
+    files: List[UploadFile] = File(...),
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    if not files or len(files) > 5:
+        raise HTTPException(status_code=422, detail="Between one and five files are required")
+
+    payload: List[Dict[str, Any]] = []
+    total_size = 0
+    try:
+        for file in files:
+            file_size = file.size
+            if file_size is None:
+                file_size = await run_in_threadpool(_upload_file_size, file)
+            if file_size > MAX_SUBMISSION_FILE_BYTES:
+                raise HTTPException(status_code=413, detail="Submission file is too large")
+            total_size += file_size
+            if total_size > MAX_SUBMISSION_TOTAL_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Combined submission files are too large",
+                )
+            payload.append(
+                {
+                    "filename": file.filename or "upload",
+                    "content_type": file.content_type,
+                    "stream": file.file,
+                }
+            )
+        result = await run_in_threadpool(
+            auth.client.meinunterricht_upload_files,
+            course_id,
+            entry_id,
+            upload_id,
+            payload,
+        )
+    finally:
+        for file in files:
+            await file.close()
+    if not result.get("success") and result.get("status_code") == 401:
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(status_code=401, detail=result.get("error", "Schulportal session expired"))
+    if result.get("success"):
+        await asyncio.gather(
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions/detail"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course/*"),
+        )
+    return result
+
+
+@app.delete("/meinunterricht/submissions/file")
+async def meinunterricht_submission_delete_file(
+    course_id: str = Form(..., min_length=1, max_length=200),
+    entry_id: str = Form(..., min_length=1, max_length=200),
+    upload_id: str = Form(..., min_length=1, max_length=200),
+    file_index: str = Form(..., min_length=1, max_length=20),
+    password: Optional[str] = Form(None, min_length=1, max_length=500),
+    auth: AuthSession = Depends(client_dependency),
+) -> Dict[str, object]:
+    # Schulportal still requires a password for this action. Reuse the encrypted
+    # credentials already held for session restoration instead of asking the
+    # browser to collect them again. Keep explicit passwords for older clients.
+    if password is None:
+        persisted = await get_refresh_token_by_user_id(auth.user_id)
+        if (
+            not persisted
+            or canonicalize_user_id(persisted["user_id"]) != auth.user_id
+            or not persisted.get("password")
+        ):
+            raise HTTPException(status_code=401, detail="Please log in again")
+        password = persisted["password"]
+    result = await run_in_threadpool(
+        auth.client.meinunterricht_delete_uploaded_file,
+        course_id,
+        entry_id,
+        upload_id,
+        file_index,
+        password,
+    )
+    if not result.get("success") and result.get("status_code") == 401:
+        await sessions.invalidate_schulportal_client(auth.user_id, auth.client)
+        raise HTTPException(status_code=401, detail=result.get("error", "Schulportal session expired"))
+    if result.get("success"):
+        await asyncio.gather(
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/submissions/detail"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course"),
+            sessions.invalidate_endpoint_cache(auth.user_id, "/meinunterricht/course/*"),
+        )
     return result
 
 
@@ -2788,7 +3992,11 @@ async def meinunterricht_homework_done(
         auth.client.meinunterricht_set_homework_done, course_id, entry_id, done
     )
     if result.get("success"):
-        await sessions.invalidate_user_cache(auth.user_id)
+        for endpoint in (
+            "/meinunterricht", "/meinunterricht/course", "/meinunterricht/entry",
+            "/meinunterricht/weekly", "/meinunterricht/submissions", "/stundenplan",
+        ):
+            await sessions.invalidate_endpoint_cache(auth.user_id, endpoint)
     return result
 
 
@@ -2806,6 +4014,9 @@ school_list_cache = {
 async def _refresh_school_list_cache():
     client = SchulportalHessenAPI()
     data = await run_in_threadpool(client.school_list_get_all)
+    from .demo import school_directory
+
+    data = school_directory(data)
     school_list_cache["data"] = data
     school_list_cache["created_at"] = datetime.utcnow()
     return data
@@ -2829,6 +4040,10 @@ async def school_list_all_cached() -> Dict[str, object]:
 
 @app.get("/school-list/district/{district_id}")
 async def school_list_by_district(district_id: str) -> Dict[str, object]:
+    from .demo import DISTRICT
+
+    if district_id == DISTRICT["id"]:
+        return {"success": True, "district": copy.deepcopy(DISTRICT)}
     client = SchulportalHessenAPI()
     result = await run_in_threadpool(client.school_list_get_by_district, district_id)
     return result
@@ -2838,6 +4053,17 @@ async def school_list_by_district(district_id: str) -> Dict[str, object]:
 async def school_list_search(q: str) -> Dict[str, object]:
     client = SchulportalHessenAPI()
     result = await run_in_threadpool(client.school_list_search_by_name, q)
+    from .demo import DISTRICT, SCHOOL
+    from schulportal_hessen.tools.search import text_matches_query
+
+    if text_matches_query(SCHOOL["name"], q) or q.strip() == SCHOOL["id"]:
+        result.setdefault("results", []).append({
+            "district_id": DISTRICT["id"],
+            "district_name": DISTRICT["name"],
+            "school": copy.deepcopy(SCHOOL),
+        })
+        result["count"] = len(result["results"])
+        result["success"] = True
     return result
 
 
@@ -4002,7 +5228,7 @@ async def _confirm_whatsapp_action(
 
 @app.get("/whatsapp/status")
 async def whatsapp_status(
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     config = _whatsapp_config()
     link = await get_whatsapp_link_for_user(auth.user_id)
@@ -4024,19 +5250,7 @@ async def create_whatsapp_pairing(
     _: WhatsAppPairingRequest,
     auth: AuthSession = Depends(client_dependency),
 ) -> Dict[str, object]:
-    config = _whatsapp_config()
-    if not config.configured:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="WhatsApp assistant is not configured on this server",
-        )
-    code, expires_at = await create_whatsapp_pairing_code(auth.user_id)
-    return {
-        "success": True,
-        "code": code,
-        "expires_at": expires_at.isoformat() + "Z",
-        "link_url": config.pairing_url(code),
-    }
+    raise HTTPException(410, "WhatsApp moved to Agents. Approve permissions and pair at /agents/channels/whatsapp/pairing.")
 
 
 @app.put("/whatsapp/preferences")
@@ -4180,6 +5394,10 @@ async def _process_whatsapp_stop_immediately(incoming: IncomingWhatsAppMessage) 
     if not await reserve_whatsapp_message(incoming.message_id):
         return
     client = WhatsAppCloudClient(_whatsapp_config())
+    from . import hosted_agents, hosted_store
+    hosted = await hosted_store.link("whatsapp", incoming.sender_id)
+    if hosted:
+        await hosted_agents.revoke(hosted["id"])
     await delete_whatsapp_link_for_sender(incoming.sender_id)
 
     global _whatsapp_pending_messages
@@ -4214,14 +5432,20 @@ async def _process_whatsapp_sender_turn(sender_key: str) -> None:
                 _whatsapp_sender_queues.pop(sender_key, None)
                 return
             incoming = sender_queue.messages.popleft()
+            sender_queue.active_message = incoming
             _whatsapp_pending_messages -= 1
+        context_token = _active_whatsapp_sender_queue.set(sender_queue)
         try:
             await _process_whatsapp_message(incoming)
         except Exception:
             logger.exception("Unhandled WhatsApp message processing failure")
+        finally:
+            sender_queue.active_message = None
+            _active_whatsapp_sender_queue.reset(context_token)
 
         async with _whatsapp_dispatch_lock:
-            sender_queue = _whatsapp_sender_queues.get(sender_key)
+            if _whatsapp_sender_queues.get(sender_key) is not sender_queue:
+                return
             if sender_queue is None or not sender_queue.messages:
                 _whatsapp_sender_queues.pop(sender_key, None)
                 return
@@ -4241,58 +5465,48 @@ async def _process_whatsapp_sender_turn(sender_key: str) -> None:
         raise
 
 
+async def _allow_active_whatsapp_message(sender_id: str) -> bool:
+    """Do not persist a sender hash for account work cancelled during deletion."""
+    sender_queue = _active_whatsapp_sender_queue.get()
+    if sender_queue is not None and sender_queue.cancelled:
+        return False
+    allowed = await allow_whatsapp_message(sender_id)
+    if sender_queue is not None and sender_queue.cancelled:
+        # Cancellation can occur while the DB operation is awaiting its lock.
+        # Undo that late write before the popped message is allowed to continue.
+        await clear_whatsapp_rate_limit(sender_id)
+        return False
+    return allowed
+
+
 async def _process_whatsapp_message(incoming: IncomingWhatsAppMessage) -> None:
     if not await reserve_whatsapp_message(incoming.message_id):
         return
-    config = _whatsapp_config()
-    client = WhatsAppCloudClient(config)
-
-    # STOP is a privacy control, so it must remain available even when ordinary
-    # commands from this sender are currently rate-limited.
-    intent = command_intent(incoming.text)
-    if intent == "unlink":
+    # Preserve cancellation of messages popped from the queue during deletion.
+    await get_whatsapp_link_for_sender(incoming.sender_id)
+    queue = _active_whatsapp_sender_queue.get()
+    if queue is not None and queue.cancelled:
+        return
+    if command_intent(incoming.text) == "unlink":
+        from .hosted_agents import receive
+        await receive("whatsapp", incoming.sender_id, incoming.message_id, "STOP")
         await delete_whatsapp_link_for_sender(incoming.sender_id)
-        await client.send_text(
-            incoming.sender_id,
-            "✅ Die WhatsApp-Verbindung wurde getrennt. LANIS sendet über diesen "
-            "Chat keine persönlichen Daten mehr.",
-        )
         return
+    try:
+        await WhatsAppCloudClient(_whatsapp_config()).mark_read(incoming.message_id)
+    except Exception:
+        logger.debug("WhatsApp read indicator unavailable")
+    from .hosted_agents import receive
+    await receive("whatsapp", incoming.sender_id, incoming.message_id, incoming.text)
 
-    if not await allow_whatsapp_message(incoming.sender_id):
-        logger.warning("Dropped rate-limited WhatsApp message")
-        return
 
-    action_code = confirmation_code(incoming.text)
-    if action_code:
-        await _confirm_whatsapp_action(incoming, action_code, client)
-        return
-
-    code = pairing_code(incoming.text)
-    if code:
-        user_id = await consume_whatsapp_pairing_code(code, incoming.sender_id)
-        if user_id:
-            await client.send_text(
-                incoming.sender_id,
-                "✅ *Du bist verbunden!*\n\n"
-                "Frag mich einfach, was du über deinen Schulalltag wissen möchtest. "
-                "Ich kann mehrere Bereiche durchsuchen und Zusammenhänge für dich klären. "
-                "Nachrichtenvorschauen bleiben zum Schutz deiner Privatsphäre aus.",
-            )
-        else:
-            await client.send_text(
-                incoming.sender_id,
-                "⚠️ Dieser Verbindungscode ist ungültig oder abgelaufen. "
-                "Erzeuge in den LANIS-Einstellungen einen neuen Code.",
-            )
-        return
-
-    link = await get_whatsapp_link_for_sender(incoming.sender_id)
-    if link is None:
-        await client.send_text(
-            incoming.sender_id, not_linked_message(config.ui_base_url)
-        )
-        return
+async def _process_linked_whatsapp_message(
+    incoming: IncomingWhatsAppMessage,
+    config: WhatsAppConfig,
+    client: WhatsAppCloudClient,
+    intent: str,
+    link: Dict[str, Any],
+) -> None:
 
     try:
         session_data = await sessions._get_or_create_schulportal_client(

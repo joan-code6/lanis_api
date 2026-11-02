@@ -28,12 +28,17 @@ from .auth_db import (
     save_vertretungsplan_notification_state,
 )
 
+from .message_read_state import overlay_headers
+
 logger = logging.getLogger("message_notifications")
 
 SCHEDULER_TICK_SECONDS = 60
 MAX_CONCURRENT_USER_POLLS = 4
 CLOCK_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 PERMANENT_PUSH_STATUS_CODES = frozenset({404, 410})
+MESSAGE_PUSH_TTL_SECONDS = 24 * 60 * 60
+PLAN_PUSH_TTL_SECONDS = 60 * 60
+TEST_PUSH_TTL_SECONDS = 10 * 60
 TRUSTED_PUSH_ENDPOINT_HOSTS = frozenset(
     {
         "fcm.googleapis.com",
@@ -395,7 +400,9 @@ def _is_permanent_push_failure(error: Exception) -> bool:
     status_code = getattr(response, "status_code", None)
     if status_code in PERMANENT_PUSH_STATUS_CODES:
         return True
-    return status_code is None and isinstance(error, (KeyError, TypeError, ValueError))
+    # Local signing/configuration errors are not evidence that a browser's
+    # subscription expired. In particular a bad VAPID key must not erase devices.
+    return False
 
 
 def _apply_preview_preference(
@@ -448,12 +455,21 @@ def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> No
             "pywebpush is not installed; install the API requirements to enable push notifications"
         ) from error
 
+    tag = str(payload.get("tag", ""))
+    # A push service accepting a message does not mean the device is online.
+    # pywebpush defaults to TTL=0, which silently discards offline deliveries.
+    ttl = MESSAGE_PUSH_TTL_SECONDS
+    if tag.startswith("lanis-vertretungsplan-"):
+        ttl = PLAN_PUSH_TTL_SECONDS
+    elif tag == "lanis-notification-test":
+        ttl = TEST_PUSH_TTL_SECONDS
     webpush(
         subscription_info=subscription,
         data=json.dumps(payload, ensure_ascii=False),
         vapid_private_key=os.environ["VAPID_PRIVATE_KEY"],
         vapid_claims={"sub": os.environ["VAPID_SUBJECT"]},
         timeout=10,
+        ttl=ttl,
     )
 
 
@@ -588,6 +604,7 @@ async def check_user_messages(
         session_data = await get_client(user_id)
         client = getattr(session_data, "client", session_data)
         result = await run_in_threadpool(client.nachrichten_get_headers, "All", 0)
+        result = await overlay_headers(user_id, result)
     except Exception as error:
         logger.warning("Message notification poll failed for %s: %s", user_id, error)
         await _record_failed_poll(user_id, previous_state, local_now)
@@ -895,21 +912,34 @@ async def run_message_notification_cycle(
     async def check_with_limit(user: Dict[str, Any]) -> None:
         async with semaphore:
             try:
-                if invalidate_cache is None and get_preferences is None:
-                    await check_user_messages(user, get_client)
-                else:
-                    await check_user_messages(
+                # Keep polling inside the account deletion barrier. The user list is a
+                # snapshot, so re-check the persisted account after acquiring
+                # the lock before doing any fetch, write, or push delivery.
+                from .account_data import account_lifecycle_lock
+                from .auth_db import get_refresh_token_by_user_id
+
+                user_id = str(user.get("user_id") or "")
+                if not user_id:
+                    return
+                lock = await account_lifecycle_lock(user_id)
+                async with lock.shared():
+                    if not await get_refresh_token_by_user_id(user_id):
+                        return
+                    if invalidate_cache is None and get_preferences is None:
+                        await check_user_messages(user, get_client)
+                    else:
+                        await check_user_messages(
+                            user,
+                            get_client,
+                            invalidate_cache=invalidate_cache,
+                            get_preferences=get_preferences,
+                        )
+                    await check_user_vertretungsplan(
                         user,
                         get_client,
                         invalidate_cache=invalidate_cache,
                         get_preferences=get_preferences,
                     )
-                await check_user_vertretungsplan(
-                    user,
-                    get_client,
-                    invalidate_cache=invalidate_cache,
-                    get_preferences=get_preferences,
-                )
             except asyncio.CancelledError:
                 raise
             except Exception as error:

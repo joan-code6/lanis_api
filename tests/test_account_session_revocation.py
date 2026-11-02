@@ -4,8 +4,10 @@ from datetime import datetime, timedelta
 import jwt
 import pytest
 from fastapi import HTTPException
+from fastapi import Request, Response
 
 from api import api as api_module
+from api.account_data import account_lifecycle_lock
 from api import auth_db
 from api import outage_cache
 
@@ -134,5 +136,70 @@ def test_runtime_deletion_removes_cache_versions_without_reopening_old_writes(
             "",
             cache_version,
         )
+
+    asyncio.run(scenario())
+
+
+def test_cache_versions_keep_global_monotonicity_after_account_deletion():
+    async def scenario():
+        manager = api_module.AuthManager()
+        user_id = "5201:student"
+        stale_version = await manager.get_cache_version(user_id, "/modules")
+        for _ in range(5):
+            await manager.invalidate_endpoint_cache(user_id, "/modules")
+        newest_before_delete = await manager.get_cache_version(user_id, "/modules")
+
+        await manager.delete_user_runtime_data(user_id)
+
+        new_version = await manager.get_cache_version(user_id, "/modules")
+        assert newest_before_delete > stale_version
+        assert new_version > newest_before_delete
+        assert not await manager.set_cache_if_current_version(
+            user_id,
+            "/modules",
+            {"success": True, "stale": True},
+            "",
+            newest_before_delete,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_query_token_app_launch_request_uses_account_lifecycle_lock(monkeypatch):
+    async def scenario():
+        user_id = "5201:student"
+        monkeypatch.setattr(
+            api_module.sessions,
+            "decode_access_token",
+            lambda token: {"sub": user_id, "jti": "query-session"} if token == "signed-query-token" else {},
+        )
+        async def persisted_session(session_id):
+            assert session_id == 'query-session'
+            return {'user_id': user_id}
+
+        monkeypatch.setattr(api_module, 'get_refresh_token_by_session_id', persisted_session)
+        request = Request(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "https",
+                "path": "/app/calendar",
+                "raw_path": b"/app/calendar",
+                "query_string": b"token=signed-query-token",
+                "root_path": "",
+                "headers": [],
+                "server": ("testserver", 443),
+                "client": ("127.0.0.1", 12345),
+            }
+        )
+
+        async def call_next(_request):
+            lock = await account_lifecycle_lock(user_id)
+            assert lock.locked()
+            return Response()
+
+        await api_module.serialize_account_requests(request, call_next)
 
     asyncio.run(scenario())

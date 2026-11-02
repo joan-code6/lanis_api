@@ -1,10 +1,14 @@
 import asyncio
 import threading
+from datetime import UTC, datetime, timedelta
 
+import aiosqlite
+import jwt
 import pytest
 from fastapi import HTTPException, status
 
 from api import api as api_module
+from api import auth_db
 from api.api import (
     AuthManager,
     SchulportalSessionData,
@@ -22,6 +26,109 @@ def _refresh_token_data():
         "password": "password",
         "session_id": "session-id",
     }
+
+
+def test_existing_browser_logins_survive_session_id_migration(tmp_path, monkeypatch):
+    database_path = tmp_path / "auth.db"
+    monkeypatch.setattr(auth_db, "DB_PATH", str(database_path))
+    monkeypatch.setattr(auth_db, "_lock", asyncio.Lock())
+
+    async def scenario():
+        expires_at = (
+            datetime.now(UTC).replace(tzinfo=None) + timedelta(days=30)
+        ).isoformat()
+        async with aiosqlite.connect(database_path) as db:
+            await db.execute(
+                """
+                CREATE TABLE refresh_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    school_id TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    password TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL
+                )
+                """
+            )
+            for token in ("browser-a-refresh", "browser-b-refresh"):
+                await db.execute(
+                    """
+                    INSERT INTO refresh_tokens
+                        (token, user_id, school_id, username, password, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        token,
+                        "5201:student",
+                        "5201",
+                        "student",
+                        "password",
+                        expires_at,
+                    ),
+                )
+            await db.commit()
+
+        await auth_db.initialize()
+        browser_a = await auth_db.get_refresh_token("browser-a-refresh")
+        browser_b = await auth_db.get_refresh_token("browser-b-refresh")
+        assert browser_a["session_id"]
+        assert browser_b["session_id"]
+        assert browser_a["session_id"] != browser_b["session_id"]
+
+        legacy_access_token = jwt.encode(
+            {
+                "sub": "5201:student",
+                "school_id": "5201",
+                "username": "student",
+                "iat": datetime.now(UTC),
+                "exp": datetime.now(UTC) + timedelta(minutes=30),
+            },
+            api_module.JWT_SECRET,
+            algorithm=api_module.JWT_ALGORITHM,
+        )
+        with pytest.raises(HTTPException) as legacy_error:
+            await api_module.local_auth_dependency(legacy_access_token)
+        assert legacy_error.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+        refreshed_a = await api_module.refresh_endpoint(
+            api_module.TokenRefreshRequest(refresh_token="browser-a-refresh")
+        )
+        authenticated_a = await api_module.local_auth_dependency(
+            refreshed_a.access_token
+        )
+        assert authenticated_a.session_id == browser_a["session_id"]
+
+        # A process restart re-runs initialization but must retain the migrated
+        # session ID and keep the saved refresh token usable.
+        await auth_db.initialize()
+        monkeypatch.setattr(api_module, "sessions", AuthManager())
+        restarted_a = await api_module.refresh_endpoint(
+            api_module.TokenRefreshRequest(refresh_token="browser-a-refresh")
+        )
+        restarted_payload = api_module.sessions.decode_access_token(
+            restarted_a.access_token
+        )
+        assert restarted_payload["jti"] == browser_a["session_id"]
+        authenticated_a = await api_module.local_auth_dependency(
+            restarted_a.access_token
+        )
+
+        await api_module.logout_endpoint(authenticated_a)
+        assert await auth_db.get_refresh_token("browser-a-refresh") is None
+        with pytest.raises(HTTPException) as logged_out_error:
+            await api_module.local_auth_dependency(restarted_a.access_token)
+        assert logged_out_error.value.status_code == status.HTTP_401_UNAUTHORIZED
+
+        refreshed_b = await api_module.refresh_endpoint(
+            api_module.TokenRefreshRequest(refresh_token="browser-b-refresh")
+        )
+        authenticated_b = await api_module.local_auth_dependency(
+            refreshed_b.access_token
+        )
+        assert authenticated_b.session_id == browser_b["session_id"]
+
+    asyncio.run(scenario())
 
 
 def test_refresh_does_not_require_a_live_schulportal_session(monkeypatch):

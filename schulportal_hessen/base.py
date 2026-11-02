@@ -128,28 +128,91 @@ class SchulportalHessenAPI:
         }}
         """
         if not self.logged_in:
-            return {"success": False, "error": "Not logged in. Please login first."}
+            return {
+                "success": False,
+                "error": "Not logged in. Please login first.",
+                "error_kind": "authentication",
+            }
 
+        response = None
         try:
             apps_url = f"{self.BASE_START_URL}/startseite.php?a=ajax&f=apps"
 
-            response = self.session.get(apps_url)
+            response = self.session.get(
+                apps_url, allow_redirects=False, timeout=(10, 30)
+            )
+            from urllib.parse import urljoin, urlsplit
+
+            if 300 <= response.status_code < 400:
+                location = response.headers.get("Location", "")
+                destination = urlsplit(urljoin(apps_url, location))
+                login_host = (
+                    destination.hostname or ""
+                ).lower() == "login.schulportal.hessen.de"
+                local_login = (
+                    destination.netloc.lower()
+                    == urlsplit(self.BASE_START_URL).netloc.lower()
+                    and destination.path.rstrip("/").lower() in ("/login", "/login.php")
+                )
+                return {
+                    "success": False,
+                    "error": "Schulportal apps endpoint redirected",
+                    "error_kind": "authentication"
+                    if location and (login_host or local_login)
+                    else "upstream",
+                }
             response.raise_for_status()
+            # The apps endpoint returns JSON. Recognize a sign-in response even
+            # if an upstream proxy serves it directly with HTTP 200.
+            from bs4 import BeautifulSoup
+
+            host = (urlsplit(response.url or apps_url).hostname or "").lower()
+            html = "text/html" in response.headers.get("Content-Type", "").lower()
+            if host == "login.schulportal.hessen.de" or (
+                html and BeautifulSoup(response.text, "html.parser").select_one(
+                    "form[action*='login'], input[type='password']"
+                )
+            ):
+                return {
+                    "success": False,
+                    "error": "Schulportal session expired",
+                    "error_kind": "authentication",
+                }
 
             data = response.json()
             return {"success": True, "data": data}
 
         except requests.RequestException as e:
-            return {"success": False, "error": f"Failed to retrieve apps: {str(e)}"}
+            return {
+                "success": False,
+                "error": f"Failed to retrieve apps: {str(e)}",
+                "error_kind": "authentication"
+                if getattr(e.response, "status_code", None) in (401, 403)
+                else "upstream",
+            }
         except json.JSONDecodeError as e:
-            return {"success": False, "error": f"Failed to parse response: {str(e)}"}
+            return {
+                "success": False,
+                "error": f"Failed to parse response: {str(e)}",
+                "error_kind": "upstream",
+            }
+        except ValueError:
+            return {
+                "success": False,
+                "error": "Invalid apps response URL",
+                "error_kind": "upstream",
+            }
+        finally:
+            if response is not None:
+                response.close()
 
     def _resolve_direct_url(self, url: str, timeout: int = 5) -> str:
         """Follow redirects for a URL and return the final destination.
 
         Manually follows redirects step by step. For OAuth/OIDC flows
-        (vidis, oauth, openid), returns the original portal URL so app
-        launch can start authentication in the user's browser.
+        (vidis, oauth, openid) the auth-callback URL (containing the
+        OAuth code parameter) is returned so the user's browser can
+        receive auth cookies directly from the target application.
         Simple redirects are resolved to their final destination.
         Falls back to the original URL on any error.
 
@@ -163,8 +226,8 @@ class SchulportalHessenAPI:
         Returns
         -------
         str
-            The final URL for plain links, or the original portal URL
-            for OAuth flows and failed resolutions.
+            The final URL after redirects, or the auth-callback URL for
+            OAuth flows, or the original URL if resolution fails.
         """
         oauth_indicators = ("vidis", "oauth", "openid", "oidc")
         portal_hosts = ("schulportal.hessen.de", "login.schulportal.hessen.de")
@@ -273,6 +336,10 @@ class SchulportalHessenAPI:
                 "meinunterricht_get_entry_details",
                 "meinunterricht_get_weekly_view",
                 "meinunterricht_get_submissions",
+                "meinunterricht_get_submission",
+                "meinunterricht_upload_files",
+                "meinunterricht_delete_uploaded_file",
+                "meinunterricht_download_submission_file",
                 "meinunterricht_set_homework_done",
                 "meinunterricht_download_file",
                 "meinunterricht_get_attendance_overview",
@@ -285,6 +352,10 @@ class SchulportalHessenAPI:
                 "dateispeicher_search_files",
                 "dateispeicher_download_file",
             ],
+            "dateiverteilung.php": [
+                "dateiverteilung_get_overview",
+                "dateiverteilung_download_file",
+            ],
             "lerngruppen.php": ["lerngruppen_get_overview"],
             "benutzerverwaltung.php": ["benutzer_get_data"],
             "oberstufenwahl.php": [
@@ -292,6 +363,7 @@ class SchulportalHessenAPI:
                 "wahlen_get_form",
                 "wahlen_submit",
             ],
+            "videokonferenz.php": ["videokonferenz_get_rooms"],
         }
 
         for entry in entries:
@@ -481,8 +553,33 @@ class SchulportalHessenAPI:
         """Fetch the Mein Unterricht submissions/assignments view.
 
         Returns:
-            Dict containing the HTML response for the submissions page.
+            Dict containing typed submission summaries.
         """
+        ...
+
+    def meinunterricht_get_submission(self, detail_ref: str) -> Dict[str, Any]:
+        """Fetch and parse one student submission page."""
+        ...
+
+    def meinunterricht_upload_files(
+        self,
+        course_id: str,
+        entry_id: str,
+        upload_id: str,
+        files: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Upload one to five files to a student submission."""
+        ...
+
+    def meinunterricht_delete_uploaded_file(
+        self,
+        course_id: str,
+        entry_id: str,
+        upload_id: str,
+        file_index: str,
+        password: str,
+    ) -> Dict[str, Any]:
+        """Delete one uploaded file after portal password confirmation."""
         ...
 
     def meinunterricht_set_homework_done(
@@ -510,6 +607,10 @@ class SchulportalHessenAPI:
         Returns:
             Dict containing filename metadata and binary content.
         """
+        ...
+
+    def meinunterricht_download_submission_file(self, file_ref: str) -> Dict[str, Any]:
+        """Download a file referenced by a parsed student submission."""
         ...
 
     def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
@@ -603,6 +704,15 @@ class SchulportalHessenAPI:
 
     def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
         """Download a file from the native dateispeicher."""
+        ...
+
+    # Dateiverteilung methods
+    def dateiverteilung_get_overview(self) -> Dict[str, Any]:
+        """Fetch targeted file distributions for the authenticated user."""
+        ...
+
+    def dateiverteilung_download_file(self, url: str) -> Dict[str, Any]:
+        """Download a file from the native Dateiverteilung."""
         ...
 
     # Lerngruppen methods
@@ -758,10 +868,16 @@ from .applets.mein_unterricht.api import (
     meinunterricht_get_course,
     meinunterricht_get_entry_details,
     meinunterricht_get_weekly_view,
-    meinunterricht_get_submissions,
     meinunterricht_set_homework_done,
     meinunterricht_download_file,
     meinunterricht_get_attendance_overview,
+)
+from .applets.mein_unterricht.submissions import (
+    meinunterricht_get_submissions,
+    meinunterricht_get_submission,
+    meinunterricht_upload_files,
+    meinunterricht_delete_uploaded_file,
+    meinunterricht_download_submission_file,
 )
 
 SchulportalHessenAPI.meinunterricht_get_overview = meinunterricht_get_overview
@@ -769,6 +885,10 @@ SchulportalHessenAPI.meinunterricht_get_course = meinunterricht_get_course
 SchulportalHessenAPI.meinunterricht_get_entry_details = meinunterricht_get_entry_details
 SchulportalHessenAPI.meinunterricht_get_weekly_view = meinunterricht_get_weekly_view
 SchulportalHessenAPI.meinunterricht_get_submissions = meinunterricht_get_submissions
+SchulportalHessenAPI.meinunterricht_get_submission = meinunterricht_get_submission
+SchulportalHessenAPI.meinunterricht_upload_files = meinunterricht_upload_files
+SchulportalHessenAPI.meinunterricht_delete_uploaded_file = meinunterricht_delete_uploaded_file
+SchulportalHessenAPI.meinunterricht_download_submission_file = meinunterricht_download_submission_file
 SchulportalHessenAPI.meinunterricht_set_homework_done = meinunterricht_set_homework_done
 SchulportalHessenAPI.meinunterricht_download_file = meinunterricht_download_file
 SchulportalHessenAPI.meinunterricht_get_attendance_overview = meinunterricht_get_attendance_overview
@@ -800,6 +920,11 @@ from .applets.vertretungsplan.api import vertretungsplan_get_plan
 
 SchulportalHessenAPI.vertretungsplan_get_plan = vertretungsplan_get_plan
 
+# Import and attach the Videokonferenz methods
+from .applets.videokonferenz.api import videokonferenz_get_rooms
+
+SchulportalHessenAPI.videokonferenz_get_rooms = videokonferenz_get_rooms
+
 # Import and attach the stundenplan methods
 from .applets.stundenplan.api import stundenplan_get_plan
 
@@ -817,6 +942,15 @@ SchulportalHessenAPI.dateispeicher_get_root = dateispeicher_get_root
 SchulportalHessenAPI.dateispeicher_get_node = dateispeicher_get_node
 SchulportalHessenAPI.dateispeicher_search_files = dateispeicher_search_files
 SchulportalHessenAPI.dateispeicher_download_file = dateispeicher_download_file
+
+# Import and attach the Dateiverteilung methods
+from .applets.dateiverteilung.api import (
+    dateiverteilung_get_overview,
+    dateiverteilung_download_file,
+)
+
+SchulportalHessenAPI.dateiverteilung_get_overview = dateiverteilung_get_overview
+SchulportalHessenAPI.dateiverteilung_download_file = dateiverteilung_download_file
 
 # Import and attach the lerngruppen methods
 from .applets.lerngruppen.api import lerngruppen_get_overview

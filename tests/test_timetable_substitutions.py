@@ -773,3 +773,27 @@ def test_cancellation_and_replacement_effects_remain_a_conflict():
     )
     assert len(result["substitutionNotices"]) == 2
     assert not result["lessons"][0].get("cancelled")
+
+
+def test_resolved_endpoint_can_disable_substitutions(monkeypatch):
+    async def scenario():
+        async def base(**kwargs):
+            return timetable()
+
+        async def unexpected_source(**kwargs):
+            raise AssertionError("Disabled substitutions must not load sources")
+
+        monkeypatch.setattr(api_module, "get_stundenplan", base)
+        monkeypatch.setattr(api_module, "get_modules", unexpected_source)
+        result = await api_module.get_timetable_view(
+            show_substitutions=False,
+            auth=AuthSession(None, "user", "school", "user"),
+        )
+        expected = resolve_timetable(
+            timetable(), [], "", api_module.datetime.now(
+                api_module.ZoneInfo("Europe/Berlin")
+            ).date(),
+        )
+        assert result == {**expected, "substitution_sources": []}
+
+    asyncio.run(scenario())

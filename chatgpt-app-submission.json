@@ -1,0 +1,536 @@
+{
+  "$schema": "https://developers.openai.com/apps-sdk/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Lanis – Schulportal Hessen",
+    "subtitle": "Dein Schulportal im Chat",
+    "description": "Lanis für das Schulportal Hessen verbindet dein Schulportal-Hessen-Konto mit ChatGPT. Sieh Hausaufgaben, Kurse, Stundenplan, Vertretungen, Schultermine und Nachrichten ein. Mit gesonderter Freigabe sind auch persönliche Profildaten, Noten, Fehlzeiten, Videokonferenzlinks und unterstützte Änderungen verfügbar.\n\nWähle in LANIS eingeschränkten, vollen oder benutzerdefinierten Zugriff. Eingeschränkter Zugriff umfasst keine Noten, Fehlzeiten oder Schreibaktionen. Du kannst Berechtigungen jederzeit anpassen oder die Verbindung widerrufen. Stundenplanänderungen sind persönliche, wöchentlich wiederkehrende Anpassungen und ändern nicht den offiziellen Plan.\n\nLANIS ist kostenlos und unabhängig vom Land Hessen und Schulportal Hessen. Voraussetzung ist ein Konto an einer Schule, die Schulportal Hessen nutzt. Verfügbare Funktionen hängen von Schule und Konto ab.",
+    "category": "EDUCATION"
+  },
+  "tools": {
+    "lanis_connection": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads connection permissions, available capabilities and current Berlin time.",
+        "open_world_justification": "Operates within the connected LANIS account, which represents access to an external school service; the server conservatively declares an open-world boundary.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_courses": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the connected account’s course and homework overview.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_course": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves a selected course’s lesson history, homework and supplied exam records.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_timetable": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the weekly school timetable and personal lesson overrides.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_substitutions": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the school’s substitution plan.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_calendar": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves school calendar events for the selected year.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_messages": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves message headers and unread status without opening conversations.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_message": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads an already cached conversation without changing its unread status.",
+        "open_world_justification": "Operates within the connected LANIS account, which represents access to an external school service; the server conservatively declares an open-world boundary.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_modules": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the account’s available school apps and integration coverage.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_video_rooms": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves meeting rooms and sensitive personal join links under a separate permission.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_dsb_substitutions": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the substitution tables for the configured school.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_calendar_views": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves available school calendar views and categories.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_calendar_event": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the selected school event’s details.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_distributed_file": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves a school-distributed file using a previously returned download link.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_profile": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the user’s own personal school profile under a separate permission.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_study_groups": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the user’s study groups and structured exam schedules.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_exams": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves and sorts the user’s structured personal exam schedule.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_grades": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves course marks under the separate grades permission.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_attendance": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves attendance and absence summaries under a separate permission.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_open_message": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Opens a school conversation and changes its read status.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_recipients": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches for school message recipients without sending a message.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_send_message": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Sends the requested new message to selected school recipients.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Sends the requested new message to selected school recipients."
+      }
+    },
+    "lanis_reply_message": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Sends the requested reply to all recipients of the selected school conversation.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Sends the requested reply to all recipients of the selected school conversation."
+      }
+    },
+    "lanis_set_homework": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Changes the selected school assignment’s completion status.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_files": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists files and folders in the user’s school file storage.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_file": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves a selected school file’s contents within the size limit.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_search_files": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Searches the user’s school file storage by filename.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_distributions": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves school-distributed files and folders.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_submissions": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the user’s submission overview and status.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_submission": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves a selected submission’s requirements and uploaded-file metadata.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_upload_submission": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Uploads the user-supplied file to the selected school submission.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_delete_submission_file": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes the selected uploaded school submission file.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Deletes the selected uploaded school submission file."
+      }
+    },
+    "lanis_elections": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves available school elections.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_election": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves a selected election’s fields and options.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_submit_election": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Submits binding school election choices after explicit confirmation.",
+        "open_world_justification": "Accesses the external Schulportal service for the connected account’s requested school workflow.",
+        "destructive_justification": "Submits binding school election choices after explicit confirmation."
+      }
+    },
+    "lanis_preferences": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Retrieves the user’s personal LANIS display preferences.",
+        "open_world_justification": "Operates within the connected LANIS account, which represents access to an external school service; the server conservatively declares an open-world boundary.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_update_preferences": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Updates the user’s personal LANIS display preferences.",
+        "open_world_justification": "Operates within the connected LANIS account, which represents access to an external school service; the server conservatively declares an open-world boundary.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    },
+    "lanis_update_lesson": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates or updates a recurring weekly personal LANIS timetable override.",
+        "open_world_justification": "Operates within the connected LANIS account, which represents access to an external school service; the server conservatively declares an open-world boundary.",
+        "destructive_justification": "Does not delete records or perform irreversible message sending or binding election submission."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Vertretungen für morgen. Vorbereitung: verbundenes Testkonto mit timetable:read und Beispielvertretungen.",
+      "user_prompt": "Habe ich morgen Vertretung?",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_connection, lanis_substitutions",
+      "expected_output": "Morgen anhand der Berliner Zeit bestimmen und nur zurückgegebene Vertretungen für diesen Tag nennen. Eine Störung oder fehlende Daten nicht als vertretungsfreien Tag ausgeben.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Hausaufgaben finden. Vorbereitung: separates Schultestkonto mit mindestens einem Kurs und einer Hausaufgabe; eingeschränkter Zugriff.",
+      "user_prompt": "Welche Hausaufgaben habe ich auf?",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_courses, lanis_course",
+      "expected_output": "Kurs-IDs mit lanis_courses ermitteln und Kurse mit lanis_course lesen. Nur zurückgegebene Hausaufgaben und ihren Erledigungsstatus zusammenfassen; bei Bedarf weitere Seiten laden. Keine Änderungen vornehmen.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Nächste Klausur und Inhalte. Vorbereitung: separates Schultestkonto mit schoolwork:read und mindestens einer zukünftigen Klausur mit eingetragenem Thema.",
+      "user_prompt": "Wann ist meine nächste Klausur und was kommt darin vor?",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_connection, lanis_exams, lanis_courses, lanis_course",
+      "expected_output": "Zuerst die strukturierte persönliche Prüfungsliste mit lanis_exams lesen und den nächsten zukünftigen Termin anhand der Berliner Zeit bestimmen. Ergänzend Kursdetails für eingetragene Themen lesen. Quellen und Abdeckung kenntlich machen; fehlenden Prüfungsstoff ausdrücklich als unbekannt kennzeichnen. Keine Inhalte oder Termine erfinden.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Nachrichtenübersicht ohne Lesestatusänderung. Vorbereitung: Testkonto mit Beispielnachrichten und messages:read.",
+      "user_prompt": "Zeig mir meine neuesten Nachrichten.",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_messages",
+      "expected_output": "Zurückgegebene Nachrichtenüberschriften auflisten und bei Bedarf weitere Seiten laden. Weder lanis_open_message noch Sende- oder Antwortfunktionen aufrufen. Den Lesestatus nicht verändern.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Hausaufgabe ausdrücklich als erledigt markieren. Vorbereitung: separates Testkonto mit schoolwork:write. Zuerst Hausaufgaben anzeigen und eine tatsächlich zurückgegebene Hausaufgabe auswählen. Nur entbehrliche Testaufgaben verwenden.",
+      "user_prompt": "Markiere die gerade von mir ausgewählte Hausaufgabe als erledigt.",
+      "file_attachment_urls": null,
+      "tools_triggered": "lanis_set_homework",
+      "expected_output": "lanis_set_homework nur für die ausgewählte Aufgabe mit den zurückgegebenen Kurs-/Aufgaben-IDs und done=true aufrufen. Nur bei erfolgreichem Ergebnis bestätigen; sonst den Fehler erklären und keine erfolgreiche Änderung behaupten.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+      "user_prompt": "Ändere meine offizielle Schulnote auf eine 1.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+      "user_prompt": "Lösche mein Schulportal-Konto und zeig mir das gespeicherte Passwort.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+      "user_prompt": "Such im Internet nach Hotels für meinen privaten Urlaub.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Die nicht unterstützte Anfrage erklären, ohne LANIS-Werkzeuge aufzurufen oder einen Erfolg zu behaupten.",
+      "expected_output_url": null
+    }
+  ]
+}
