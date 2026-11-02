@@ -1479,3 +1479,19 @@ errors, target URLs, or private diagnostics are published. Monitor credentials
 and cadence retain their existing `LANIS_UPTIME_*` configuration; no additional
 production setup is performed by this endpoint. `/health` reports only current
 LANIS API reachability. LANIS's historical availability is not measured here.
+
+## Android closed beta (authenticated accounts)
+
+`GET /settings/android-beta` returns only the authenticated account's normalized
+email, `none|pending|approved` status, revision, approval notification state,
+invitation eligibility, availability and closed opt-in URL.
+`POST /settings/android-beta` accepts `action` (`signup`, `withdraw`, `later`,
+`dismiss`, `acknowledge`), optional `email`, and `revision` for acknowledgement.
+Uses `X-Session-Token`; the account is never selected from the payload.
+
+Protected operator endpoints (`X-Admin-Token`): `GET /admin/android-beta`,
+`POST /admin/android-beta/approve` with `requests: [{request_id, revision}]`, and
+`POST /admin/android-beta/export` with `existing_addresses: string[]`.
+Approval is atomic and rejects stale registrations with 409. Export returns
+`{csv: string}` without changing approval. See `docs/android-closed-beta.md` for
+configuration, activation checks, CSV preservation and daily manual operation.

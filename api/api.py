@@ -5741,3 +5741,21 @@ async def _whatsapp_command_response(
     else:
         return help_message(config.ui_base_url)
     return f"{response}\n\nIn LANIS öffnen: {config.ui_base_url}{deep_links[intent]}"
+
+
+class BetaChange(BaseModel):
+    action: Literal["signup", "withdraw", "later", "dismiss", "acknowledge"]
+    email: str | None = Field(default=None, max_length=254)
+    revision: str | None = Field(default=None, max_length=64)
+
+
+@app.get("/settings/android-beta")
+async def android_beta_status(auth: AuthSession = Depends(local_auth_dependency)):
+    from . import beta
+    return await beta.get(auth.user_id)
+
+
+@app.post("/settings/android-beta")
+async def android_beta_change(payload: BetaChange, auth: AuthSession = Depends(local_auth_dependency)):
+    from . import beta
+    return await beta.change(auth.user_id, payload.action, payload.email, payload.revision)
