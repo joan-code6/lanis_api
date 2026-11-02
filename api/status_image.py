@@ -11,6 +11,30 @@ def render_status_image(data: dict) -> bytes:
     draw = ImageDraw.Draw(image)
     font_path = Path(__file__).parent / 'assets' / 'Outfit-SemiBold.ttf'
     font = ImageFont.truetype(str(font_path), 42 * scale)
+    small_font = ImageFont.truetype(str(font_path), 24 * scale)
+    draw.text((64 * scale, 30 * scale), 'Schulportal Hessen', fill='#a3a3a3', font=small_font, anchor='lt')
+    current = data.get('current') or {}
+    state = current.get('status', 'unknown')
+    # Never present an old successful measurement as a live healthy state.
+    try:
+        checked = datetime.fromisoformat(str(current.get('checked_at')).replace('Z', '+00:00'))
+        if checked.tzinfo is None:
+            checked = checked.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - checked).total_seconds()
+        stale_after = data.get('measurement', {}).get('stale_after_seconds', 600)
+        if current.get('stale') or age < -60 or age > stale_after:
+            state = 'unknown'
+    except (ValueError, TypeError):
+        state = 'unknown'
+    live_labels = {
+        'up': ('Jetzt erreichbar', '#10b981'),
+        'degraded': ('Jetzt eingeschränkt', '#f59e0b'),
+        'down': ('Aktuell nicht erreichbar', '#f43f5e'),
+        'unknown': ('Aktueller Status unbekannt', '#a3a3a3'),
+    }
+    live_label, live_color = live_labels.get(state, live_labels['unknown'])
+    draw.ellipse((64 * scale, 144 * scale, 76 * scale, 156 * scale), fill=live_color)
+    draw.text((88 * scale, 137 * scale), live_label, fill=live_color, font=small_font, anchor='lt')
     draw.text((64 * scale, 72 * scale), 'Verfügbarkeit', fill='#fafafa', font=font, anchor='lt')
     percent = data.get('summary_windows', {}).get('90d', {}).get('uptime_percent')
     label = '—' if percent is None else f'{percent:.2f}'.replace('.', ',') + ' %'
