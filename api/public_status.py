@@ -561,3 +561,15 @@ async def get_public_status() -> dict[str, Any]:
         _cache_configuration = configuration
         _cache_deadline = time.monotonic() + ttl
         return result
+
+
+async def get_public_incident(identifier: str) -> dict[str, Any] | None:
+    rows = await uptime.user_metrics_db.get_uptime_checks(limit=-1)
+    checks = [_check(row, stamp) for row in rows if (stamp := _timestamp(row.get("checked_at"))) is not None]
+    for incident in uptime.group_uptime_incidents(checks):
+        if incident["id"] == identifier:
+            incident["observations"] = [check for check in reversed(checks)
+                if check["checked_at"] >= incident["started_at"]
+                and check["checked_at"] <= (incident["resolved_at"] or incident["last_checked_at"])]
+            return incident
+    return None

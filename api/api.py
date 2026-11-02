@@ -5716,3 +5716,33 @@ async def _whatsapp_command_response(
     else:
         return help_message(config.ui_base_url)
     return f"{response}\n\nIn LANIS öffnen: {config.ui_base_url}{deep_links[intent]}"
+
+
+@app.get("/status/incident/{identifier}", tags=["Public status"])
+async def public_incident(identifier: str):
+    from .public_status import get_public_incident
+    result = await get_public_incident(identifier)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return result
+
+
+@app.get("/status/image.png", tags=["Public status"])
+async def public_status_image():
+    from io import BytesIO
+    from PIL import Image, ImageDraw
+    from fastapi.responses import Response
+    data = await get_public_status()
+    image = Image.new("RGB", (1200, 630), "#101827")
+    draw = ImageDraw.Draw(image)
+    draw.text((64, 70), "LANIS / Schulportal Hessen", fill="white", font_size=44)
+    draw.text((64, 160), "Verfügbarkeit · Letzte 30 Tage", fill="#cbd5e1", font_size=32)
+    colors = {"up": "#10b981", "degraded": "#f59e0b", "down": "#f43f5e", "unknown": "#64748b"}
+    for index, day in enumerate(data["daily"][-30:]):
+        x = 64 + index * 36
+        draw.rounded_rectangle((x, 270, x + 27, 420), radius=5, fill=colors[day["status"]])
+    draw.text((64, 470), "Grün: erreichbar   Gelb: eingeschränkt   Rot: Ausfall   Grau: unbekannt", fill="#cbd5e1", font_size=23)
+    draw.text((64, 530), data["generated_at"], fill="#94a3b8", font_size=22)
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return Response(output.getvalue(), media_type="image/png", headers={"Cache-Control": "public, max-age=30"})

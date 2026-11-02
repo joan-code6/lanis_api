@@ -284,46 +284,17 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
 
 def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool) -> None:
     """Send one uptime transition notification to the configured webhook."""
-    features = check.get("features") or []
-    feature_status = ", ".join(
-        f"{feature.get('name', 'feature')}: {feature.get('status', 'unknown')}"
-        for feature in features
-    )
-    if recovered:
-        content = (
-            f"✅ **{UPTIME_SERVICE_NAME} ist wieder erreichbar.**\n"
-            f"Alle synthetischen Checks sind wieder erfolgreich ({feature_status or 'keine Details'}).\n"
-            f"Wiederhergestellt: {check.get('checked_at', 'unbekannt')}\n"
-            f"Status-Seite: {_status_page_url()}"
-        )
-    else:
-        error_text = f" · Fehler: `{check['error']}`" if check.get("error") else ""
-        content = (
-            f"🚨 **{UPTIME_SERVICE_NAME} ist beeinträchtigt.**\n"
-            f"Status: `{check.get('status', 'unknown')}`"
-            f"{error_text}\n"
-            f"Checks: {feature_status or 'keine Details'}"
-            f"\nErkannt: {check.get('checked_at', 'unbekannt')}"
-            f"\nStatus-Seite: {_status_page_url()}"
-        )
+    title = "✅ Schulportal wieder erreichbar" if recovered else "🔴 Schulportal beeinträchtigt"
+    identifier = check.get("incident_id")
+    url = f"{_status_page_url()}/incident/{identifier}" if identifier else _status_page_url()
     evidence = check.get("monitoring") or {}
-    confidence = {
-        "confirmed": "bestätigt",
-        "limited": "begrenzte Aussagekraft",
-        "inconclusive": "unbestätigt",
-    }.get(evidence.get("confidence"))
-    scope = {
-        "account": "einzelnes Testkonto",
-        "school": "eine getestete Schule",
-        "multiple_schools": "mehrere getestete Schulen",
-        "sampled_accounts": "getestete Konten",
-        "unknown": "unbekannt",
-    }.get(evidence.get("scope"))
-    if confidence and scope:
-        content += f"\nBewertung: {confidence} · Umfang: {scope}"
+    confidence = {"confirmed": "bestätigt", "limited": "begrenzte Aussagekraft", "inconclusive": "unbestätigt"}.get(evidence.get("confidence"))
+    scope = {"account": "einzelnes Testkonto", "school": "eine getestete Schule", "multiple_schools": "mehrere getestete Schulen", "sampled_accounts": "getestete Konten", "unknown": "unbekannt"}.get(evidence.get("scope"))
+    context = f"\n{confidence} · {scope}" if confidence and scope and not recovered else ""
+    content = f"**{title}**{context}\n[Details ansehen]({url})"
     response = requests.post(
         webhook_url,
-        json={"content": content, "allowed_mentions": {"parse": []}},
+        json={"content": content, "allowed_mentions": {"parse": []}, "flags": 4},
         timeout=get_uptime_timeout_seconds(),
     )
     response.raise_for_status()
@@ -405,11 +376,16 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
                     pass
             break
 
+        rows = await user_metrics_db.get_uptime_checks(limit=-1)
+        incidents = group_uptime_incidents(rows)
+        notification = dict(check)
+        if incidents:
+            notification["incident_id"] = incidents[-1]["id"]
         try:
             await run_in_threadpool(
                 _send_discord_alert,
                 webhook_url,
-                check,
+                notification,
                 not is_issue,
             )
         except Exception:
@@ -490,6 +466,13 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
             logger.debug("Schulportal monitor client close failed", exc_info=True)
 
 
+def incident_id(value: str) -> str:
+    stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if stamp.tzinfo:
+        stamp = stamp.astimezone(timezone.utc)
+    return stamp.strftime("%Y%m%dT%H%M%S%fZ")
+
+
 def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = None) -> list[dict[str, Any]]:
     """Collapse consecutive observed impairments into incidents with recovery times."""
     now = now or _utcnow()
@@ -506,6 +489,7 @@ def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = 
             ]
             if active is None:
                 active = {
+                    "id": incident_id(checked_at),
                     "started_at": checked_at,
                     "checked_at": checked_at,
                     "resolved_at": None,
