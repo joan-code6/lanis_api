@@ -7,14 +7,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 def render_status_image(data: dict) -> bytes:
     scale = 2
-    image = Image.new('RGB', (873 * scale, 454 * scale), '#0a0a0a')
+    image = Image.new('RGB', (1200 * scale, 642 * scale), '#0a0a0a')
     draw = ImageDraw.Draw(image)
     font_path = Path(__file__).parent / 'assets' / 'Outfit-SemiBold.ttf'
-    font = ImageFont.truetype(str(font_path), 30 * scale)
-    draw.text((8 * scale, 8 * scale), 'Verfügbarkeit', fill='#fafafa', font=font, anchor='lt')
+    font = ImageFont.truetype(str(font_path), 42 * scale)
+    draw.text((64 * scale, 72 * scale), 'Verfügbarkeit', fill='#fafafa', font=font, anchor='lt')
     percent = data.get('summary_windows', {}).get('90d', {}).get('uptime_percent')
     label = '—' if percent is None else f'{percent:.2f}'.replace('.', ',') + ' %'
-    draw.text((840 * scale, 12 * scale), label, anchor='rt', fill='#fafafa', font=font)
+    label_width = draw.textlength(label, font=font)
+    draw.text((1136 * scale - label_width, 72 * scale), label, anchor='lt', fill='#fafafa', font=font)
     colors = {'up': '#10b981', 'degraded': '#f59e0b', 'down': '#f43f5e', 'unknown': '#525252'}
     days = data.get('daily', [])[-90:]
     days = [{'status': 'unknown'}] * (90 - len(days)) + days
@@ -30,9 +31,9 @@ def render_status_image(data: dict) -> bytes:
                 finish = datetime.fromisoformat((incident.get('resolved_at') or data['generated_at']).replace('Z', '+00:00'))
                 if begin < end and finish > start and severity.get(incident['status'], 0) > severity.get(status, 0):
                     status = incident['status']
-        x = 8 + (index % 18) * 46.8
-        y = 136 + (index // 18) * 46.8
-        draw.ellipse(tuple(int(v * scale) for v in (x, y, x + 36, y + 36)), fill=colors.get(status, colors['unknown']))
+        x = 64 + (index % 18) * (1022 / 17)
+        y = 210 + (index // 18) * 66
+        draw.ellipse(tuple(int(v * scale) for v in (x, y, x + 50, y + 50)), fill=colors.get(status, colors['unknown']))
     output = BytesIO()
     image.resize((1200, 630), Image.Resampling.LANCZOS).save(output, format='PNG')
     return output.getvalue()
