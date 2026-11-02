@@ -29,7 +29,7 @@ class UpstreamSessionExpired(requests.RequestException):
     """The portal returned its login gate instead of module content."""
 
 
-def is_login_gate(response, requested_url):
+def is_login_gate(response, requested_url, *, stream=False):
     requested = urlsplit(requested_url)
     final = urlsplit(response.url or "")
     if requested.hostname != "start.schulportal.hessen.de":
@@ -60,6 +60,7 @@ def is_login_gate(response, requested_url):
         or (
             final.hostname == requested.hostname
             and final.path == "/forward.php"
+            and not stream
             and 'id="loginButton"' in response.text
             and "Login nötig" in response.text
         )
@@ -91,7 +92,8 @@ class ObservedSession(requests.Session):
             parsed.hostname == "start.schulportal.hessen.de"
             and parsed.path != "/startseite.php"
             and not kwargs.get("stream", False)
-            and "attachment" not in response.headers.get("Content-Disposition", "").lower()
+            and "attachment"
+            not in response.headers.get("Content-Disposition", "").lower()
             and "text/html" in response.headers.get("Content-Type", "")
             and "Datenbankauswahl nicht möglich" in response.text
         ):
@@ -103,7 +105,8 @@ class ObservedSession(requests.Session):
                 response.close()
                 raise
             probe.close()
-        if is_login_gate(response, url):
+        if is_login_gate(response, url, stream=kwargs.get("stream", False)):
+            self.upstream_expired = True
             if current:
                 current.security_failure = True
                 if self not in current.expired_sessions:

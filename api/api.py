@@ -743,6 +743,10 @@ class AuthManager:
     ) -> SchulportalSessionData:
         user_id = canonicalize_user_id(user_id)
         await self._purge_expired_schulportal()
+        data = self._schulportal_clients.get(user_id)
+        upstream = getattr(data.client, "session", None) if data else None
+        if upstream is not None and getattr(upstream, "upstream_expired", False):
+            await self.discard_expired_upstream_sessions(user_id, [upstream])
 
         async with self._lock:
             data = self._schulportal_clients.get(user_id)

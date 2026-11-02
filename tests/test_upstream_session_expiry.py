@@ -220,3 +220,84 @@ def test_streamed_html_download_does_not_read_body(monkeypatch, attachment):
 
     monkeypatch.setattr(requests.Session, "request", request)
     assert ObservedSession().get(response.url, stream=True) is response
+
+
+def test_streamed_forward_response_does_not_read_body(monkeypatch):
+    class StreamingResponse(requests.Response):
+        @property
+        def text(self):
+            raise AssertionError("Must not buffer streamed forward response")
+
+    response = StreamingResponse()
+    response.status_code = 200
+    response.url = "https://start.schulportal.hessen.de/forward.php"
+    monkeypatch.setattr(requests.Session, "request", lambda *a, **kw: response)
+    assert (
+        ObservedSession().get(
+            "https://start.schulportal.hessen.de/dateispeicher.php", stream=True
+        )
+        is response
+    )
+
+
+def test_security_failure_blocks_successful_payload_in_both_cache_writers():
+    from api.api import AuthManager
+
+    async def scenario():
+        manager = AuthManager()
+        reset = observation.set(TransportObservation(security_failure=True))
+        try:
+            version = await manager.get_cache_version("5201:student", "/kalender")
+            await manager.set_cache("5201:student", "/kalender", {"success": True})
+            stored = await manager.set_cache_if_current_version(
+                "5201:student", "/kalender", {"success": True}, "", version
+            )
+            assert stored is False
+            assert await manager.get_cached("5201:student", "/kalender") is None
+        finally:
+            observation.reset(reset)
+
+    asyncio.run(scenario())
+
+
+def test_next_request_discards_client_after_consumed_write_expiry(monkeypatch):
+    from types import SimpleNamespace
+
+    from api import api as api_module
+
+    closed = []
+    old_session = ObservedSession()
+    old_session.upstream_expired = True
+
+    class FreshClient:
+        def login(self, *args):
+            return {"success": True}
+
+        def close(self):
+            pass
+
+    async def credentials(_):
+        return {"school_id": "5201", "username": "student", "password": "test"}
+
+    monkeypatch.setattr(api_module, "SchulportalHessenAPI", FreshClient)
+    monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", credentials)
+
+    async def scenario():
+        manager = api_module.AuthManager()
+        now = api_module.datetime.utcnow()
+        manager._schulportal_clients["5201:student"] = (
+            api_module.SchulportalSessionData(
+                client=SimpleNamespace(
+                    session=old_session, close=lambda: closed.append(True)
+                ),
+                created_at=now,
+                last_used=now,
+                username="student",
+                school_id="5201",
+            )
+        )
+        result = await manager._get_or_create_schulportal_client("5201:student")
+        assert isinstance(result.client, FreshClient)
+        assert closed == [True]
+
+    asyncio.run(scenario())
