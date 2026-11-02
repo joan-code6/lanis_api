@@ -107,6 +107,25 @@ else
     echo ""
     echo "# No systemd — starting directly"
 
+    # Set up private log storage before stopping a running server. PROJECT_DIR
+    # is the trusted deployment checkout, rather than a shared TMPDIR.
+    DIRECT_LOG_DIR="${PROJECT_DIR}/.lanis-logs"
+    if [ -L "${DIRECT_LOG_DIR}" ]; then
+        echo "ERROR: log directory must not be a symlink" >&2
+        exit 1
+    fi
+    if [ ! -e "${DIRECT_LOG_DIR}" ]; then
+        mkdir -m 0700 -- "${DIRECT_LOG_DIR}"
+    fi
+    if [ ! -d "${DIRECT_LOG_DIR}" ] || [ "$(stat -c %u -- "${DIRECT_LOG_DIR}")" != "$(id -u)" ]; then
+        echo "ERROR: log directory must be owned by the deployment user" >&2
+        exit 1
+    fi
+    chmod 0700 -- "${DIRECT_LOG_DIR}"
+    DIRECT_LOG="$(mktemp "${DIRECT_LOG_DIR}/run.XXXXXXXX.log")"
+    find "${DIRECT_LOG_DIR}" -maxdepth 1 -type f -name 'run.*.log' -mmin +10080 -delete
+    echo "  Log: ${DIRECT_LOG}"
+
     EXISTING_PID=$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)
     if [ -n "${EXISTING_PID}" ]; then
         echo ">>> Killing existing process on port ${PORT} (pid ${EXISTING_PID})"
@@ -115,8 +134,6 @@ else
     fi
 
     echo ">>> Starting uvicorn (host=${HOST}, port=${PORT})"
-    DIRECT_LOG="$(mktemp "${TMPDIR:-/tmp}/lanis-api.XXXXXXXX.log")"
-    echo "  Log: ${DIRECT_LOG}"
     nohup "${PYTHON_BIN}" -m uvicorn api.api:app \
         --host "${HOST}" \
         --port "${PORT}" \

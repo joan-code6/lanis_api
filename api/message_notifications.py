@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta
 from html import unescape
@@ -38,6 +39,8 @@ logger = logging.getLogger("message_notifications")
 MAX_PUSH_SUBSCRIPTIONS = 10
 _PUSH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="webpush")
 _PUSH_SLOTS = threading.BoundedSemaphore(4)
+_PUSH_CURSORS: OrderedDict[str, int] = OrderedDict()
+MAX_PUSH_CURSORS = 4096
 
 SCHEDULER_TICK_SECONDS = 60
 MAX_CONCURRENT_USER_POLLS = 4
@@ -377,8 +380,17 @@ def _get_pending_deliveries(
         return {}
 
     pending: Dict[str, List[Dict[str, Any]]] = {}
+    # Subscriptions stored before endpoint canonicalization can still have a
+    # queued retry under their former spelling. Keep that retry deliverable.
+    normalized_pending = {}
+    for endpoint, queued in raw_pending.items():
+        try:
+            canonical = endpoint if endpoint in endpoints else normalize_push_endpoint(endpoint)
+        except ValueError:
+            continue
+        normalized_pending[canonical] = queued
     for endpoint in endpoints:
-        queued = raw_pending.get(endpoint)
+        queued = normalized_pending.get(endpoint)
         if isinstance(queued, dict):
             queued = [queued]
         if not isinstance(queued, list):
@@ -523,23 +535,33 @@ async def _send_push_payloads(
 
     statuses: Dict[str, str] = {}
     trusted_deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
+    canonical_endpoints = set()
     for endpoint, delivery in deliveries.items():
         if not is_trusted_push_endpoint(endpoint):
             logger.warning("Dropping untrusted stored push endpoint for %s: %s", user_id, endpoint)
             await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
             continue
-        if len(trusted_deliveries) >= MAX_PUSH_SUBSCRIPTIONS:
-            statuses[endpoint] = "retry"
-            continue
         normalized = normalize_push_endpoint(endpoint)
-        if any(normalize_push_endpoint(saved) == normalized for saved in trusted_deliveries):
+        if normalized in canonical_endpoints:
             statuses[endpoint] = "retry"
             continue
+        canonical_endpoints.add(normalized)
         trusted_deliveries[endpoint] = delivery
 
     if not trusted_deliveries:
         return statuses
+    # Grandfather existing devices above the registration limit. Rotate the
+    # bounded batch on every poll, including polls with newly changed content.
+    endpoints = list(trusted_deliveries)
+    offset = _PUSH_CURSORS.pop(user_id, 0) % len(endpoints)
+    _PUSH_CURSORS[user_id] = offset + 1
+    if len(_PUSH_CURSORS) > MAX_PUSH_CURSORS:
+        _PUSH_CURSORS.popitem(last=False)
+    ordered = endpoints[offset:] + endpoints[:offset]
+    selected = set(ordered[:MAX_PUSH_SUBSCRIPTIONS])
+    statuses.update({endpoint: "retry" for endpoint in endpoints if endpoint not in selected})
+    trusted_deliveries = {endpoint: trusted_deliveries[endpoint] for endpoint in ordered if endpoint in selected}
     if not push_configured():
         logger.warning("Push notification skipped: VAPID configuration is incomplete")
         statuses.update({endpoint: "retry" for endpoint in trusted_deliveries})

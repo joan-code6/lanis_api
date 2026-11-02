@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+import os
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -83,6 +85,11 @@ def test_fetch_pins_checked_address_preserves_tls_host_and_bounds_transport(
         assert kwargs["allow_redirects"] is False and kwargs["stream"] is True
         assert prepared.headers["Cookie"] == "session=private"
         adapter = transport.get_adapter(prepared.url)
+        assert adapter.get_connection(prepared.url) is adapter.pool
+        assert (
+            adapter.get_connection_with_tls_context(prepared, verify=True)
+            is adapter.pool
+        )
         adapter.cert_verify(adapter.pool, prepared.url, True, None)
         assert adapter.pool.cert_reqs == "CERT_REQUIRED"
         conn = adapter.pool.ConnectionCls("plans.example", port=443)
@@ -120,8 +127,13 @@ def test_document_redirect_and_size_limits(monkeypatch, status, body):
 
 
 @pytest.mark.parametrize("exhausted", [False, True])
-def test_fetch_tries_only_vetted_addresses_in_resolver_order(monkeypatch, exhausted):
-    ips = ["2606:4700:4700::1111", "93.184.216.34"]
+@pytest.mark.parametrize("ip_count", [2, 6])
+def test_fetch_tries_only_vetted_addresses_in_resolver_order(
+    monkeypatch, exhausted, ip_count
+):
+    ips = ["2606:4700:4700::1111", "93.184.216.34"] + [
+        f"93.184.216.{i}" for i in range(35, 35 + ip_count - 2)
+    ]
     lookups, connections = [], []
     connected = object()
 
@@ -163,7 +175,11 @@ def test_fetch_tries_only_vetted_addresses_in_resolver_order(monkeypatch, exhaus
     with requests.Session() as session:
         safe_fetch.fetch_document(session, "https://plans.example/plan")
     assert lookups == ["plans.example"]
-    assert connections == ips
+    assert (
+        connections == ips[: safe_fetch.MAX_CONNECT_ATTEMPTS]
+        if exhausted
+        else connections == ips[:2]
+    )
 
 
 @pytest.mark.parametrize(
@@ -297,6 +313,7 @@ def test_course_entry_rejects_destinations_outside_portal_pages(monkeypatch, url
         "index.php?a=f&e=l4",
         "/dateiverteilung.php",
         "https://start.schulportal.hessen.de/meinunterricht.php?id=42",
+        "https://START.SCHULPORTAL.HESSEN.DE:443/meinunterricht.php?id=42",
     ],
 )
 def test_course_entry_preserves_supported_portal_links(monkeypatch, url):
@@ -312,7 +329,9 @@ def test_course_entry_preserves_supported_portal_links(monkeypatch, url):
         SimpleNamespace(logged_in=True, session=None), url
     )
     assert result["success"] and result["content"] == {"entry": "lesson"}
-    assert calls[0].startswith("https://start.schulportal.hessen.de/")
+    from urllib.parse import urlsplit
+
+    assert urlsplit(calls[0]).hostname == "start.schulportal.hessen.de"
 
 
 @pytest.mark.parametrize("table_id", ["all", "own"])
@@ -403,15 +422,20 @@ def test_deploy_log_does_not_follow_predictable_symlink(tmp_path):
     python.write_text("#!/bin/sh\necho started\n")
     python.chmod(0o700)
     source = (Path(__file__).resolve().parents[1] / "deploy.sh").read_text()
-    start = source.index('    DIRECT_LOG="$(mktemp')
-    end = source.index("\n    sleep 1", start)
-    import os
-
+    start = source.index("    DIRECT_LOG_DIR=")
+    end = source.index("\n    sleep 1", source.index("    nohup", start))
+    log_directory = tmp_path / ".lanis-logs"
+    log_directory.mkdir(mode=0o777)
+    old_log = log_directory / "run.OLD.log"
+    old_log.write_text("old")
+    old_time = time.time() - 9 * 24 * 60 * 60
+    os.utime(old_log, (old_time, old_time))
     result = subprocess.run(
-        ["bash", "-euc", source[start:end] + "\nwait\n"],
+        ["bash", "-euc", "lsof() { return 1; }\n" + source[start:end] + "\nwait\n"],
         env={
             **os.environ,
-            "TMPDIR": str(tmp_path),
+            "PROJECT_DIR": str(tmp_path),
+            "TMPDIR": str(tmp_path / "missing-untrusted-temp"),
             "PYTHON_BIN": str(python),
             "HOST": "127.0.0.1",
             "PORT": "9999",
@@ -420,11 +444,46 @@ def test_deploy_log_does_not_follow_predictable_symlink(tmp_path):
         text=True,
         check=True,
     )
-    log = Path(result.stdout.strip().removeprefix("Log: "))
-    assert log != tmp_path / "lanis-api.log"
+    log = Path(
+        next(
+            line.strip().removeprefix("Log: ")
+            for line in result.stdout.splitlines()
+            if line.strip().startswith("Log: ")
+        )
+    )
+    assert log.parent == log_directory
     assert log.read_text() == "started\n"
     assert log.stat().st_mode & 0o777 == 0o600
+    assert log_directory.stat().st_mode & 0o777 == 0o700
+    assert not old_log.exists()
     assert victim.read_text() == "keep this"
+
+
+@pytest.mark.parametrize("failure", ["symlink", "mktemp"])
+def test_deploy_log_setup_failure_keeps_running_server_untouched(tmp_path, failure):
+    source = (Path(__file__).resolve().parents[1] / "deploy.sh").read_text()
+    start = source.index("    DIRECT_LOG_DIR=")
+    end = source.index('    echo ">>> Starting uvicorn', start)
+    target = tmp_path / "other"
+    target.mkdir()
+    if failure == "symlink":
+        (tmp_path / ".lanis-logs").symlink_to(target, target_is_directory=True)
+    result = subprocess.run(
+        [
+            "bash",
+            "-euc",
+            'lsof() { touch "$PROJECT_DIR/stopped"; echo 999999; }\n'
+            + ("mktemp() { return 1; }\n" if failure == "mktemp" else "")
+            + source[start:end],
+        ],
+        env={**os.environ, "PROJECT_DIR": str(tmp_path), "PORT": "9999"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "stopped").exists()
+    assert not list(target.iterdir())
 
 
 def test_model_conversation_reads_only_cache_and_opening_requires_proposal(monkeypatch):
@@ -538,6 +597,116 @@ def test_push_storage_normalizes_identity_and_limits_devices(tmp_path, monkeypat
         )
 
     asyncio.run(scenario())
+
+
+def test_legacy_push_aliases_merge_before_limit_check_and_keep_latest_data(
+    tmp_path, monkeypatch
+):
+    import aiosqlite
+
+    monkeypatch.setattr(auth_db, "DB_PATH", str(tmp_path / "legacy.db"))
+
+    async def scenario():
+        await auth_db.initialize()
+        token = await auth_db.store_refresh_token("user", "school", "user", "password")
+        session = await auth_db.get_refresh_token(token)
+
+        async def save(endpoint, key="original"):
+            await auth_db.save_push_subscription(
+                "user",
+                {"endpoint": endpoint, "keys": {"p256dh": key, "auth": "auth"}},
+                session["session_id"],
+            )
+
+        for index in range(push.MAX_PUSH_SUBSCRIPTIONS):
+            await save(f"https://fcm.googleapis.com/{index}")
+        async with aiosqlite.connect(auth_db.DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO push_subscriptions (endpoint,user_id,session_id,p256dh,auth,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    "https://FCM.GOOGLEAPIS.COM:443/0",
+                    "user",
+                    session["session_id"],
+                    "latest",
+                    "latest-auth",
+                    "2026-01-01",
+                    "2099-01-01",
+                ),
+            )
+            await db.commit()
+        await auth_db.initialize()
+        rows = await auth_db.get_push_subscriptions("user")
+        assert len(rows) == push.MAX_PUSH_SUBSCRIPTIONS
+        assert next(row for row in rows if row["endpoint"].endswith("/0"))["keys"] == {
+            "p256dh": "latest",
+            "auth": "latest-auth",
+        }
+        # Also repair legacy spellings written during a rolling upgrade before
+        # checking the limit, rather than requiring a process restart.
+        async with aiosqlite.connect(auth_db.DB_PATH) as db:
+            await db.execute(
+                "UPDATE push_subscriptions SET endpoint=? WHERE endpoint=?",
+                ("https://FCM.GOOGLEAPIS.COM/0", "https://fcm.googleapis.com/0"),
+            )
+            await db.commit()
+        await save("https://fcm.googleapis.com/0", key="renewed")
+        rows = await auth_db.get_push_subscriptions("user")
+        assert len(rows) == push.MAX_PUSH_SUBSCRIPTIONS
+        assert (
+            next(row for row in rows if row["endpoint"].endswith("/0"))["keys"][
+                "p256dh"
+            ]
+            == "renewed"
+        )
+        with pytest.raises(ValueError, match="limit"):
+            await save("https://fcm.googleapis.com/new")
+
+    asyncio.run(scenario())
+
+
+def test_push_round_robin_delivers_to_grandfathered_devices_during_fresh_changes(
+    monkeypatch,
+):
+    delivered = set()
+    monkeypatch.setattr(push, "_PUSH_CURSORS", push.OrderedDict())
+    monkeypatch.setattr(push, "push_configured", lambda: True)
+    device_count = push.MAX_PUSH_SUBSCRIPTIONS + 3
+    subscriptions = [
+        {"endpoint": f"https://fcm.googleapis.com/{index}", "keys": {}}
+        for index in range(device_count)
+    ]
+
+    async def dispatch(subscription, _payload):
+        delivered.add(subscription["endpoint"])
+
+    monkeypatch.setattr(push, "_dispatch_push", dispatch)
+
+    async def scenario():
+        for poll in range(device_count):
+            before = len(delivered)
+            statuses = await push._send_push_to_subscriptions(
+                "grandfathered-user", subscriptions, {"title": f"new change {poll}"}
+            )
+            assert (
+                sum(status == "delivered" for status in statuses.values())
+                == push.MAX_PUSH_SUBSCRIPTIONS
+            )
+            assert len(delivered) >= before
+        assert delivered == {row["endpoint"] for row in subscriptions}
+
+    asyncio.run(scenario())
+
+
+def test_pending_push_retries_survive_endpoint_canonicalization():
+    endpoint = "https://fcm.googleapis.com/token"
+    state = {
+        "pending_deliveries": {
+            "https://FCM.GOOGLEAPIS.COM:443/token": [{"title": "pending"}]
+        }
+    }
+    assert push._get_pending_deliveries(state, {endpoint}) == {
+        endpoint: [{"title": "pending"}]
+    }
 
 
 def test_push_isolates_workers_and_rejects_excess_queueing(monkeypatch):

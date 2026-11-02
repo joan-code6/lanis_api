@@ -658,7 +658,7 @@ def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:
     try:
         full_url = urljoin("https://start.schulportal.hessen.de/", url)
         parsed = urlparse(full_url)
-        if (parsed.scheme != "https" or parsed.netloc != "start.schulportal.hessen.de"
+        if (parsed.scheme != "https" or parsed.netloc.lower() not in {"start.schulportal.hessen.de", "start.schulportal.hessen.de:443"}
                 or parsed.path not in {"/meinunterricht.php", "/index.php", "/dateiverteilung.php"}):
             raise ValueError("Only Schulportal course entry pages are allowed")
         response = fetch_document(self.session, full_url)

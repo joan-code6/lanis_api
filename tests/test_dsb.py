@@ -59,7 +59,9 @@ class FakeClient:
 
 
 def test_dsb_plan_response_includes_last_updated(monkeypatch) -> None:
-    monkeypatch.setattr("schulportal_hessen.external.dsb.api.fetch_document", lambda *_: FakeResponse())
+    monkeypatch.setattr(
+        "schulportal_hessen.external.dsb.api.fetch_document", lambda *_: FakeResponse()
+    )
     result = dsb_get_substitution_plan(
         FakeClient(), plan_url="https://example.invalid/plan.htm"
     )
@@ -76,3 +78,65 @@ def test_decode_dsb_response_uses_utf8_bytes_when_charset_is_missing() -> None:
 
     assert "Müller" in decoded
     assert "MÃ¼ller" not in decoded
+
+
+def test_explicit_and_indexed_plan_selection_use_second_discovered_url(monkeypatch):
+    from types import SimpleNamespace
+
+    urls = ["https://plans.example/first.htm", "https://plans.example/second.htm"]
+    fetched = []
+    client = SimpleNamespace(
+        dsb_session=object(),
+        dsb_get_plan_urls=lambda **_: {"success": True, "plan_urls": urls},
+    )
+    monkeypatch.setattr(
+        "schulportal_hessen.external.dsb.api.fetch_document",
+        lambda _session, url: fetched.append(url) or FakeResponse(),
+    )
+    assert dsb_get_substitution_plan(client, plan_url=urls[1])["success"]
+    assert dsb_get_substitution_plan(client, plan_index=1)["success"]
+    assert fetched == [urls[1], urls[1]]
+
+
+def test_relative_html_detail_does_not_override_valid_https_plan(monkeypatch):
+    import base64
+    import gzip
+    import json
+    from types import SimpleNamespace
+
+    from schulportal_hessen.external.dsb import api as dsb
+
+    menu = {
+        "ResultMenuItems": [
+            {
+                "Detail": "https://plans.example/valid.htm",
+                "Childs": [
+                    {
+                        "Title": "Plan",
+                        "Root": {"Childs": [{"Childs": [{"Detail": "relative.htm"}]}]},
+                    }
+                ],
+            }
+        ]
+    }
+    encoded = base64.b64encode(gzip.compress(json.dumps(menu).encode())).decode()
+    session = SimpleNamespace(
+        post=lambda *_args, **_kwargs: SimpleNamespace(
+            raise_for_status=lambda: None, json=lambda: {"d": encoded}
+        )
+    )
+    client = SimpleNamespace(dsb_logged_in=True, dsb_session=session)
+    client.dsb_get_plan_urls = lambda **kwargs: dsb.dsb_get_plan_urls(client, **kwargs)
+    monkeypatch.setattr(
+        dsb, "_find_getdata_endpoint", lambda _: "https://www.dsbmobile.de/GetData"
+    )
+    fetched = []
+    monkeypatch.setattr(
+        dsb,
+        "fetch_document",
+        lambda _session, url: fetched.append(url) or FakeResponse(),
+    )
+    discovery = client.dsb_get_plan_urls()
+    assert discovery["html_plan_url"] is None
+    assert dsb_get_substitution_plan(client)["success"]
+    assert fetched == ["https://plans.example/valid.htm"]

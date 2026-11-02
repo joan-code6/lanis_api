@@ -303,6 +303,16 @@ A systemd service file is provided at `lanis-api.service`:
 The script can be run as a regular user. It requests `sudo` only when installing
 or restarting the systemd service.
 
+DSB plan downloads and course-entry reads require DNS resolution and **direct
+outbound HTTPS on port 443** to the portal and authorized plan hosts. These reads
+ignore session and environment proxies (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`)
+so they can connect only to validated public IP addresses. A proxy-only egress
+deployment cannot use these reads, even if login works through its proxy.
+
+The direct-start fallback writes private logs under `.lanis-logs/` in the
+checkout and removes logs older than seven days. Log setup must succeed before
+the running server is stopped.
+
 ### Docker
 
 Docker Compose runs the API on host port `9898` and stores its databases and

@@ -6,7 +6,7 @@ import re
 import threading
 from datetime import date
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -518,7 +518,9 @@ def dsb_get_plan_urls(
                         for rc in root.get("Childs", []):
                             for rcc in rc.get("Childs", []):
                                 detail = rcc.get("Detail", "")
-                                if detail and detail.endswith(".htm"):
+                                if (detail and detail.endswith(".htm")
+                                        and urlsplit(detail).scheme == "https"
+                                        and urlsplit(detail).hostname):
                                     html_plan_url = detail
 
             self.dsb_plan_urls = plan_urls

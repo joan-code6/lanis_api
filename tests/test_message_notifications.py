@@ -1300,7 +1300,7 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
         "https://push.example/one": "gone",
         "https://push.example/two": "gone",
     }
-    assert deleted == [("user-a", "https://push.example/one"), ("user-a", "https://push.example/two")]
+    assert sorted(deleted) == [("user-a", "https://push.example/one"), ("user-a", "https://push.example/two")]
 
 
 def test_push_delivery_drops_untrusted_stored_endpoints(monkeypatch):

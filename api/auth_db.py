@@ -743,6 +743,7 @@ async def initialize() -> None:
                     (_encrypt_password(str(stored_password)), token),
                 )
         await _migrate_user_ids(db)
+        await _canonicalize_push_endpoints(db)
         await db.commit()
     logger.info("Auth DB initialized at %s", DB_PATH)
 
@@ -2380,6 +2381,52 @@ async def get_enabled_notification_users() -> List[Dict[str, Any]]:
     ]
 
 
+async def _canonicalize_push_endpoints(
+    db: aiosqlite.Connection, user_id: Optional[str] = None
+) -> None:
+    """Merge legacy endpoint aliases, retaining the newest keys and session."""
+    from .message_notifications import normalize_push_endpoint
+
+    db.row_factory = aiosqlite.Row
+    query = "SELECT rowid AS __rowid, * FROM push_subscriptions"
+    params = ()
+    if user_id is not None:
+        query += " WHERE user_id = ?"
+        params = (user_id,)
+    async with db.execute(query, params) as cursor:
+        rows = await cursor.fetchall()
+    groups = defaultdict(list)
+    for row in rows:
+        try:
+            endpoint = normalize_push_endpoint(row["endpoint"])
+        except ValueError:
+            await db.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (row["endpoint"],))
+            continue
+        groups[endpoint].append(dict(row))
+    for endpoint, aliases in groups.items():
+        if len(aliases) == 1 and aliases[0]["endpoint"] == endpoint:
+            continue
+        # A targeted renewal may collide with a canonical row from another
+        # account. Preserve the newest row until the authenticated upsert.
+        if user_id is not None and all(row["endpoint"] != endpoint for row in aliases):
+            async with db.execute(
+                "SELECT rowid AS __rowid, * FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+            ) as cursor:
+                canonical = await cursor.fetchone()
+            if canonical is not None:
+                aliases.append(dict(canonical))
+        winner = max(aliases, key=_row_recency)
+        await db.executemany(
+            "DELETE FROM push_subscriptions WHERE endpoint = ?",
+            [(row["endpoint"],) for row in aliases],
+        )
+        await db.execute(
+            "INSERT INTO push_subscriptions "
+            "(endpoint, user_id, session_id, p256dh, auth, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (endpoint, *(winner[key] for key in ("user_id", "session_id", "p256dh", "auth", "created_at", "updated_at"))),
+        )
+
+
 async def save_push_subscription(
     user_id: str,
     subscription: Dict[str, Any],
@@ -2394,6 +2441,7 @@ async def save_push_subscription(
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("BEGIN IMMEDIATE")
+            await _canonicalize_push_endpoints(db, user_id)
             async with db.execute(
                 "SELECT endpoint FROM push_subscriptions WHERE user_id = ?", (user_id,)
             ) as cursor:

@@ -10,8 +10,8 @@ do not create a duplicate just to upload this package.
   negative review cases, initial release notes.
 - `plugins/lanis/assets/icon.png`: canonical red LANIS mark, 512 × 512 PNG.
 - Packaging scripts have been discontinued; verify discovery and package contents manually.
-- `tests/test_agent_plugin_builder.py`: validates metadata failure paths, archive
-  inventory, icon references and review-case inventory with fake discovery.
+- Verify metadata failure paths, archive inventory, icon references and
+  review-case inventory manually; the builder and its tests were discontinued.
 
 The German base listing describes actual capabilities and limitations. User prompts
 use ordinary school questions without requiring a platform name or app mention. The

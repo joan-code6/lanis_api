@@ -13,6 +13,7 @@ from urllib3.util.connection import create_connection
 from .transport import observe_request
 
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
+MAX_CONNECT_ATTEMPTS = 4
 
 
 def public_https_url(url: str) -> tuple[str, tuple[str, ...]]:
@@ -46,6 +47,7 @@ def fetch_document(session: requests.Session, url: str) -> requests.Response:
 
 def _fetch_document(session: requests.Session, url: str) -> requests.Response:
     host, addresses = public_https_url(url)
+    addresses = addresses[:MAX_CONNECT_ATTEMPTS]
 
     class PinnedConnection(HTTPSConnection):
         def _new_conn(self):
