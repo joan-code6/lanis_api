@@ -27,7 +27,10 @@ def test_preferences_ownership_cooldown_and_deletion(database, monkeypatch):
         await beta.change("1:one", "dismiss")
         assert (await beta.get("1:one"))["dismissed"]
         await auth_db.delete_user_data("1:one")
-        assert not (await beta.get("1:one"))["dismissed"]
+        state = await beta.get("1:one")
+        assert not state["dismissed"]
+        assert state["prompt_after"] == 0
+        assert state["invitation_due"]
 
     asyncio.run(scenario())
 
@@ -91,6 +94,10 @@ def test_routes_require_auth_and_cannot_set_membership(database):
                 401,
                 422,
             )
+            assert (
+                await client.post("/settings/android-beta", json={"action": "dismiss"})
+            ).status_code in (401, 422)
+            assert not (await beta.get("1:one"))["dismissed"]
             app.dependency_overrides[local_auth_dependency] = lambda: AuthSession(
                 client=None,
                 user_id="1:one",
