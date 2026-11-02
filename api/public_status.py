@@ -220,27 +220,7 @@ def _latencies(checks: list[tuple[datetime, dict[str, Any]]]) -> dict[str, Any]:
     }
 
 
-async def _build_public_status() -> dict[str, Any]:
-    """Read stored observations; never trigger a login or a synthetic probe."""
-    now = uptime._utcnow().replace(tzinfo=timezone.utc)
-    start = now - timedelta(days=uptime.UPTIME_SUMMARY_DAYS)
-    interval = uptime.get_uptime_interval_seconds()
-    rows = await uptime.user_metrics_db.get_uptime_checks(
-        limit=-1, since=start.replace(tzinfo=None)
-    )
-    get_incident_prefix = getattr(
-        uptime.user_metrics_db, "get_uptime_incident_prefix", None
-    )
-    if get_incident_prefix is not None:
-        rows.extend(await get_incident_prefix(start.replace(tzinfo=None)))
-    get_previous_check = getattr(uptime.user_metrics_db, "get_previous_uptime_check", None)
-    previous_row = (
-        await get_previous_check(start.replace(tzinfo=None))
-        if get_previous_check is not None
-        else None
-    )
-    if previous_row is not None:
-        rows.append(previous_row)
+def _project_observations(rows: list[dict[str, Any]], now: datetime) -> list[tuple[datetime, dict[str, Any]]]:
     checks = []
     for row in rows:
         timestamp = _timestamp(row.get("checked_at"))
@@ -302,6 +282,31 @@ async def _build_public_status() -> dict[str, Any]:
             preceding_isolated_account_issue = False
     checks = projected_checks
     checks.sort(key=lambda item: item[0], reverse=True)
+    return checks
+
+
+async def _build_public_status() -> dict[str, Any]:
+    """Read stored observations; never trigger a login or a synthetic probe."""
+    now = uptime._utcnow().replace(tzinfo=timezone.utc)
+    start = now - timedelta(days=uptime.UPTIME_SUMMARY_DAYS)
+    interval = uptime.get_uptime_interval_seconds()
+    rows = await uptime.user_metrics_db.get_uptime_checks(
+        limit=-1, since=start.replace(tzinfo=None)
+    )
+    get_incident_prefix = getattr(
+        uptime.user_metrics_db, "get_uptime_incident_prefix", None
+    )
+    if get_incident_prefix is not None:
+        rows.extend(await get_incident_prefix(start.replace(tzinfo=None)))
+    get_previous_check = getattr(uptime.user_metrics_db, "get_previous_uptime_check", None)
+    previous_row = (
+        await get_previous_check(start.replace(tzinfo=None))
+        if get_previous_check is not None
+        else None
+    )
+    if previous_row is not None:
+        rows.append(previous_row)
+    checks = _project_observations(rows, now)
     latest = checks[0] if checks else None
     latest_status = latest[1]["status"] if latest else "unknown"
     if latest_status in {"down", "degraded"}:
@@ -565,7 +570,8 @@ async def get_public_status() -> dict[str, Any]:
 
 async def get_public_incident(identifier: str) -> dict[str, Any] | None:
     rows = await uptime.user_metrics_db.get_uptime_checks(limit=-1)
-    checks = [_check(row, stamp) for row in rows if (stamp := _timestamp(row.get("checked_at"))) is not None]
+    now = uptime._utcnow().replace(tzinfo=timezone.utc)
+    checks = [check for _, check in _project_observations(rows, now)]
     for incident in uptime.group_uptime_incidents(checks):
         if incident["id"] == identifier:
             incident["observations"] = [check for check in reversed(checks)
