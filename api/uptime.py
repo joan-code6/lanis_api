@@ -434,9 +434,9 @@ def _is_maintenance_page(html: str) -> bool:
     """Recognize the SPH maintenance document without matching footer links."""
     soup = BeautifulSoup(html, "html.parser")
     return any(
-        marker in element.get_text(" ", strip=True).casefold()
+        " ".join(element.get_text(" ", strip=True).casefold().split()).rsplit(" - ", 1)[-1]
+        in {"wartungsarbeiten", "wartungsmodus"}
         for element in soup.find_all(["title", "h1"])
-        for marker in ("wartungsarbeiten", "wartungsmodus")
     )
 
 
@@ -486,7 +486,7 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
                 "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
                 "error": "maintenance",
                 "features": [
-                    _feature("login", "down", overall_started, error="maintenance"),
+                    _feature("login", "skipped", overall_started, error="maintenance"),
                     _feature("modules", "skipped", overall_started, error="maintenance"),
                 ],
             }

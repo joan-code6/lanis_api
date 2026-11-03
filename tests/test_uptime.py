@@ -85,7 +85,7 @@ def test_probe_recognizes_real_maintenance_page_without_login(monkeypatch, statu
     assert result["is_available"] is False
     assert result["error"] == "maintenance"
     assert result["status_code"] == status_code
-    assert [item["status"] for item in result["features"]] == ["down", "skipped"]
+    assert [item["status"] for item in result["features"]] == ["skipped", "skipped"]
     assert closed == [True]
     assert client_closed == [True]
 
@@ -289,3 +289,35 @@ def test_discord_alerts_only_on_issue_and_recovery_transitions(monkeypatch, tmp_
         assert await database.get_uptime_alert_state() is False
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("heading", ["Wartungsarbeiten abgeschlossen", "Keine Wartungsarbeiten", "Wartungsmodus beendet"])
+def test_completed_or_negated_maintenance_is_not_active(heading):
+    assert not uptime._is_maintenance_page(f"<title>{heading}</title><h1>{heading}</h1>")
+
+
+def _slow_preflight_child(connection, credentials):
+    import time
+
+    def slow_get(self, url, **kwargs):
+        time.sleep(30)
+        raise AssertionError("worker should have been terminated")
+
+    FakeSession.get = slow_get
+    uptime.SchulportalHessenAPI = FakeClient
+    connection.send(uptime._probe_portal(credentials))
+    connection.close()
+
+
+def test_slow_maintenance_preflight_is_reaped(monkeypatch):
+    import multiprocessing
+    import time
+
+    monkeypatch.setattr(uptime, "_probe_child", _slow_preflight_child)
+    monkeypatch.setenv("LANIS_UPTIME_PROBE_DEADLINE_SECONDS", "5")
+    children = {child.pid for child in multiprocessing.active_children()}
+    started = time.monotonic()
+    check = uptime._isolated_probe(("5201", "monitor-user", "monitor-password"))
+    assert check["error"] == "probe_deadline"
+    assert time.monotonic() - started < 12
+    assert {child.pid for child in multiprocessing.active_children()} == children
