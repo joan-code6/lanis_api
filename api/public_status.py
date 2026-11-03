@@ -575,16 +575,45 @@ async def get_public_incident(identifier: str) -> dict[str, Any] | None:
             return None
     except (ValueError, TypeError):
         return None
-    rows = await uptime.user_metrics_db.get_uptime_checks(limit=-1)
-    now = uptime._utcnow().replace(tzinfo=timezone.utc)
+    incidents, checks = await _get_incident_index()
+    incident = incidents.get(identifier)
+    if incident is None:
+        return None
+    return {**incident, "observations": [check for check in reversed(checks)
+        if incident["started_at"] <= check["checked_at"] <=
+        (incident["resolved_at"] or incident["last_checked_at"])]}
+
+
+_incident_lock = asyncio.Lock()
+_incident_database = None
+_incident_deadline = 0.0
+_incident_index = ({}, [])
+
+
+def _build_incident_index(rows, now):
     checks = [check for _, check in _project_observations(rows, now)]
-    for incident in uptime.group_uptime_incidents(checks):
-        if incident["id"] == identifier:
-            incident["observations"] = [check for check in reversed(checks)
-                if check["checked_at"] >= incident["started_at"]
-                and check["checked_at"] <= (incident["resolved_at"] or incident["last_checked_at"])]
-            return incident
-    return None
+    return {incident["id"]: incident for incident in uptime.group_uptime_incidents(checks)}, checks
+
+
+async def _get_incident_index(*, refresh=False):
+    """Coalesce history reads across IDs; group retained history off the event loop."""
+    from fastapi.concurrency import run_in_threadpool
+    global _incident_database, _incident_deadline, _incident_index
+    async with _incident_lock:
+        if refresh or _incident_database is not uptime.user_metrics_db or time.monotonic() >= _incident_deadline:
+            rows = await uptime.user_metrics_db.get_uptime_checks(limit=-1)
+            now = uptime._utcnow().replace(tzinfo=timezone.utc)
+            result = await run_in_threadpool(_build_incident_index, rows, now)
+            _incident_index = result
+            _incident_database = uptime.user_metrics_db
+            _incident_deadline = time.monotonic() + 5.0
+        return _incident_index
+
+
+def status_snapshot_max_age(snapshot):
+    if snapshot is not _cached_status:
+        return 0
+    return max(0, math.floor(_cache_deadline - time.monotonic()))
 
 
 _image_lock = asyncio.Lock()

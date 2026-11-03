@@ -378,13 +378,10 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
 
         notification = dict(check)
         try:
-            rows = await user_metrics_db.get_uptime_checks(limit=-1)
-            from .public_status import _project_observations
-            now = _utcnow().replace(tzinfo=timezone.utc)
-            projected = [observation for _, observation in _project_observations(rows, now)]
-            incidents = group_uptime_incidents(projected)
+            from .public_status import _get_incident_index
+            incidents, _ = await _get_incident_index(refresh=True)
             if incidents:
-                notification["incident_id"] = incidents[-1]["id"]
+                notification["incident_id"] = next(reversed(incidents))
         except Exception:
             logger.warning("Could not attach incident link to Schulportal uptime alert", exc_info=True)
         try:

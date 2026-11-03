@@ -144,3 +144,32 @@ def test_history_failure_still_delivers_discord_alert(monkeypatch):
     check = {"status": "down"}
     asyncio.run(uptime._notify_discord_on_transition(check))
     assert sent == [check]
+
+
+def test_unknown_ids_share_index_and_refresh(monkeypatch):
+    reads = []
+    class Database:
+        async def get_uptime_checks(self, **kwargs):
+            reads.append(kwargs)
+            return []
+    monkeypatch.setattr(uptime, "user_metrics_db", Database())
+    monkeypatch.setattr(public_status, "_incident_lock", asyncio.Lock())
+    ticks = [100.0]
+    monkeypatch.setattr(public_status.time, "monotonic", lambda: ticks[0])
+    async def scenario():
+        ids = [f"20261101T10000{i}000000Z" for i in range(5)]
+        assert await asyncio.gather(*(public_status.get_public_incident(i) for i in ids)) == [None] * 5
+        assert len(reads) == 1
+        ticks[0] += 6
+        await public_status.get_public_incident(ids[0])
+        assert len(reads) == 2
+    asyncio.run(scenario())
+
+
+def test_image_max_age_uses_remaining_snapshot_deadline(monkeypatch):
+    snapshot = {}
+    monkeypatch.setattr(public_status, "_cached_status", snapshot)
+    monkeypatch.setattr(public_status, "_cache_deadline", 115.0)
+    monkeypatch.setattr(public_status.time, "monotonic", lambda: 112.1)
+    assert public_status.status_snapshot_max_age(snapshot) == 2
+    assert public_status.status_snapshot_max_age({}) == 0
