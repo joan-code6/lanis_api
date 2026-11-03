@@ -5,6 +5,9 @@ https://groups.google.com/g/lanis-beta/about with their Play Store Google accoun
 then explicitly opt into https://play.google.com/apps/testing/de.joancode.lanis
 with that same account before downloading. Google Group membership establishes
 eligibility only. LANIS does not verify membership, opt-in, installation or feedback.
+The UI first opens Google account selection with the group/about page as the
+return URL. Users must still confirm joining at Google; there is no automatic
+join request, Google OAuth callback or membership check in LANIS.
 Some supervised child accounts cannot join Google Groups; do not promise access
 for every student. No Google password, OAuth or Groups API is involved.
 
@@ -39,8 +42,9 @@ This agent changed no Play Console/group settings and deployed nothing.
    internal testing may need to leave the internal test first to verify closed access.
 6. Only after those checks, enable recruitment through the normal approved config
    rollout. Confirm Android-browser invitation after dashboard load and native
-   Capacitor exclusion. The invitation is dashboard-only; beta content is not
-   shown in Settings. Disabled recruitment displays no invitation.
+   Capacitor exclusion. Settings → App & Hilfe offers a small Beta ansehen card
+   that opens the same dialog manually, without resetting permanent dismissal.
+   Disabled recruitment displays no invitation and disables the card button.
 
 ## Ongoing operation
 
@@ -53,8 +57,8 @@ and self-confirmation must never be counted as membership, enrollment or install
 
 Showing an invitation or selecting Später stores a seven-day cooldown. Nicht mehr
 anzeigen stores a permanent invitation preference. The two links appear in the
-dashboard invitation only. Account export includes these preferences; account
-deletion removes them.
+dashboard invitation and the popup opened from the small App & Hilfe card.
+Account export includes these preferences; account deletion removes them.
 Disable recruitment with `ANDROID_BETA_ENABLED=false` if access becomes unavailable.
 
 Google references:
