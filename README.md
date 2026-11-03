@@ -269,7 +269,7 @@ Web Push requires these environment variables on the API server:
 
 The `pywebpush` dependency is included in `requirements.txt`. Users can configure notification categories, Vertretungsplan class scope, the active window, interval, timezone, and whether message previews contain the sender and subject in **Settings → Benachrichtigungen**.
 
-Subscriptions, category baselines and pending delivery retries live in `data/auth.db`. Normal process restarts preserve them and restart the polling worker. Keep that directory persistent (the supplied Docker Compose file mounts a named volume), use a stable working directory for a service installation, and preserve the `JWT_SECRET`/credential encryption key and VAPID key pair across deployments. Replacing these files or keys is not an ordinary restart.
+Subscriptions, category baselines, delivery rotation and pending retries live in `data/auth.db`. Normal process restarts preserve them and restart the polling worker. Keep that directory persistent (the supplied Docker Compose file mounts a named volume), use a stable working directory for a service installation, and preserve the `JWT_SECRET`/credential encryption key and VAPID key pair across deployments. Replacing these files or keys is not an ordinary restart.
 
 An upgrade introducing per-login session ownership intentionally removes legacy subscriptions that cannot be safely attributed to a login. The browser must register its existing subscription again; updated frontends do this on authenticated page visits and periodically while visible. Do not retain unowned endpoints or attach them arbitrarily to another session to bypass that migration.
 
@@ -308,6 +308,9 @@ outbound HTTPS on port 443** to the portal and authorized plan hosts. These read
 ignore session and environment proxies (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`)
 so they can connect only to validated public IP addresses. A proxy-only egress
 deployment cannot use these reads, even if login works through its proxy.
+DNS lookups have a five-second caller deadline and bounded outstanding resolver
+work. Response headers and document bodies have a 60-second read deadline applied
+at the socket boundary, including when the server trickles small amounts of data.
 
 The direct-start fallback writes private logs under `.lanis-logs/` in the
 checkout and removes logs older than seven days. Log setup must succeed before

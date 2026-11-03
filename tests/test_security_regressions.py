@@ -1,6 +1,7 @@
 """Regression coverage for the October 2026 security findings."""
 
 import asyncio
+import copy
 import os
 import socket
 import subprocess
@@ -471,6 +472,10 @@ def test_deploy_log_does_not_follow_predictable_symlink(tmp_path):
     old_log.write_text("old")
     old_time = time.time() - 9 * 24 * 60 * 60
     os.utime(old_log, (old_time, old_time))
+    recent_log = log_directory / "run.RECENT.log"
+    recent_log.write_text("recent")
+    recent_time = time.time() - 24 * 60 * 60
+    os.utime(recent_log, (recent_time, recent_time))
     result = subprocess.run(
         ["bash", "-euc", "lsof() { return 1; }\n" + source[start:end] + "\nwait\n"],
         env={
@@ -497,6 +502,7 @@ def test_deploy_log_does_not_follow_predictable_symlink(tmp_path):
     assert log.stat().st_mode & 0o777 == 0o600
     assert log_directory.stat().st_mode & 0o777 == 0o700
     assert not old_log.exists()
+    assert recent_log.read_text() == "recent"
     assert victim.read_text() == "keep this"
 
 
@@ -585,6 +591,7 @@ def test_model_conversation_reads_only_cache_and_opening_requires_proposal(monke
             sender_id="sender",
         )
         assert opened[0]["conversation_id"] == "42"
+        assert opened[0]["last"] == 0
 
     asyncio.run(scenario())
 
@@ -709,7 +716,6 @@ def test_push_round_robin_delivers_to_grandfathered_devices_during_fresh_changes
     monkeypatch,
 ):
     delivered = set()
-    monkeypatch.setattr(push, "_PUSH_CURSORS", push.OrderedDict())
     monkeypatch.setattr(push, "push_configured", lambda: True)
     device_count = push.MAX_PUSH_SUBSCRIPTIONS + 3
     subscriptions = [
@@ -717,17 +723,24 @@ def test_push_round_robin_delivers_to_grandfathered_devices_during_fresh_changes
         for index in range(device_count)
     ]
 
-    async def dispatch(subscription, _payload):
+    async def dispatch(subscription, _payload, **_kwargs):
         delivered.add(subscription["endpoint"])
 
     monkeypatch.setattr(push, "_dispatch_push", dispatch)
 
     async def scenario():
+        state = {}
         for poll in range(device_count):
             before = len(delivered)
-            statuses = await push._send_push_to_subscriptions(
-                "grandfathered-user", subscriptions, {"title": f"new change {poll}"}
+            statuses = await push._send_push_payloads(
+                "grandfathered-user",
+                {
+                    row["endpoint"]: (row, {"title": f"new change {poll}"})
+                    for row in subscriptions
+                },
+                state=state,
             )
+            state = copy.deepcopy(state)  # A newly loaded persisted state per poll.
             assert (
                 sum(status == "delivered" for status in statuses.values())
                 == push.MAX_PUSH_SUBSCRIPTIONS
@@ -762,18 +775,75 @@ def test_push_isolates_workers_and_rejects_excess_queueing(monkeypatch):
     monkeypatch.setattr(push, "_send_push_sync", send)
 
     async def scenario():
-        tasks = [asyncio.create_task(push._dispatch_push({}, {})) for _ in range(4)]
+        tasks = [
+            asyncio.create_task(push._dispatch_push({}, {}, user_id=f"user-{index}"))
+            for index in range(4)
+        ]
         try:
             # Let admitted coroutines submit their workers.
             await asyncio.sleep(0)
             with pytest.raises(RuntimeError, match="capacity"):
-                await push._dispatch_push({}, {})
+                await push._dispatch_push({}, {}, user_id="excess-user")
         finally:
             release.set()
             await asyncio.gather(*tasks)
         assert started == 4
 
     asyncio.run(scenario())
+
+
+def test_slow_user_cannot_hold_more_than_one_push_slot(monkeypatch):
+    release = threading.Event()
+    other_delivered = threading.Event()
+
+    def send(_subscription, payload):
+        if payload.get("slow"):
+            assert release.wait(2)
+        else:
+            other_delivered.set()
+
+    monkeypatch.setattr(push, "_send_push_sync", send)
+
+    async def scenario():
+        slow = asyncio.create_task(
+            push._dispatch_push({}, {"slow": True}, user_id="slow-user")
+        )
+        try:
+            await asyncio.sleep(0)
+            with pytest.raises(RuntimeError, match="capacity"):
+                await push._dispatch_push({}, {}, user_id="slow-user")
+            await push._dispatch_push({}, {}, user_id="other-user")
+            assert other_delivered.is_set()
+            assert not slow.done()
+        finally:
+            release.set()
+            await slow
+
+    asyncio.run(scenario())
+
+
+def test_user_batch_still_attempts_each_device_with_one_slot(monkeypatch):
+    delivered = []
+    subscriptions = [
+        {"endpoint": f"https://fcm.googleapis.com/device-{index}", "keys": {}}
+        for index in range(3)
+    ]
+    monkeypatch.setattr(push, "push_configured", lambda: True)
+
+    def send(subscription, _payload):
+        threading.Event().wait(0.01)  # Simulate an in-flight push-service request.
+        delivered.append(subscription["endpoint"])
+
+    monkeypatch.setattr(push, "_send_push_sync", send)
+    statuses = asyncio.run(
+        push._send_push_to_subscriptions(
+            "several-devices", subscriptions, {"title": "test"}
+        )
+    )
+    assert set(delivered) == {
+        subscription["endpoint"] for subscription in subscriptions
+    }
+    assert set(statuses.values()) == {"delivered"}
 
 
 def test_stored_push_fragments_are_removed_without_delivery(monkeypatch):

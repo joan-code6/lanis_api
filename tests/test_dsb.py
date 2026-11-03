@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 from schulportal_hessen.external.dsb.api import (
     _decode_dsb_response,
     _parse_last_updated,
@@ -98,7 +100,25 @@ def test_explicit_and_indexed_plan_selection_use_second_discovered_url(monkeypat
     assert fetched == [urls[1], urls[1]]
 
 
-def test_relative_html_detail_does_not_override_valid_https_plan(monkeypatch):
+@pytest.mark.parametrize(
+    "detail,expected_html",
+    [
+        ("relative.htm", None),
+        ("https://plans.example:8443/plan.htm", None),
+        ("https://[broken/plan.htm", None),
+        ("https://plans.example:bad/plan.htm", None),
+        ("https://user:password@plans.example/plan.htm", None),
+        ("https://plans.example/#fragment.htm", None),
+        ("https://plans.example/chosen.htm", "https://plans.example/chosen.htm"),
+        (
+            "https://plans.example:443/chosen.htm",
+            "https://plans.example:443/chosen.htm",
+        ),
+    ],
+)
+def test_html_detail_discovery_skips_invalid_links_and_preserves_valid_plans(
+    monkeypatch, detail, expected_html
+):
     import base64
     import gzip
     import json
@@ -113,7 +133,7 @@ def test_relative_html_detail_does_not_override_valid_https_plan(monkeypatch):
                 "Childs": [
                     {
                         "Title": "Plan",
-                        "Root": {"Childs": [{"Childs": [{"Detail": "relative.htm"}]}]},
+                        "Root": {"Childs": [{"Childs": [{"Detail": detail}]}]},
                     }
                 ],
             }
@@ -137,6 +157,6 @@ def test_relative_html_detail_does_not_override_valid_https_plan(monkeypatch):
         lambda _session, url: fetched.append(url) or FakeResponse(),
     )
     discovery = client.dsb_get_plan_urls()
-    assert discovery["html_plan_url"] is None
+    assert discovery["html_plan_url"] == expected_html
     assert dsb_get_substitution_plan(client)["success"]
-    assert fetched == ["https://plans.example/valid.htm"]
+    assert fetched == [expected_html or "https://plans.example/valid.htm"]

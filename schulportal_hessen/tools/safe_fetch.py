@@ -1,7 +1,11 @@
 """Bounded HTTPS reads with public destination addresses pinned at connect time."""
 
+import io
 import ipaddress
+import queue
 import socket
+import threading
+import time
 from urllib.parse import urlsplit
 
 import requests
@@ -14,9 +18,82 @@ from .transport import check_portal_session, observe_request
 
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 MAX_CONNECT_ATTEMPTS = 4
+DNS_TIMEOUT_SECONDS = 5
+MAX_DOCUMENT_SECONDS = 60
+_DNS_SLOTS = threading.BoundedSemaphore(2)
 
 
-def public_https_url(url: str) -> tuple[str, tuple[str, ...]]:
+def _resolve(host):
+    """Bound caller wait and outstanding libc resolver work separately."""
+    slots = _DNS_SLOTS
+    if not slots.acquire(blocking=False):
+        raise requests.ConnectionError("Document resolver capacity reached")
+    result = queue.Queue(maxsize=1)
+
+    def lookup():
+        try:
+            try:
+                result.put(
+                    (True, socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM))
+                )
+            except (OSError, ValueError) as error:
+                result.put((False, error))
+        finally:
+            slots.release()
+
+    try:
+        threading.Thread(target=lookup, daemon=True, name="document-dns").start()
+    except BaseException:
+        slots.release()
+        raise
+    try:
+        success, value = result.get(timeout=DNS_TIMEOUT_SECONDS)
+    except queue.Empty as error:
+        raise requests.Timeout("Document DNS lookup deadline exceeded") from error
+    if not success:
+        raise value
+    return value
+
+
+class _DeadlineReader(io.RawIOBase):
+    """Apply the absolute deadline before every socket read, inside buffering."""
+
+    def __init__(self, raw, sock, deadline):
+        self.raw, self.sock, self.deadline = raw, sock, deadline
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Document read deadline exceeded")
+        self.sock.settimeout(min(15, remaining))
+        return self.raw.readinto(buffer)
+
+    def close(self):
+        try:
+            self.raw.close()
+        finally:
+            super().close()
+
+
+class _DeadlineSocket:
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
+
+    def makefile(self, mode="rb", buffering=None):
+        if mode != "rb":
+            raise ValueError("Document transport supports binary reads only")
+        raw = self.sock.makefile("rb", buffering=0)
+        return io.BufferedReader(_DeadlineReader(raw, self.sock, self.deadline))
+
+
+def validate_document_url(url: str):
+    """Check URL syntax without resolving it, also usable during discovery."""
     if not isinstance(url, str) or any(ord(c) <= 32 for c in url) or "\\" in url:
         raise ValueError("Invalid document URL")
     parsed = urlsplit(url)
@@ -29,9 +106,14 @@ def public_https_url(url: str) -> tuple[str, tuple[str, ...]]:
         or parsed.fragment
     ):
         raise ValueError("Document URL must use HTTPS without credentials or fragments")
+    return parsed
+
+
+def public_https_url(url: str) -> tuple[str, tuple[str, ...]]:
+    parsed = validate_document_url(url)
     host = parsed.hostname.encode("idna").decode("ascii")
     try:
-        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        addresses = _resolve(host)
     except socket.gaierror as error:
         raise requests.ConnectionError("Document destination lookup failed") from error
     # Preserve resolver order while removing duplicate socket addresses.
@@ -48,8 +130,13 @@ def fetch_document(session: requests.Session, url: str) -> requests.Response:
 def _fetch_document(session: requests.Session, url: str) -> requests.Response:
     host, addresses = public_https_url(url)
     addresses = addresses[:MAX_CONNECT_ATTEMPTS]
+    deadline = time.monotonic() + MAX_DOCUMENT_SECONDS
 
     class PinnedConnection(HTTPSConnection):
+        def connect(self):
+            super().connect()
+            self.sock = _DeadlineSocket(self.sock, deadline)
+
         def _new_conn(self):
             # Keep the original hostname for TLS/SNI and certificate checking,
             # while connecting to the address that passed the policy check.
@@ -105,6 +192,8 @@ def _fetch_document(session: requests.Session, url: str) -> requests.Response:
                 response.raise_for_status()
             body = bytearray()
             for chunk in response.iter_content(64 * 1024):
+                if time.monotonic() >= deadline:
+                    raise requests.Timeout("Document read deadline exceeded")
                 body.extend(chunk)
                 if len(body) > MAX_DOCUMENT_BYTES:
                     raise ValueError("Document exceeds size limit")

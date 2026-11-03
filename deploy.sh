@@ -117,7 +117,7 @@ else
     if [ ! -e "${DIRECT_LOG_DIR}" ]; then
         mkdir -m 0700 -- "${DIRECT_LOG_DIR}"
     fi
-    if [ ! -d "${DIRECT_LOG_DIR}" ] || [ "$(stat -c %u -- "${DIRECT_LOG_DIR}")" != "$(id -u)" ]; then
+    if [ ! -d "${DIRECT_LOG_DIR}" ] || [ -z "$(find "${DIRECT_LOG_DIR}" -maxdepth 0 -user "$(id -u)" -print)" ]; then
         echo "ERROR: log directory must be owned by the deployment user" >&2
         exit 1
     fi

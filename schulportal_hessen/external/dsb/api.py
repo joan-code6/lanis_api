@@ -6,12 +6,12 @@ import re
 import threading
 from datetime import date
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
-from schulportal_hessen.tools.safe_fetch import MAX_DOCUMENT_BYTES, fetch_document
+from schulportal_hessen.tools.safe_fetch import MAX_DOCUMENT_BYTES, fetch_document, validate_document_url
 
 
 BASE_DSB_URL = "https://www.dsbmobile.de/"
@@ -263,13 +263,21 @@ def _find_getdata_endpoint(session: requests.Session) -> Optional[str]:
         return None
 
 
+def _supported_plan_url(detail: Any) -> bool:
+    try:
+        validate_document_url(detail)
+    except ValueError:
+        return False
+    return True
+
+
 def _extract_plan_urls_from_menu(items: List[Dict], urls: List[str]) -> None:
     for item in items:
         childs = item.get("Childs", [])
         if childs:
             _extract_plan_urls_from_menu(childs, urls)
         detail = item.get("Detail", "")
-        if detail and detail.startswith("http"):
+        if _supported_plan_url(detail):
             urls.append(detail)
 
         root = item.get("Root", {})
@@ -277,13 +285,13 @@ def _extract_plan_urls_from_menu(items: List[Dict], urls: List[str]) -> None:
             root_childs = root.get("Childs", [])
             for rc in root_childs:
                 rc_detail = rc.get("Detail", "")
-                if rc_detail and rc_detail.startswith("http"):
+                if _supported_plan_url(rc_detail):
                     urls.append(rc_detail)
 
                 rc_childs = rc.get("Childs", [])
                 for rcc in rc_childs:
                     rcc_detail = rcc.get("Detail", "")
-                    if rcc_detail and rcc_detail.startswith("http"):
+                    if _supported_plan_url(rcc_detail):
                         urls.append(rcc_detail)
 
 
@@ -518,9 +526,9 @@ def dsb_get_plan_urls(
                         for rc in root.get("Childs", []):
                             for rcc in rc.get("Childs", []):
                                 detail = rcc.get("Detail", "")
-                                if (detail and detail.endswith(".htm")
-                                        and urlsplit(detail).scheme == "https"
-                                        and urlsplit(detail).hostname):
+                                if not isinstance(detail, str) or not detail.endswith(".htm"):
+                                    continue
+                                if _supported_plan_url(detail):
                                     html_plan_url = detail
 
             self.dsb_plan_urls = plan_urls
