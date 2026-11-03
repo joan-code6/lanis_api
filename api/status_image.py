@@ -33,8 +33,12 @@ def render_status_image(data: dict) -> bytes:
         'unknown': ('Aktueller Status unbekannt', '#a3a3a3'),
     }
     live_label, live_color = live_labels.get(state, live_labels['unknown'])
-    draw.ellipse((64 * scale, 144 * scale, 76 * scale, 156 * scale), fill=live_color)
-    draw.text((88 * scale, 137 * scale), live_label, fill=live_color, font=small_font, anchor='lt')
+    text_top = 137 * scale
+    bounds = draw.textbbox((0, 0), live_label, font=small_font, anchor='lt')
+    text_center = text_top + (bounds[1] + bounds[3]) / 2
+    dot_radius = 6 * scale
+    draw.ellipse((64 * scale, text_center - dot_radius, 76 * scale, text_center + dot_radius), fill=live_color)
+    draw.text((88 * scale, text_top), live_label, fill=live_color, font=small_font, anchor='lt')
     draw.text((64 * scale, 72 * scale), 'Verfügbarkeit', fill='#fafafa', font=font, anchor='lt')
     percent = data.get('summary_windows', {}).get('90d', {}).get('uptime_percent')
     label = '—' if percent is None else f'{percent:.2f}'.replace('.', ',') + ' %'
