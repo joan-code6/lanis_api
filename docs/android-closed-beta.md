@@ -39,8 +39,8 @@ This agent changed no Play Console/group settings and deployed nothing.
    internal testing may need to leave the internal test first to verify closed access.
 6. Only after those checks, enable recruitment through the normal approved config
    rollout. Confirm Android-browser invitation after dashboard load and native
-   Capacitor exclusion. Both links remain available in Settings even while disabled,
-   with explicit wording that the closed release is not yet available.
+   Capacitor exclusion. The invitation is dashboard-only; beta content is not
+   shown in Settings. Disabled recruitment displays no invitation.
 
 ## Ongoing operation
 
@@ -52,8 +52,9 @@ Internal testing does not satisfy that requirement. Link clicks, invitation dism
 and self-confirmation must never be counted as membership, enrollment or installation.
 
 Showing an invitation or selecting Später stores a seven-day cooldown. Nicht mehr
-anzeigen stores a permanent invitation preference. Settings always retains both
-links. Account export includes these preferences; account deletion removes them.
+anzeigen stores a permanent invitation preference. The two links appear in the
+dashboard invitation only. Account export includes these preferences; account
+deletion removes them.
 Disable recruitment with `ANDROID_BETA_ENABLED=false` if access becomes unavailable.
 
 Google references:
