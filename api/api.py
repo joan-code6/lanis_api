@@ -5670,6 +5670,24 @@ async def _whatsapp_command_response(
     return f"{response}\n\nIn LANIS öffnen: {config.ui_base_url}{deep_links[intent]}"
 
 
+@app.get("/status/incident/{identifier}", tags=["Public status"])
+async def public_incident(identifier: str):
+    from .public_status import get_public_incident
+    result = await get_public_incident(identifier)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return result
+
+
+@app.get("/status/image.png", tags=["Public status"])
+async def public_status_image():
+    from .public_status import get_status_image, status_snapshot_max_age
+    from fastapi.responses import Response
+    data = await get_public_status()
+    image_bytes = await get_status_image(data)
+    return Response(image_bytes, media_type="image/png", headers={"Cache-Control": f"public, max-age={status_snapshot_max_age(data)}"})
+
+
 class BetaChange(BaseModel):
     action: Literal["presented", "later", "dismiss"]
 
