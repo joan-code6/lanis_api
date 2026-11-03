@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict
 
-from . import auth_db, feedback_db, agent_store
+from . import auth_db, feedback_db, agent_store, beta
 from .metrics import user_metrics_db
 from .identity import canonicalize_user_id
 
@@ -160,6 +160,7 @@ async def build_account_export(user_id: str) -> dict:
 
     cached_data = await sessions.export_user_cache(user_id)
     return {
+        "android_beta": await beta.get(user_id),
         "schema_version": 1,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "account": credential,

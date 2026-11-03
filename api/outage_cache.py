@@ -578,10 +578,32 @@ class OutageCacheRoute(APIRoute):
             response = None
             failure = None
             try:
-                try:
-                    response = await original(request)
-                except Exception as exc:  # noqa: BLE001 - preserve FastAPI handling
-                    failure = exc
+                for attempt in range(2):
+                    try:
+                        response = await original(request)
+                        failure = None
+                    except Exception as exc:  # noqa: BLE001 - preserve FastAPI handling
+                        failure = exc
+                    if not current.expired_sessions:
+                        break
+                    from .api import sessions
+
+                    await sessions.discard_expired_upstream_sessions(
+                        identity.user_id, current.expired_sessions
+                    )
+                    if attempt == 1:
+                        failure = HTTPException(
+                            status_code=503,
+                            detail="Schulportal session could not be restored — please retry",
+                            headers={"Retry-After": "5"},
+                        )
+                        break
+                    # Recheck local revocation before logging in or returning data.
+                    request.state.lanis_auth = await local_auth_dependency(token)
+                    current.expired_sessions.clear()
+                    current.security_failure = False
+                    current.unavailable = False
+                    current.cached_timestamps.clear()
             finally:
                 observation.reset(reset)
             # Invalid JWT/session, permissions, TLS failures and ambiguous failures
