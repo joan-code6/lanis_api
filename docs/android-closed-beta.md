@@ -43,8 +43,10 @@ This agent changed no Play Console/group settings and deployed nothing.
 6. Only after those checks, enable recruitment through the normal approved config
    rollout. Confirm Android-browser invitation after dashboard load and native
    Capacitor exclusion. Settings → App & Hilfe offers a small Beta ansehen card
-   that opens the same dialog manually, without resetting permanent dismissal.
-   Disabled recruitment displays no invitation and disables the card button.
+   that opens read-only instructions manually, without resetting permanent dismissal.
+   The manual entry works even before the preferences API is deployed; a short
+   popup status note distinguishes unknown/disabled availability. It never writes
+   preferences. Disabled recruitment displays no automatic invitation.
 
 ## Ongoing operation
 
