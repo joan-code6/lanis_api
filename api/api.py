@@ -5754,10 +5754,10 @@ async def public_incident(identifier: str):
 
 @app.get("/status/image.png", tags=["Public status"])
 async def public_status_image():
-    from .status_image import render_status_image
+    from .public_status import get_status_image
     from fastapi.responses import Response
     data = await get_public_status()
-    image_bytes = await run_in_threadpool(render_status_image, data)
+    image_bytes = await get_status_image(data)
     return Response(image_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=30"})
 
 

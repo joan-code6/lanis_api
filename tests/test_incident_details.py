@@ -87,3 +87,60 @@ def test_png_renderer_runs_outside_event_loop(monkeypatch):
     response = asyncio.run(routes.public_status_image())
     assert response.body == b"example-png"
     assert response.media_type == "image/png"
+
+
+def test_invalid_incident_id_does_not_read_history(monkeypatch):
+    class Database:
+        async def get_uptime_checks(self, **kwargs):
+            raise AssertionError("Malformed ID must not read history")
+    monkeypatch.setattr(uptime, "user_metrics_db", Database())
+    for identifier in ("invalid", "20261301T100000000000Z", "20261101T100000Z"):
+        assert asyncio.run(public_status.get_public_incident(identifier)) is None
+
+
+def test_discord_sender_posts_incident_link(monkeypatch):
+    posted = []
+    class Response:
+        def raise_for_status(self): pass
+    def post(url, **kwargs):
+        posted.append(kwargs["json"]["content"])
+        return Response()
+    monkeypatch.setattr(uptime.requests, "post", post)
+    uptime._send_discord_alert("https://discord.example/test", {"incident_id": "20261101T100200000000Z"}, False)
+    assert "/status/incident/20261101T100200000000Z" in posted[0]
+
+
+def test_image_requests_coalesce_per_snapshot(monkeypatch):
+    import sys, types
+    rendered = []
+    module = types.ModuleType("api.status_image")
+    def render(snapshot):
+        rendered.append(snapshot)
+        return b"png"
+    module.render_status_image = render
+    monkeypatch.setitem(sys.modules, "api.status_image", module)
+    monkeypatch.setattr(public_status, "_image_snapshot", None)
+    monkeypatch.setattr(public_status, "_image_lock", asyncio.Lock())
+    async def scenario():
+        snapshot = {}
+        assert await asyncio.gather(*(public_status.get_status_image(snapshot) for _ in range(4))) == [b"png"] * 4
+        assert len(rendered) == 1
+        await public_status.get_status_image({})
+        assert len(rendered) == 2
+    asyncio.run(scenario())
+
+
+def test_history_failure_still_delivers_discord_alert(monkeypatch):
+    sent = []
+    class Database:
+        async def get_uptime_alert_state_details(self): return False, None
+        async def get_uptime_alert_deliveries(self, **kwargs): return []
+        async def get_uptime_checks(self, **kwargs): raise RuntimeError("read failed")
+        async def set_uptime_alert_state(self, value): pass
+        async def record_uptime_alert_delivery(self, *args): pass
+    monkeypatch.setattr(uptime, "user_metrics_db", Database())
+    monkeypatch.setattr(uptime, "_discord_webhook_url", lambda: "https://discord.example/test")
+    monkeypatch.setattr(uptime, "_send_discord_alert", lambda url, check, recovered: sent.append(check))
+    check = {"status": "down"}
+    asyncio.run(uptime._notify_discord_on_transition(check))
+    assert sent == [check]

@@ -569,6 +569,12 @@ async def get_public_status() -> dict[str, Any]:
 
 
 async def get_public_incident(identifier: str) -> dict[str, Any] | None:
+    try:
+        parsed = datetime.strptime(identifier, "%Y%m%dT%H%M%S%fZ")
+        if uptime.incident_id(parsed.isoformat()) != identifier:
+            return None
+    except (ValueError, TypeError):
+        return None
     rows = await uptime.user_metrics_db.get_uptime_checks(limit=-1)
     now = uptime._utcnow().replace(tzinfo=timezone.utc)
     checks = [check for _, check in _project_observations(rows, now)]
@@ -579,3 +585,19 @@ async def get_public_incident(identifier: str) -> dict[str, Any] | None:
                 and check["checked_at"] <= (incident["resolved_at"] or incident["last_checked_at"])]
             return incident
     return None
+
+
+_image_lock = asyncio.Lock()
+_image_snapshot = None
+_image_bytes = None
+
+
+async def get_status_image(snapshot: dict) -> bytes:
+    from fastapi.concurrency import run_in_threadpool
+    from .status_image import render_status_image
+    global _image_snapshot, _image_bytes
+    async with _image_lock:
+        if _image_snapshot is not snapshot or _image_bytes is None:
+            rendered = await run_in_threadpool(render_status_image, snapshot)
+            _image_snapshot, _image_bytes = snapshot, rendered
+        return _image_bytes
