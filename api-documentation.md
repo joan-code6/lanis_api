@@ -1479,3 +1479,13 @@ errors, target URLs, or private diagnostics are published. Monitor credentials
 and cadence retain their existing `LANIS_UPTIME_*` configuration; no additional
 production setup is performed by this endpoint. `/health` reports only current
 LANIS API reachability. LANIS's historical availability is not measured here.
+
+## Android closed beta recruitment preferences
+
+`GET /settings/android-beta` returns configurable availability, group/about and
+closed-test URLs, plus the account's `dismissed`, `prompt_after` and
+`invitation_due` preferences. `POST /settings/android-beta` accepts only `action`:
+`presented` or `later` starts a seven-day cooldown; `dismiss` suppresses invitations.
+Uses `X-Session-Token`; ownership comes exclusively from the authenticated account.
+No emails, Google membership, Play enrollment, installs or link clicks are stored.
+No admin beta endpoints remain. See `docs/android-closed-beta.md`.

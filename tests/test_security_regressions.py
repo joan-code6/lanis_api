@@ -1,7 +1,6 @@
 """Regression coverage for the October 2026 security findings."""
 
 import asyncio
-import json
 import os
 import socket
 import subprocess
@@ -12,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 import requests
-from bs4 import BeautifulSoup
 
 from api import api as app
 from api import auth_db
@@ -398,16 +396,28 @@ def test_dsb_rejects_nested_expansion_and_excessive_output():
     assert result["tables"][0]["rows"] == [{"Klasse": "10A"}]
 
 
-def test_script_json_keeps_url_roundtrip_without_html_terminators():
-    url = 'https://app.example/</ScRiPt><script>alert(1)</script>?q="&ä'
-    encoded = app._html_script_json(url)
-    assert "<" not in encoded
-    assert json.loads(encoded) == url
-
-
-def test_launch_page_keeps_untrusted_labels_and_redirects_as_data(monkeypatch):
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "https://app.example/</ScRiPt><script>alert(1)</script>",
+        'https://app.example/start?q="&value=lesson',
+    ],
+)
+def test_launch_redirect_never_interpolates_labels_or_urls_into_html(
+    monkeypatch, destination
+):
     name = '<img src=x onerror="alert(1)">'
-    url = "https://app.example/</ScRiPt><script>alert(1)</script>"
+    requests_sent = []
+
+    def get(url, **kwargs):
+        requests_sent.append(url)
+        assert kwargs["allow_redirects"] is False
+        return SimpleNamespace(
+            is_redirect=True,
+            headers={"Location": destination},
+            raise_for_status=lambda: None,
+            close=lambda: None,
+        )
 
     async def identity(_token):
         return SimpleNamespace(user_id="user")
@@ -415,7 +425,14 @@ def test_launch_page_keeps_untrusted_labels_and_redirects_as_data(monkeypatch):
     async def restore(_user):
         return SimpleNamespace(
             client=SimpleNamespace(
-                get_available_modules=lambda: [{"name": name, "url": "portal"}]
+                BASE_START_URL="https://start.schulportal.hessen.de",
+                get_apps=lambda: {
+                    "success": True,
+                    "data": {
+                        "entrys": [{"Name": name, "link": "index.php?a=f&e=tool"}]
+                    },
+                },
+                session=SimpleNamespace(get=get),
             ),
             school_id="school",
             username="user",
@@ -426,18 +443,16 @@ def test_launch_page_keeps_untrusted_labels_and_redirects_as_data(monkeypatch):
 
     monkeypatch.setattr(app, "local_auth_dependency", identity)
     monkeypatch.setattr(app.sessions, "_get_or_create_schulportal_client", restore)
-    monkeypatch.setattr(
-        app, "_build_launch_urls", lambda *_: {"cookie_url": url, "callback_url": url}
-    )
     monkeypatch.setattr(app.user_metrics_db, "record_module_open", metrics)
     response = asyncio.run(
         app.app_launch(name, None, token="token", x_session_token=None)
     )
-    document = BeautifulSoup(response.body, "html.parser")
-    assert document.title.get_text() == name
-    assert document.find("img") is None
-    assert len(document.find_all("script")) == 1
-    assert "</script>" not in document.script.string.lower()
+    assert response.status_code == 303
+    assert response.body == b""
+    assert response.headers["location"] == destination
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert requests_sent == ["https://start.schulportal.hessen.de/index.php?a=f&e=tool"]
 
 
 def test_deploy_log_does_not_follow_predictable_symlink(tmp_path):

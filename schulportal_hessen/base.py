@@ -261,13 +261,10 @@ class SchulportalHessenAPI:
                     next_url = urljoin(current_url, location)
                     next_host = urlparse(next_url).hostname or ""
 
-                    # In an OAuth flow: return the callback URL that
-                    # contains the authorization code — visiting it
-                    # in the browser sets the target app's auth cookies
-                    if seen_oauth and "code=" in next_url and next_host:
-                        portal_base = "schulportal.hessen.de"
-                        if portal_base not in next_host and "vidis" not in next_host.lower():
-                            return next_url
+                    # OAuth state and cookies must be created by the browser.
+                    # Do not follow or cache one-time authorization callbacks.
+                    if seen_oauth or any(ind in next_url.lower() for ind in oauth_indicators):
+                        return url
 
                     current_url = next_url
                 else:

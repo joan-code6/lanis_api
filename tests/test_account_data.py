@@ -3,7 +3,7 @@ import json
 
 import aiosqlite
 
-from api import account_data, auth_db
+from api import account_data, auth_db, beta
 from api.admin import router as admin_router
 from api.metrics.user_metrics_db import UserMetricsDB
 
@@ -33,6 +33,8 @@ def test_account_export_excludes_authentication_secrets(tmp_path, monkeypatch):
             await db.commit()
         await auth_db.save_cache_sync_state("5201:student", 7, 0, 0)
 
+        await beta.change("5201:student", "later")
+        seeded_beta = await beta.change("5201:student", "dismiss")
         exported = await account_data.build_account_export("5201:student")
         serialized = json.dumps(exported)
 
@@ -43,6 +45,8 @@ def test_account_export_excludes_authentication_secrets(tmp_path, monkeypatch):
         assert exported["cached_downloads"] == [{"file_hash": "mine", "filename": "mine.pdf", "content_type": "application/pdf"}]
         assert exported["cache_sync"]["complete"] is True
         assert exported["cache_sync"]["attempted"] == 7
+        assert exported["android_beta"]["dismissed"] is True
+        assert exported["android_beta"]["prompt_after"] == seeded_beta["prompt_after"]
         assert "private-source-url" not in serialized
         assert "other.pdf" not in serialized
         assert "secret-password" not in serialized
