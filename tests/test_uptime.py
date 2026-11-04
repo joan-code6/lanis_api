@@ -2,6 +2,9 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+import requests
+
 from api import uptime
 from api.metrics.user_metrics_db import UserMetricsDB
 
@@ -9,6 +12,7 @@ from api.metrics.user_metrics_db import UserMetricsDB
 class FakeResponse:
     def __init__(self, status_code: int):
         self.status_code = status_code
+        self.text = ""
 
     def close(self):
         pass
@@ -60,6 +64,90 @@ def configure_monitor(monkeypatch):
     monkeypatch.setenv("LANIS_UPTIME_SCHOOL_ID", "5201")
     monkeypatch.setenv("LANIS_UPTIME_USERNAME", "monitor-user")
     monkeypatch.setenv("LANIS_UPTIME_PASSWORD", "monitor-password")
+
+
+@pytest.mark.parametrize("status_code", [200, 503])
+def test_probe_recognizes_real_maintenance_page_without_login(monkeypatch, status_code):
+    configure_monitor(monkeypatch)
+    response = FakeResponse(status_code)
+    response.text = (Path(__file__).parent / "fixtures/sph_maintenance.html").read_text(encoding="utf-8")
+    closed = []
+    response.close = lambda: closed.append(True)
+
+    def get(session, url, **kwargs):
+        assert url == uptime.PORTAL_START_URL
+        return response
+
+    def unexpected_login(*args):
+        raise AssertionError("Maintenance must skip login")
+
+    monkeypatch.setattr(FakeSession, "get", get)
+    monkeypatch.setattr(FakeClient, "login", unexpected_login)
+    client_closed = []
+    monkeypatch.setattr(FakeClient, "close", lambda self: client_closed.append(True))
+    monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
+    result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
+    assert result["status"] == "down"
+    assert result["is_available"] is False
+    assert result["error"] == "maintenance"
+    assert result["status_code"] == status_code
+    assert [item["status"] for item in result["features"]] == ["skipped", "skipped"]
+    assert closed == [True]
+    assert client_closed == [True]
+
+
+@pytest.mark.parametrize("html", [
+    "<h1>WARTUNGSARBEITEN</h1>",
+    "<h1> <span>Wartungsarbeiten</span> </h1>",
+    "<title>Schulportal Hessen - Wartungsmodus</title>",
+])
+def test_maintenance_markers(html):
+    assert uptime._is_maintenance_page(html)
+
+
+def test_maintenance_link_on_normal_page_is_not_an_outage():
+    assert not uptime._is_maintenance_page(
+        '<title>Schulauswahl</title><h1>Institutionswahl</h1>'
+        '<a href="/maintenance">Wartungsarbeiten</a>'
+    )
+
+
+@pytest.mark.parametrize("error", [requests.Timeout, requests.ConnectionError, requests.RequestException])
+def test_preflight_failure_falls_back_to_authenticated_checks(monkeypatch, error):
+    configure_monitor(monkeypatch)
+    original_get = FakeSession.get
+
+    def get(session, url, **kwargs):
+        if url == uptime.PORTAL_START_URL:
+            raise error()
+        return original_get(session, url, **kwargs)
+
+    monkeypatch.setattr(FakeSession, "get", get)
+    monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
+    assert uptime._probe_portal(("5201", "monitor-user", "monitor-password"))["status"] == "up"
+
+
+def test_probe_resumes_authenticated_checks_after_maintenance(monkeypatch):
+    configure_monitor(monkeypatch)
+    maintenance_response = FakeResponse(200)
+    maintenance_response.text = "<h1>Wartungsarbeiten</h1>"
+    pages = iter([maintenance_response, FakeResponse(200)])
+    original_get = FakeSession.get
+
+    def get(session, url, **kwargs):
+        if url == uptime.PORTAL_START_URL:
+            return next(pages)
+        return original_get(session, url, **kwargs)
+
+    monkeypatch.setattr(FakeSession, "get", get)
+    monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
+    monkeypatch.setattr(FakeClient, "login_arguments", None)
+    assert uptime._probe_portal(("5201", "monitor-user", "monitor-password"))["error"] == "maintenance"
+    assert FakeClient.login_arguments is None
+    recovered = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
+    assert recovered["status"] == "up"
+    assert recovered["error"] is None
+    assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
 
 
 def test_probe_runs_login_and_opens_all_modules(monkeypatch):
@@ -224,3 +312,35 @@ def test_discord_alerts_only_on_issue_and_recovery_transitions(monkeypatch, tmp_
         assert await database.get_uptime_alert_state() is False
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("heading", ["Wartungsarbeiten abgeschlossen", "Keine Wartungsarbeiten", "Wartungsmodus beendet"])
+def test_completed_or_negated_maintenance_is_not_active(heading):
+    assert not uptime._is_maintenance_page(f"<title>{heading}</title><h1>{heading}</h1>")
+
+
+def _slow_preflight_child(connection, credentials):
+    import time
+
+    def slow_get(self, url, **kwargs):
+        time.sleep(30)
+        raise AssertionError("worker should have been terminated")
+
+    FakeSession.get = slow_get
+    uptime.SchulportalHessenAPI = FakeClient
+    connection.send(uptime._probe_portal(credentials))
+    connection.close()
+
+
+def test_slow_maintenance_preflight_is_reaped(monkeypatch):
+    import multiprocessing
+    import time
+
+    monkeypatch.setattr(uptime, "_probe_child", _slow_preflight_child)
+    monkeypatch.setenv("LANIS_UPTIME_PROBE_DEADLINE_SECONDS", "5")
+    children = {child.pid for child in multiprocessing.active_children()}
+    started = time.monotonic()
+    check = uptime._isolated_probe(("5201", "monitor-user", "monitor-password"))
+    assert check["error"] == "probe_deadline"
+    assert time.monotonic() - started < 12
+    assert {child.pid for child in multiprocessing.active_children()} == children
