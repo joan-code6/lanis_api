@@ -424,6 +424,7 @@ class AppearancePreferencesRequest(BaseModel):
 class DashboardPreferencesRequest(BaseModel):
     pinned_modules: Optional[List[str]] = None
     hidden_modules: Optional[List[str]] = None
+    module_order: Optional[List[str]] = None
     view_mode: Optional[Literal["grid", "list"]] = None
     show_search: Optional[bool] = None
     show_subtitle: Optional[bool] = None
@@ -434,7 +435,7 @@ class DashboardPreferencesRequest(BaseModel):
     notification_show_read: Optional[bool] = None
     notification_limit: Optional[Literal[5, 10, 20, 50]] = None
 
-    @field_validator("pinned_modules", "hidden_modules")
+    @field_validator("pinned_modules", "hidden_modules", "module_order")
     def validate_module_preferences(cls, value):
         if value is not None and len(value) > 50:
             raise ValueError("At most 50 modules are allowed in a dashboard preference")
@@ -2527,7 +2528,7 @@ async def update_account_preferences(
     )
     dashboard = updates.get("dashboard")
     if isinstance(dashboard, dict):
-        for field in ("pinned_modules", "hidden_modules"):
+        for field in ("pinned_modules", "hidden_modules", "module_order"):
             if field not in dashboard:
                 continue
             cleaned_modules: List[str] = []

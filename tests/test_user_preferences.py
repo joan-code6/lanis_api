@@ -81,6 +81,7 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
     assert saved["dashboard"] == {
         "pinned_modules": ["Nachrichten"],
         "hidden_modules": [],
+        "module_order": [],
         "view_mode": "grid",
         "show_search": True,
         "show_subtitle": True,
@@ -388,3 +389,10 @@ def test_saved_sidebar_order_includes_new_defaults_without_losing_customization(
     ]
     assert preferences["sidebar"]["hidden_items"] == ["messages"]
     assert auth_db._decode_user_preferences(json.dumps(preferences), "5201:student") == preferences
+
+
+def test_dashboard_module_order_is_accepted_and_bounded():
+    order = ["Nachrichten", "Kalender"]
+    assert DashboardPreferencesRequest(module_order=order).model_dump(exclude_none=True) == {"module_order": order}
+    with pytest.raises(ValueError):
+        DashboardPreferencesRequest(module_order=["module"] * 51)
