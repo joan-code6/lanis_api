@@ -122,6 +122,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     "dashboard": {
         "pinned_modules": [],
         "hidden_modules": [],
+        "module_order": [],
         "view_mode": "grid",
         "show_search": True,
         "show_subtitle": True,
