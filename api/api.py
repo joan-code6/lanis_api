@@ -2903,7 +2903,10 @@ async def register_notification_subscription(
             status_code=422,
             detail="Push subscription keys are invalid",
         )
-    await save_push_subscription(auth.user_id, subscription, auth.session_id)
+    try:
+        await save_push_subscription(auth.user_id, subscription, auth.session_id)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     return {"success": True}
 
 
@@ -4371,7 +4374,7 @@ def _normalize_whatsapp_action_payload(
             "entry_id": _agent_string(payload, "entry_id", required=True, maximum=200),
             "done": done,
         }
-    if action == "mark_message_read":
+    if action in {"mark_message_read", "open_message"}:
         return {
             "conversation_id": _agent_string(
                 payload, "conversation_id", required=True, maximum=300
@@ -4630,11 +4633,16 @@ def _whatsapp_agent_tools(
     async def conversation(arguments: Dict[str, Any]) -> Any:
         if not await previews_enabled():
             return {"success": False, "error": "Message previews are disabled by the user"}
-        result = await get_conversation(
-            _agent_string(arguments, "conversation_id", required=True, maximum=300),
-            _agent_integer(arguments, "last", default=0, minimum=0, maximum=10000),
-            auth,
+        result = await sessions.get_cached(
+            auth.user_id, "/nachrichten/conversation",
+            _make_param_key({
+                "conversation_id": _agent_string(arguments, "conversation_id", required=True, maximum=300),
+                "last": _agent_integer(arguments, "last", default=0, minimum=0, maximum=10000),
+            }),
         )
+        if result is None:
+            return {"success": False, "error": "MESSAGE_NOT_CACHED",
+                    "instruction": "Ask the user to open the message in LANIS or confirm open_message first"}
         if not await previews_enabled():
             return {"success": False, "error": "Message previews were disabled during the request"}
         turn_state["preview_data_used"] = True
@@ -4728,6 +4736,7 @@ def _whatsapp_agent_tools(
             allowed = {
                 "mark_homework_done",
                 "mark_message_read",
+                "open_message",
                 "send_message",
                 "reply_message",
                 "submit_election",
@@ -4773,7 +4782,7 @@ def _whatsapp_agent_tools(
                 if str(payload.get("to") or "all") != "all":
                     return {"success": False, "error": "Reply recipient must be all participants"}
                 payload["_preview_conversation"] = conversation_labels.get(conversation_id, conversation_id)
-            if action == "mark_message_read":
+            if action in {"mark_message_read", "open_message"}:
                 conversation_id = payload.get("conversation_id")
                 if enforce_turn_target_verification and conversation_id not in conversation_labels:
                     return {"success": False, "error": "Load the conversation first so the thread can be verified"}
@@ -4833,7 +4842,7 @@ def _whatsapp_agent_tools(
         AgentTool("get_weekly_course_view", "Get the cross-course weekly overview.", empty, weekly),
         AgentTool("get_submissions", "Get the user's course submissions and their status.", empty, submissions),
         AgentTool("get_message_headers", "Get inbox headers and unread state. Personal previews are omitted unless enabled in WhatsApp settings.", _agent_object_schema({"type": string("Portal message filter; default All", 40), "last": integer("Pagination cursor", 0, 10000)}), message_headers),
-        AgentTool("get_conversation", "Read a complete message conversation. Only available when message previews are enabled.", _agent_object_schema({"conversation_id": string("Conversation ID from get_message_headers", 300), "last": integer("Pagination cursor", 0, 10000)}, ["conversation_id"]), conversation),
+        AgentTool("get_conversation", "Read cached message content without marking it read. On MESSAGE_NOT_CACHED, request confirmation using prepare_action open_message. Only available when message previews are enabled.", _agent_object_schema({"conversation_id": string("Conversation ID from get_message_headers", 300), "last": integer("Pagination cursor", 0, 10000)}, ["conversation_id"]), conversation),
         AgentTool("search_message_recipients", "Search Schulportal message recipients by name.", _agent_object_schema({"query": string("Name to search", 200)}, ["query"]), recipient_search),
         AgentTool("get_file_folder", "List a folder in Dateispeicher.", _agent_object_schema({"folder_id": integer("Folder ID; 0 is root", 0, 2_147_483_647)}), file_folder),
         AgentTool("search_files", "Search the user's Dateispeicher files.", _agent_object_schema({"query": string("Filename search", 300)}, ["query"]), file_search),
@@ -4846,7 +4855,7 @@ def _whatsapp_agent_tools(
             "Prepare a change for explicit user confirmation. Never claim it was executed. "
             "For send_message use recipients, subject, body. reply_message and mark_message_read require "
             "message previews to be enabled and the conversation to be loaded first; reply_message uses "
-            "conversation_id, body, to; mark_message_read uses conversation_id; mark_homework_done uses course_id, entry_id, done; "
+            "conversation_id, body, to; mark_message_read and open_message use conversation_id; open_message opens fresh contents and marks the conversation read; mark_homework_done uses course_id, entry_id, done; "
             "submit_election uses election_id, fields, selections; update_preferences uses the same nested "
             "preference fields shown by get_preferences.",
             _agent_object_schema(
@@ -4856,6 +4865,7 @@ def _whatsapp_agent_tools(
                         "enum": [
                             "mark_homework_done",
                             "mark_message_read",
+                            "open_message",
                             "send_message",
                             "reply_message",
                             "submit_election",
@@ -4932,6 +4942,9 @@ def _whatsapp_action_preview(action: str, payload: Dict[str, Any]) -> str:
             f"Antwort an {str(payload.get('to') or 'all')} in Unterhaltung {str(label)}:\n"
             f"{str(payload.get('body') or '')}"
         )
+    if action == "open_message":
+        label = payload.get("_preview_conversation") or payload.get("conversation_id") or "Unterhaltung"
+        return f"Unterhaltung {str(label)} öffnen und als gelesen markieren"
     if action == "mark_message_read":
         label = payload.get("_preview_conversation") or payload.get("conversation_id") or "Unterhaltung"
         return (
@@ -5119,6 +5132,11 @@ async def _execute_whatsapp_pending_action(
             course_id=_agent_string(payload, "course_id", required=True, maximum=200),
             entry_id=_agent_string(payload, "entry_id", required=True, maximum=200),
             done=payload["done"],
+        )
+    if action == "open_message":
+        return await get_conversation(
+            conversation_id=_agent_string(payload, "conversation_id", required=True, maximum=300),
+            last=0, auth=auth,
         )
     if action == "mark_message_read":
         return await mark_read(

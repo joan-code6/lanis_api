@@ -145,6 +145,8 @@ def _parse_room_plan(tbody: Any) -> List[List[Dict[str, Any]]]:
     header = thead.find("tr", recursive=False) if thead else None
     header_cells = (header or rows[0]).find_all(["td", "th"], recursive=False)
     day_count = max(len(header_cells) - 1, 0)
+    if len(rows) > 100 or day_count > 7 or len(rows) * day_count > 700:
+        raise ValueError("Timetable dimensions exceed supported limits")
     result: List[List[Dict[str, Any]]] = [[] for _ in range(day_count)]
     if not day_count:
         return result
@@ -176,6 +178,8 @@ def _parse_room_plan(tbody: Any) -> List[List[Dict[str, Any]]]:
                 row_span = max(int(cell.get("rowspan", "1") or "1"), 1)
             except (TypeError, ValueError):
                 row_span = 1
+            if row_span > len(rows) - row_index:
+                raise ValueError("Timetable rowspan exceeds remaining rows")
             for offset in range(row_span):
                 if row_index + offset < len(occupied):
                     occupied[row_index + offset][actual_day] = True
@@ -219,6 +223,8 @@ def _day_labels(tbody: Any) -> List[str]:
 
 def parse_timetable_html(html: str) -> Dict[str, Any]:
     """Parse a ``stundenplan.php`` response without making a request."""
+    if len(html.encode("utf-8")) > 2 * 1024 * 1024:
+        raise ValueError("Timetable exceeds size limit")
     soup = BeautifulSoup(html, "html.parser")
     tbody_all = soup.select_one("#all tbody")
     if not tbody_all:

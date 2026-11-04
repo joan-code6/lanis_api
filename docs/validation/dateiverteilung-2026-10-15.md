@@ -76,4 +76,4 @@ not validate a production deployment of these PRs or the failed login account.
 - Ruff passes for the module and its tests; `git diff --check` passes.
 - UI TypeScript check (`tsc --noEmit`) passes.
 - Nine filename decoding/fallback/path/control-character checks pass with
-  `node scripts/test-download-filename.cjs`.
+  a historical download-filename check (the scripts directory has since been removed).
