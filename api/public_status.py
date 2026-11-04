@@ -62,6 +62,32 @@ def _check(
         "features": [],
     }
     evidence = row.get("monitoring")
+    if isinstance(evidence, dict):
+        rounds = []
+        labels = {}
+        for round_data in (evidence.get("rounds") or [])[:2]:
+            if not isinstance(round_data, dict):
+                continue
+            results = []
+            for position, account in enumerate((round_data.get("results") or [])[:4]):
+                if not isinstance(account, dict):
+                    continue
+                # Labels only link results inside this observation, never real identities.
+                source = str(account.get("account") or f"missing-{len(rounds)}-{position}")
+                label = labels.setdefault(source, f"Testkonto {len(labels) + 1}")
+                results.append({
+                    "label": label,
+                    "status": account.get("status") if account.get("status") in {"up", "down", "degraded"} else "unknown",
+                    "features": [{"name": name, "status": next((item.get("status")
+                        for item in account.get("features") or []
+                        if isinstance(item, dict) and item.get("name") == name
+                        and item.get("status") in {"up", "down", "degraded"}), "unknown")}
+                        for name in ("login", "modules")],
+                })
+            if results:
+                rounds.append({"phase": "initial" if not rounds else "confirmation", "accounts": results})
+        if rounds:
+            result["account_checks"] = rounds
     isolated_account_failure = False
     if isinstance(evidence, dict):
         isolated_account_failure = (
