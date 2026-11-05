@@ -497,12 +497,12 @@ def test_school_tool_holds_account_lifecycle_lease(environment, monkeypatch):
         (403, "SCHOOL_SESSION_EXPIRED"),
         (500, "SCHOOL_UNAVAILABLE"),
         (503, "SCHOOL_UNAVAILABLE"),
-        ("unexpected", "SCHOOL_UNAVAILABLE"),
+        ("unexpected", "INTERNAL_ERROR"),
     ],
 )
 @pytest.mark.parametrize("write", [False, True])
 def test_school_tool_error_recovery(
-    environment, monkeypatch, failure, expected_error, write
+    environment, monkeypatch, caplog, failure, expected_error, write
 ):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -534,7 +534,13 @@ def test_school_tool_error_recovery(
 
         result = await agent_mcp.run("timetable:write", fail, write=write)
         assert result["success"] is False
-        if write and expected_error == "SCHOOL_UNAVAILABLE":
+        if expected_error in ("SCHOOL_UNAVAILABLE", "INTERNAL_ERROR"):
+            assert result["diagnostics"]["stage"] == "tool_execution"
+            assert result["error_id"] in caplog.text
+            assert "private session internals" not in caplog.text
+            assert "private session internals" not in str(result)
+            assert "fail" in caplog.text
+        if write and expected_error in ("SCHOOL_UNAVAILABLE", "INTERNAL_ERROR"):
             assert result["error"] == "OUTCOME_UNKNOWN"
             assert "Verify the existing result in LANIS first" in result["next_step"]
             assert "A further write requires a confirmed need" in result["next_step"]
@@ -564,7 +570,7 @@ def test_school_tool_error_recovery(
             elif failure == "unexpected":
                 assert (
                     result["next_step"]
-                    == "Explain that school data is temporarily unavailable and try reading it later."
+                    == "Explain that LANIS encountered an internal error, report the diagnostic ID and stage, and do not claim the school portal is down."
                 )
             else:
                 assert result["next_step"] == (
