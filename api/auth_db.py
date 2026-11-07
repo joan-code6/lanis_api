@@ -2108,8 +2108,10 @@ async def save_user_preferences(
             homework_update = updates.get("homework")
             if isinstance(homework_update, dict):
                 if "hide_completed_in_overview" in homework_update:
+                    display = merged["homework"].get("completed_display")
                     merged["homework"]["completed_display"] = (
-                        "hidden" if homework_update["hide_completed_in_overview"] else "green"
+                        "hidden" if homework_update["hide_completed_in_overview"]
+                        else display if display in {"orange", "green"} else "green"
                     )
                 elif "completed_display" in homework_update:
                     merged["homework"]["hide_completed_in_overview"] = homework_update["completed_display"] == "hidden"

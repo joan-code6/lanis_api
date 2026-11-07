@@ -433,3 +433,19 @@ def test_appearance_accepts_current_and_legacy_colors(color):
 def test_appearance_rejects_invalid_colors(color):
     with pytest.raises(ValidationError):
         AppearancePreferencesRequest(theme_color=color)
+
+
+def test_homework_orange_survives_preferences_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+    asyncio.run(auth_db.initialize())
+    user_id = '5201:student'
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, {'homework': {'completed_display': 'orange'}}))
+    assert saved['homework'] == {'completed_display': 'orange', 'hide_completed_in_overview': False}
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, saved))
+    assert saved['homework']['completed_display'] == 'orange'
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, {'homework': {'hide_completed_in_overview': False}}))
+    assert saved['homework']['completed_display'] == 'orange'
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, {'homework': {'hide_completed_in_overview': True}}))
+    assert saved['homework']['completed_display'] == 'hidden'
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, {'homework': {'hide_completed_in_overview': False}}))
+    assert saved['homework']['completed_display'] == 'green'
