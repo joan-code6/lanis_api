@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from bs4 import BeautifulSoup
 from fastapi.concurrency import run_in_threadpool
 
 from schulportal_hessen.base import SchulportalHessenAPI
@@ -30,6 +31,7 @@ logger = logging.getLogger("uptime")
 
 UPTIME_SERVICE_NAME = "Schulportal Hessen"
 DEFAULT_UPTIME_URL = "https://login.schulportal.hessen.de/"
+PORTAL_START_URL = "https://start.schulportal.hessen.de/"
 DEFAULT_UPTIME_INTERVAL_SECONDS = 5 * 60
 DEFAULT_UPTIME_TIMEOUT_SECONDS = 15
 INCIDENT_UPTIME_INTERVAL_SECONDS = 15
@@ -284,46 +286,17 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
 
 def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool) -> None:
     """Send one uptime transition notification to the configured webhook."""
-    features = check.get("features") or []
-    feature_status = ", ".join(
-        f"{feature.get('name', 'feature')}: {feature.get('status', 'unknown')}"
-        for feature in features
-    )
-    if recovered:
-        content = (
-            f"✅ **{UPTIME_SERVICE_NAME} ist wieder erreichbar.**\n"
-            f"Alle synthetischen Checks sind wieder erfolgreich ({feature_status or 'keine Details'}).\n"
-            f"Wiederhergestellt: {check.get('checked_at', 'unbekannt')}\n"
-            f"Status-Seite: {_status_page_url()}"
-        )
-    else:
-        error_text = f" · Fehler: `{check['error']}`" if check.get("error") else ""
-        content = (
-            f"🚨 **{UPTIME_SERVICE_NAME} ist beeinträchtigt.**\n"
-            f"Status: `{check.get('status', 'unknown')}`"
-            f"{error_text}\n"
-            f"Checks: {feature_status or 'keine Details'}"
-            f"\nErkannt: {check.get('checked_at', 'unbekannt')}"
-            f"\nStatus-Seite: {_status_page_url()}"
-        )
+    title = "✅ Schulportal wieder erreichbar" if recovered else "🔴 Schulportal beeinträchtigt"
+    identifier = check.get("incident_id")
+    url = f"{_status_page_url()}/incident/{identifier}" if identifier else _status_page_url()
     evidence = check.get("monitoring") or {}
-    confidence = {
-        "confirmed": "bestätigt",
-        "limited": "begrenzte Aussagekraft",
-        "inconclusive": "unbestätigt",
-    }.get(evidence.get("confidence"))
-    scope = {
-        "account": "einzelnes Testkonto",
-        "school": "eine getestete Schule",
-        "multiple_schools": "mehrere getestete Schulen",
-        "sampled_accounts": "getestete Konten",
-        "unknown": "unbekannt",
-    }.get(evidence.get("scope"))
-    if confidence and scope:
-        content += f"\nBewertung: {confidence} · Umfang: {scope}"
+    confidence = {"confirmed": "bestätigt", "limited": "begrenzte Aussagekraft", "inconclusive": "unbestätigt"}.get(evidence.get("confidence"))
+    scope = {"account": "einzelnes Testkonto", "school": "eine getestete Schule", "multiple_schools": "mehrere getestete Schulen", "sampled_accounts": "getestete Konten", "unknown": "unbekannt"}.get(evidence.get("scope"))
+    context = f"\n{confidence} · {scope}" if confidence and scope and not recovered else ""
+    content = f"**{title}**{context}\n[Details ansehen]({url})"
     response = requests.post(
         webhook_url,
-        json={"content": content, "allowed_mentions": {"parse": []}},
+        json={"content": content, "allowed_mentions": {"parse": []}, "flags": 4},
         timeout=get_uptime_timeout_seconds(),
     )
     response.raise_for_status()
@@ -405,11 +378,19 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
                     pass
             break
 
+        notification = dict(check)
+        try:
+            from .public_status import _get_incident_index
+            incidents, _ = await _get_incident_index(refresh=True)
+            if incidents:
+                notification["incident_id"] = next(reversed(incidents))
+        except Exception:
+            logger.warning("Could not attach incident link to Schulportal uptime alert", exc_info=True)
         try:
             await run_in_threadpool(
                 _send_discord_alert,
                 webhook_url,
-                check,
+                notification,
                 not is_issue,
             )
         except Exception:
@@ -427,6 +408,16 @@ async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
                 transition, "delivered"
             )
         await user_metrics_db.set_uptime_alert_state(is_issue)
+
+
+def _is_maintenance_page(html: str) -> bool:
+    """Recognize the SPH maintenance document without matching footer links."""
+    soup = BeautifulSoup(html, "html.parser")
+    return any(
+        " ".join(element.get_text(" ", strip=True).casefold().split()).rsplit(" - ", 1)[-1]
+        in {"wartungsarbeiten", "wartungsmodus"}
+        for element in soup.find_all(["title", "h1"])
+    )
 
 
 def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, Any]:
@@ -453,6 +444,32 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
     _install_request_timeout(client)
     features: list[dict[str, Any]] = []
     try:
+        # The portal serves its maintenance page with HTTP 200. Check the
+        # page heading/title rather than treating a successful GET as healthy.
+        # A failed preflight must not replace the authenticated checks.
+        maintenance_response = None
+        try:
+            maintenance_response = client.session.get(PORTAL_START_URL)
+            maintenance = _is_maintenance_page(maintenance_response.text)
+        except requests.RequestException:
+            maintenance = False
+        finally:
+            if maintenance_response is not None:
+                maintenance_response.close()
+        if maintenance:
+            return {
+                "checked_at": checked_at,
+                "url": get_uptime_url(),
+                "status": "down",
+                "is_available": False,
+                "status_code": maintenance_response.status_code,
+                "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
+                "error": "maintenance",
+                "features": [
+                    _feature("login", "skipped", overall_started, error="maintenance"),
+                    _feature("modules", "skipped", overall_started, error="maintenance"),
+                ],
+            }
         login_started = time.perf_counter()
         try:
             # The client currently prints encryption setup diagnostics. Keep
@@ -490,6 +507,13 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
             logger.debug("Schulportal monitor client close failed", exc_info=True)
 
 
+def incident_id(value: str) -> str:
+    stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if stamp.tzinfo:
+        stamp = stamp.astimezone(timezone.utc)
+    return stamp.strftime("%Y%m%dT%H%M%S%fZ")
+
+
 def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = None) -> list[dict[str, Any]]:
     """Collapse consecutive observed impairments into incidents with recovery times."""
     now = now or _utcnow()
@@ -506,6 +530,7 @@ def group_uptime_incidents(checks: list[dict[str, Any]], now: datetime | None = 
             ]
             if active is None:
                 active = {
+                    "id": incident_id(checked_at),
                     "started_at": checked_at,
                     "checked_at": checked_at,
                     "resolved_at": None,
@@ -1068,6 +1093,10 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
         status = "up" if classification == "isolated" else observed_status
         check["status"] = status
         check["error"] = None if status == "up" else classification
+        if status == "down" and results and all(
+            result.get("error") == "maintenance" for result in results
+        ):
+            check["error"] = "maintenance"
         for name in ("login", "modules"):
             states = [
                 next(

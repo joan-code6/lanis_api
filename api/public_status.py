@@ -15,6 +15,7 @@ _cached_status: dict[str, Any] | None = None
 _cache_deadline = 0.0
 _cache_configuration: tuple | None = None
 _PUBLIC_ERROR_CODES = {
+    "maintenance",
     "timeout",
     "connection_error",
     "request_error",
@@ -61,6 +62,32 @@ def _check(
         "features": [],
     }
     evidence = row.get("monitoring")
+    if isinstance(evidence, dict):
+        rounds = []
+        labels = {}
+        for round_data in (evidence.get("rounds") or [])[:2]:
+            if not isinstance(round_data, dict):
+                continue
+            results = []
+            for position, account in enumerate((round_data.get("results") or [])[:4]):
+                if not isinstance(account, dict):
+                    continue
+                # Labels only link results inside this observation, never real identities.
+                source = str(account.get("account") or f"missing-{len(rounds)}-{position}")
+                label = labels.setdefault(source, f"Testkonto {len(labels) + 1}")
+                results.append({
+                    "label": label,
+                    "status": account.get("status") if account.get("status") in {"up", "down", "degraded"} else "unknown",
+                    "features": [{"name": name, "status": next((item.get("status")
+                        for item in account.get("features") or []
+                        if isinstance(item, dict) and item.get("name") == name
+                        and item.get("status") in {"up", "down", "degraded"}), "unknown")}
+                        for name in ("login", "modules")],
+                })
+            if results:
+                rounds.append({"phase": "initial" if not rounds else "confirmation", "accounts": results})
+        if rounds:
+            result["account_checks"] = rounds
     isolated_account_failure = False
     if isinstance(evidence, dict):
         isolated_account_failure = (
@@ -220,27 +247,7 @@ def _latencies(checks: list[tuple[datetime, dict[str, Any]]]) -> dict[str, Any]:
     }
 
 
-async def _build_public_status() -> dict[str, Any]:
-    """Read stored observations; never trigger a login or a synthetic probe."""
-    now = uptime._utcnow().replace(tzinfo=timezone.utc)
-    start = now - timedelta(days=uptime.UPTIME_SUMMARY_DAYS)
-    interval = uptime.get_uptime_interval_seconds()
-    rows = await uptime.user_metrics_db.get_uptime_checks(
-        limit=-1, since=start.replace(tzinfo=None)
-    )
-    get_incident_prefix = getattr(
-        uptime.user_metrics_db, "get_uptime_incident_prefix", None
-    )
-    if get_incident_prefix is not None:
-        rows.extend(await get_incident_prefix(start.replace(tzinfo=None)))
-    get_previous_check = getattr(uptime.user_metrics_db, "get_previous_uptime_check", None)
-    previous_row = (
-        await get_previous_check(start.replace(tzinfo=None))
-        if get_previous_check is not None
-        else None
-    )
-    if previous_row is not None:
-        rows.append(previous_row)
+def _project_observations(rows: list[dict[str, Any]], now: datetime) -> list[tuple[datetime, dict[str, Any]]]:
     checks = []
     for row in rows:
         timestamp = _timestamp(row.get("checked_at"))
@@ -302,6 +309,31 @@ async def _build_public_status() -> dict[str, Any]:
             preceding_isolated_account_issue = False
     checks = projected_checks
     checks.sort(key=lambda item: item[0], reverse=True)
+    return checks
+
+
+async def _build_public_status() -> dict[str, Any]:
+    """Read stored observations; never trigger a login or a synthetic probe."""
+    now = uptime._utcnow().replace(tzinfo=timezone.utc)
+    start = now - timedelta(days=uptime.UPTIME_SUMMARY_DAYS)
+    interval = uptime.get_uptime_interval_seconds()
+    rows = await uptime.user_metrics_db.get_uptime_checks(
+        limit=-1, since=start.replace(tzinfo=None)
+    )
+    get_incident_prefix = getattr(
+        uptime.user_metrics_db, "get_uptime_incident_prefix", None
+    )
+    if get_incident_prefix is not None:
+        rows.extend(await get_incident_prefix(start.replace(tzinfo=None)))
+    get_previous_check = getattr(uptime.user_metrics_db, "get_previous_uptime_check", None)
+    previous_row = (
+        await get_previous_check(start.replace(tzinfo=None))
+        if get_previous_check is not None
+        else None
+    )
+    if previous_row is not None:
+        rows.append(previous_row)
+    checks = _project_observations(rows, now)
     latest = checks[0] if checks else None
     latest_status = latest[1]["status"] if latest else "unknown"
     if latest_status in {"down", "degraded"}:
@@ -561,3 +593,67 @@ async def get_public_status() -> dict[str, Any]:
         _cache_configuration = configuration
         _cache_deadline = time.monotonic() + ttl
         return result
+
+
+async def get_public_incident(identifier: str) -> dict[str, Any] | None:
+    try:
+        parsed = datetime.strptime(identifier, "%Y%m%dT%H%M%S%fZ")
+        if uptime.incident_id(parsed.isoformat()) != identifier:
+            return None
+    except (ValueError, TypeError):
+        return None
+    incidents, checks = await _get_incident_index()
+    incident = incidents.get(identifier)
+    if incident is None:
+        return None
+    return {**incident, "observations": [check for check in reversed(checks)
+        if incident["started_at"] <= check["checked_at"] <=
+        (incident["resolved_at"] or incident["last_checked_at"])]}
+
+
+_incident_lock = asyncio.Lock()
+_incident_database = None
+_incident_deadline = 0.0
+_incident_index = ({}, [])
+
+
+def _build_incident_index(rows, now):
+    checks = [check for _, check in _project_observations(rows, now)]
+    return {incident["id"]: incident for incident in uptime.group_uptime_incidents(checks)}, checks
+
+
+async def _get_incident_index(*, refresh=False):
+    """Coalesce history reads across IDs; group retained history off the event loop."""
+    from fastapi.concurrency import run_in_threadpool
+    global _incident_database, _incident_deadline, _incident_index
+    async with _incident_lock:
+        if refresh or _incident_database is not uptime.user_metrics_db or time.monotonic() >= _incident_deadline:
+            rows = await uptime.user_metrics_db.get_uptime_checks(limit=-1)
+            now = uptime._utcnow().replace(tzinfo=timezone.utc)
+            result = await run_in_threadpool(_build_incident_index, rows, now)
+            _incident_index = result
+            _incident_database = uptime.user_metrics_db
+            _incident_deadline = time.monotonic() + 5.0
+        return _incident_index
+
+
+def status_snapshot_max_age(snapshot):
+    if snapshot is not _cached_status:
+        return 0
+    return max(0, math.floor(_cache_deadline - time.monotonic()))
+
+
+_image_lock = asyncio.Lock()
+_image_snapshot = None
+_image_bytes = None
+
+
+async def get_status_image(snapshot: dict) -> bytes:
+    from fastapi.concurrency import run_in_threadpool
+    from .status_image import render_status_image
+    global _image_snapshot, _image_bytes
+    async with _image_lock:
+        if _image_snapshot is not snapshot or _image_bytes is None:
+            rendered = await run_in_threadpool(render_status_image, snapshot)
+            _image_snapshot, _image_bytes = snapshot, rendered
+        return _image_bytes

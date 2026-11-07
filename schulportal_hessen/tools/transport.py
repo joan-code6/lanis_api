@@ -1,11 +1,14 @@
 """Request-local transport facts, also available when applets catch exceptions."""
 
+import codecs
+import re
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urljoin, urlsplit
 
 import requests
+from bs4 import UnicodeDammit
 
 
 @dataclass
@@ -97,6 +100,7 @@ def observe_request(send):
 
 def check_portal_session(session, response, url, *, stream=False):
     """Detect expiry for both ordinary requests and bounded document reads."""
+    set_html_encoding(response, stream=stream)
     current = observation.get()
     # Mein Unterricht can return a database-selection error when the
     # session is gone, rather than redirecting to the login gate. Probe the
@@ -127,6 +131,51 @@ def check_portal_session(session, response, url, *, stream=False):
         response.close()
         raise UpstreamSessionExpired("Schulportal session expired; login required")
     return response
+
+
+def set_html_encoding(response, *, stream=False):
+    """Decode portal HTML from its bytes before callers access response.text.
+
+    Some portal pages advertise UTF-8 while emitting legacy Western European
+    bytes. Requests replaces those bytes irreversibly unless we select the
+    encoding first. Keep JSON, attachments and streaming responses untouched.
+    """
+    if (
+        stream
+        or "attachment" in response.headers.get("Content-Disposition", "").lower()
+    ):
+        return
+    if "text/html" not in response.headers.get("Content-Type", "").lower():
+        return
+    content = response.content
+    if not isinstance(content, bytes) or not content:
+        return
+    try:
+        content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # Honor explicit HTTP charsets before statistical detection. Requests'
+        # implicit Latin-1 default is not an explicit declaration.
+        match = re.search(
+            r"charset\s*=\s*[\"']?([^;\s\"']+)",
+            response.headers.get("Content-Type", ""),
+            re.IGNORECASE,
+        )
+        if match:
+            declared = match.group(1)
+            try:
+                codec = codecs.lookup(declared).name
+                content.decode(declared, errors="strict")
+            except (LookupError, UnicodeError):
+                pass
+            else:
+                if codec not in {"utf-8", "utf-8-sig"}:
+                    response.encoding = declared
+                    return
+        detected = UnicodeDammit(content, is_html=True)
+        if detected.original_encoding and not detected.contains_replacement_characters:
+            response.encoding = detected.original_encoding
+    else:
+        response.encoding = "utf-8-sig"
 
 
 class ObservedSession(requests.Session):

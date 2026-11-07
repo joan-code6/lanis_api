@@ -416,14 +416,24 @@ class WahlenSubmissionRequest(BaseModel):
 
 class AppearancePreferencesRequest(BaseModel):
     theme_mode: Optional[Literal["system", "light", "dark", "oled"]] = None
-    theme_color: Optional[
-        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan", "coral", "blush", "moss"]
-    ] = None
+    theme_color: Optional[str] = None
+    secondary_theme_color: Optional[str] = None
+
+    @field_validator("theme_color", "secondary_theme_color")
+    @classmethod
+    def validate_theme_color(cls, value):
+        if value is None or value in {"emerald", "sapphire", "amethyst", "ruby", "amber", "cyan", "coral", "blush", "moss"}:
+            return value
+        if re.fullmatch(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?", value):
+            digits = value[1:].lower()
+            return "#" + ("".join(c * 2 for c in digits) if len(digits) == 3 else digits)
+        raise ValueError("Theme colors must be a supported name or hex color")
 
 
 class DashboardPreferencesRequest(BaseModel):
     pinned_modules: Optional[List[str]] = None
     hidden_modules: Optional[List[str]] = None
+    module_order: Optional[List[str]] = None
     view_mode: Optional[Literal["grid", "list"]] = None
     show_search: Optional[bool] = None
     show_subtitle: Optional[bool] = None
@@ -434,7 +444,7 @@ class DashboardPreferencesRequest(BaseModel):
     notification_show_read: Optional[bool] = None
     notification_limit: Optional[Literal[5, 10, 20, 50]] = None
 
-    @field_validator("pinned_modules", "hidden_modules")
+    @field_validator("pinned_modules", "hidden_modules", "module_order")
     def validate_module_preferences(cls, value):
         if value is not None and len(value) > 50:
             raise ValueError("At most 50 modules are allowed in a dashboard preference")
@@ -547,6 +557,7 @@ class TimetablePreferencesRequest(BaseModel):
 
 
 class HomeworkPreferencesRequest(BaseModel):
+    hide_completed_in_overview: Optional[bool] = None
     completed_display: Optional[Literal["orange", "green", "hidden"]] = None
 
 
@@ -2527,7 +2538,7 @@ async def update_account_preferences(
     )
     dashboard = updates.get("dashboard")
     if isinstance(dashboard, dict):
-        for field in ("pinned_modules", "hidden_modules"):
+        for field in ("pinned_modules", "hidden_modules", "module_order"):
             if field not in dashboard:
                 continue
             cleaned_modules: List[str] = []
@@ -5686,6 +5697,24 @@ async def _whatsapp_command_response(
     else:
         return help_message(config.ui_base_url)
     return f"{response}\n\nIn LANIS öffnen: {config.ui_base_url}{deep_links[intent]}"
+
+
+@app.get("/status/incident/{identifier}", tags=["Public status"])
+async def public_incident(identifier: str):
+    from .public_status import get_public_incident
+    result = await get_public_incident(identifier)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return result
+
+
+@app.get("/status/image.png", tags=["Public status"])
+async def public_status_image():
+    from .public_status import get_status_image, status_snapshot_max_age
+    from fastapi.responses import Response
+    data = await get_public_status()
+    image_bytes = await get_status_image(data)
+    return Response(image_bytes, media_type="image/png", headers={"Cache-Control": f"public, max-age={status_snapshot_max_age(data)}"})
 
 
 class BetaChange(BaseModel):
