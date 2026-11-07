@@ -6,6 +6,7 @@ from datetime import datetime
 from urllib.parse import urljoin, urlsplit
 
 import requests
+from bs4 import UnicodeDammit
 
 
 @dataclass
@@ -67,6 +68,30 @@ def is_login_gate(response, requested_url, *, stream=False):
     )
 
 
+def set_html_encoding(response, *, stream=False):
+    """Decode portal HTML from its bytes before callers access response.text.
+
+    Some portal pages advertise UTF-8 while emitting legacy Western European
+    bytes. Requests replaces those bytes irreversibly unless we select the
+    encoding first. Keep JSON, attachments and streaming responses untouched.
+    """
+    if stream or "attachment" in response.headers.get("Content-Disposition", "").lower():
+        return
+    if "text/html" not in response.headers.get("Content-Type", "").lower():
+        return
+    content = response.content
+    if not isinstance(content, bytes) or not content:
+        return
+    try:
+        content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        detected = UnicodeDammit(content, is_html=True)
+        if detected.original_encoding and not detected.contains_replacement_characters:
+            response.encoding = detected.original_encoding
+    else:
+        response.encoding = "utf-8-sig"
+
+
 class ObservedSession(requests.Session):
     def request(self, method, url, **kwargs):
         current = observation.get()
@@ -84,6 +109,7 @@ class ObservedSession(requests.Session):
             if current:
                 current.unavailable = True
             raise
+        set_html_encoding(response, stream=kwargs.get("stream", False))
         # Mein Unterricht can return a database-selection error when the
         # session is gone, rather than redirecting to the login gate. Probe the
         # apps endpoint to distinguish expiry from a genuine module failure.
