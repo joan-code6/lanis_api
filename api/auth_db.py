@@ -143,6 +143,7 @@ DEFAULT_USER_PREFERENCES: Dict[str, Any] = {
     },
     "homework": {
         "completed_display": "green",
+        "hide_completed_in_overview": False,
     },
     "vertretungsplan": {
         "class_override": "",
@@ -177,6 +178,9 @@ def _merge_nested_preferences(
 
 def _normalize_user_preferences(preferences: Dict[str, Any]) -> Dict[str, Any]:
     """Enforce invariants for persisted preference groups."""
+    homework = preferences.get("homework")
+    if isinstance(homework, dict) and "hide_completed_in_overview" not in homework:
+        homework["hide_completed_in_overview"] = homework.get("completed_display") == "hidden"
     sidebar = preferences.get("sidebar")
     if isinstance(sidebar, dict) and isinstance(sidebar.get("order"), list):
         # Saved orders predate newly supported modules. Preserve customization
@@ -2055,6 +2059,8 @@ def _decode_user_preferences(serialized: object, user_id: str) -> Dict[str, Any]
         stored = {}
     # Migrate the initial boolean preference introduced before the three-way display choice.
     homework = stored.get("homework")
+    if isinstance(homework, dict) and "hide_completed_in_overview" not in homework and "completed_display" in homework:
+        homework["hide_completed_in_overview"] = homework["completed_display"] == "hidden"
     if isinstance(homework, dict) and "completed_display" not in homework:
         legacy_visibility = homework.get("hide_completed_in_overview")
         if isinstance(legacy_visibility, bool):
@@ -2099,6 +2105,14 @@ async def save_user_preferences(
                 _merge_nested_preferences(DEFAULT_USER_PREFERENCES, {})
             )
             merged = _merge_nested_preferences(current, updates)
+            homework_update = updates.get("homework")
+            if isinstance(homework_update, dict):
+                if "hide_completed_in_overview" in homework_update:
+                    merged["homework"]["completed_display"] = (
+                        "hidden" if homework_update["hide_completed_in_overview"] else "green"
+                    )
+                elif "completed_display" in homework_update:
+                    merged["homework"]["hide_completed_in_overview"] = homework_update["completed_display"] == "hidden"
             timetable_updates = updates.get("timetable")
             if isinstance(timetable_updates, dict) and "class_colors" in timetable_updates:
                 merged.setdefault("timetable", {})["class_colors"] = json.loads(

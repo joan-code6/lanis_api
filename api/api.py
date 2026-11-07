@@ -416,9 +416,18 @@ class WahlenSubmissionRequest(BaseModel):
 
 class AppearancePreferencesRequest(BaseModel):
     theme_mode: Optional[Literal["system", "light", "dark", "oled"]] = None
-    theme_color: Optional[
-        Literal["emerald", "sapphire", "amethyst", "ruby", "amber", "cyan", "coral", "blush", "moss"]
-    ] = None
+    theme_color: Optional[str] = None
+    secondary_theme_color: Optional[str] = None
+
+    @field_validator("theme_color", "secondary_theme_color")
+    @classmethod
+    def validate_theme_color(cls, value):
+        if value is None or value in {"emerald", "sapphire", "amethyst", "ruby", "amber", "cyan", "coral", "blush", "moss"}:
+            return value
+        if re.fullmatch(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?", value):
+            digits = value[1:].lower()
+            return "#" + ("".join(c * 2 for c in digits) if len(digits) == 3 else digits)
+        raise ValueError("Theme colors must be a supported name or hex color")
 
 
 class DashboardPreferencesRequest(BaseModel):
@@ -548,6 +557,7 @@ class TimetablePreferencesRequest(BaseModel):
 
 
 class HomeworkPreferencesRequest(BaseModel):
+    hide_completed_in_overview: Optional[bool] = None
     completed_display: Optional[Literal["orange", "green", "hidden"]] = None
 
 
