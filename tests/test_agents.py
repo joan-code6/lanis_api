@@ -1965,6 +1965,7 @@ def test_module_catalog_distinguishes_unsupported_from_inaccessible(
                 "data": {
                     "entrys": [
                         {"Name": "Videokonferenz", "link": "videokonferenz.php"},
+                        {"Name": "bettermarks", "link": "index.php?a=f&e=t108-1"},
                         {
                             "Name": "Moodle",
                             "link": "https://school.example/moodle?secret=must-not-leak",
@@ -1981,7 +1982,8 @@ def test_module_catalog_distinguishes_unsupported_from_inaccessible(
         result = await mcp._tool_manager.get_tool("lanis_modules").fn()
         assert result["modules"] == [
             {"name": "Videokonferenz", "integrated": True},
-            {"name": "Moodle", "integrated": False, "url": "https://school.example/moodle"},
+            {"name": "bettermarks", "integrated": False, "url": "https://start.schulportal.hessen.de/index.php?a=f&e=t108-1", "access": "portal_launch"},
+            {"name": "Moodle", "integrated": False, "url": "https://school.example/moodle", "access": "external"},
         ]
         assert "secret" not in str(result)
 
@@ -2386,7 +2388,7 @@ def test_malformed_apps_do_not_hide_valid_modules(environment, monkeypatch):
         result = await mcp._tool_manager.get_tool("lanis_modules").fn()
         assert result["modules"] == [
             {"name": "Stundenplan", "integrated": True},
-            {"name": "Moodle", "integrated": False, "url": "https://school.example/moodle"},
+            {"name": "Moodle", "integrated": False, "url": "https://school.example/moodle", "access": "external"},
         ]
 
     asyncio.run(scenario())

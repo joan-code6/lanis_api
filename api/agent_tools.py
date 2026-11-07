@@ -118,7 +118,7 @@ def register_tools(tool, run):
     @tool("profile:read", title="Discover your school modules")
     async def lanis_modules() -> dict[str, Any]:
         """Account-specific Schulportal app catalog. Use for available modules and integration coverage. integrated=true identifies server-supported apps; available_tools from lanis_connection identifies granted callable tools. integrated=false identifies an accessible app to open in the portal. Returns app names and support status."""
-        from urllib.parse import urljoin, urlsplit
+        from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
 
         from .agent_mcp import PORTAL_MODULES, normalized_manifest
 
@@ -151,8 +151,28 @@ def register_tools(tool, run):
                 )
                 if not modules[-1]["integrated"] and link.scheme in ("", "http", "https"):
                     url = urlsplit(urljoin(client.BASE_START_URL.rstrip("/") + "/", link.geturl()))
-                    if not url.username and not url.password:
+                    if url.username or url.password:
+                        continue
+                    if local:
+                        # Only these verified portal routing fields are safe to expose.
+                        import re
+
+                        params = dict(parse_qsl(url.query))
+                        if (
+                            path == "index.php"
+                            and params.get("a") == "f"
+                            and re.fullmatch(r"t[0-9]+-[0-9]+", params.get("e", ""))
+                        ):
+                            modules[-1]["url"] = url._replace(
+                                query=urlencode({"a": "f", "e": params["e"]}), fragment=""
+                            ).geturl()
+                            modules[-1]["access"] = "portal_launch"
+                        elif not url.query:
+                            modules[-1]["url"] = url._replace(fragment="").geturl()
+                            modules[-1]["access"] = "portal_launch"
+                    else:
                         modules[-1]["url"] = url._replace(query="", fragment="").geturl()
+                        modules[-1]["access"] = "external"
             return {
                 "success": True,
                 "modules": modules,
