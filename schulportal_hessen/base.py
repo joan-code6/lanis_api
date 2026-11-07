@@ -275,7 +275,7 @@ class SchulportalHessenAPI:
             return url
 
     def get_available_modules(
-        self, apps_data: Optional[Dict[str, Any]] = None, *, resolve_urls: bool = True
+        self, apps_data: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """Return the logged-in user's available modules with resolved URLs.
 
@@ -289,10 +289,6 @@ class SchulportalHessenAPI:
         apps_data : Dict[str, Any], optional
             A previously fetched :meth:`get_apps` result. When omitted, the
             app list is fetched before building the modules.
-
-        resolve_urls : bool, optional
-            Resolve app redirects by default. Monitoring can disable this to
-            avoid contacting every external app before probing availability.
 
         Returns
         -------
@@ -385,7 +381,7 @@ class SchulportalHessenAPI:
                 full_url = f"{self.BASE_START_URL}/{link}"
 
             # Resolve portal redirects to get the actual destination URL
-            direct_url = self._resolve_direct_url(full_url) if resolve_urls else full_url
+            direct_url = self._resolve_direct_url(full_url)
 
             # Detect if this app requires OAuth/SSO proxy (redirect chain
             # passes through vidis/oauth — cannot be resolved directly)
