@@ -281,7 +281,6 @@ def write_outcome_unknown():
     return {
         "success": False,
         "error": "OUTCOME_UNKNOWN",
-        "next_step": "Verify the existing result in LANIS first: this write may already have succeeded. A further write requires a confirmed need and the user’s intent.",
     }
 
 
@@ -291,7 +290,6 @@ async def run(scope, fn, *, write=False):
         return {
             "success": False,
             "error": "RATE_LIMITED",
-            "next_step": "Wait one minute before calling more school tools.",
         }
     from .account_data import account_lifecycle_lock
     from .api import AuthSession, sessions
@@ -318,7 +316,6 @@ async def run(scope, fn, *, write=False):
                 return {
                     "success": False,
                     "error": "MODULE_UNAVAILABLE",
-                    "next_step": "Explain that this Schulportal module is unavailable to the account and use the account’s available tools for supported requests.",
                 }
             started = True
             result = await fn(auth)
@@ -336,28 +333,24 @@ async def run(scope, fn, *, write=False):
                 "details": exc.errors(
                     include_url=False, include_context=False, include_input=False
                 ),
-                "next_step": "Correct the request using these details before submitting it again.",
             }
         except HTTPException as exc:
             if exc.status_code in (401, 403):
                 return {
                     "success": False,
                     "error": "SCHOOL_SESSION_EXPIRED",
-                    "next_step": "Ask the user to sign in to LANIS again, then retry.",
                 }
             if 400 <= exc.status_code < 500:
                 return {
                     "success": False,
                     "error": "INVALID_REQUEST",
                     "details": exc.detail,
-                    "next_step": "Correct the request using these details before submitting it again.",
                 }
             if write and started:
                 return write_outcome_unknown()
             return {
                 "success": False,
                 "error": "SCHOOL_UNAVAILABLE",
-                "next_step": "Explain that school data is temporarily unavailable and try reading it later.",
             }
         except Exception:  # noqa: BLE001 -- upstream failures must not expose session internals
             if write and started:
@@ -365,7 +358,6 @@ async def run(scope, fn, *, write=False):
             return {
                 "success": False,
                 "error": "SCHOOL_UNAVAILABLE",
-                "next_step": "Explain that school data is temporarily unavailable and try reading it later.",
             }
         try:
             async with store.database(True) as db:
@@ -410,20 +402,6 @@ async def lanis_connection() -> dict[str, Any]:
         )
         else "read-only",
         "available_tools": sorted(names),
-        "next_steps": [
-            instruction
-            for name, instruction in {
-                "lanis_modules": "Use lanis_modules to see the account’s portal apps and whether a dedicated integration exists.",
-                "lanis_video_rooms": "Use lanis_video_rooms for available Videokonferenz rooms; keep personal join links private to the signed-in user.",
-                "lanis_dsb_substitutions": "Use lanis_dsb_substitutions for the school-configured DSB plan; it is separate from the portal Vertretungsplan module.",
-                "lanis_exams": "Lerngruppen exam dates, subjects, assessment types and timing details are available through lanis_exams.",
-                "lanis_courses": "Discover book_id values with lanis_courses, then read paginated homework with lanis_course.",
-                "lanis_timetable": "Read lanis_timetable; cross-check lanis_substitutions only if it is in available_tools.",
-                "lanis_calendar": "Use lanis_calendar with an explicit year based on current_time.",
-                "lanis_messages": "Discover conversation IDs with lanis_messages, then read requested conversations with lanis_message.",
-            }.items()
-            if name in names
-        ],
     }
 
 
@@ -601,7 +579,6 @@ async def lanis_message(
         return {
             "success": False,
             "error": "MESSAGE_NOT_CACHED",
-            "next_step": "Opening this conversation in Schulportal marks it as read. Use lanis_open_message only if its permission was granted; otherwise ask the user to open it in LANIS.",
         }
 
     return await run("messages:read", read)
@@ -632,7 +609,7 @@ async def available_tools(grant):
     return tools, {
         "success": result.get("success", False),
         **(
-            {"error": result.get("error"), "next_step": result.get("next_step")}
+            {"error": result.get("error")}
             if not result.get("success")
             else {}
         ),

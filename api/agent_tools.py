@@ -88,7 +88,6 @@ def download_file(client, file_id, *, loader=None):
                     return {
                         "success": False,
                         "error": "FILE_TOO_LARGE",
-                        "next_step": "Open this file in LANIS.",
                     }
                 chunks.append(chunk)
             content = b"".join(chunks)
@@ -96,7 +95,6 @@ def download_file(client, file_id, *, loader=None):
             return {
                 "success": False,
                 "error": "FILE_TOO_LARGE",
-                "next_step": "Open this file in LANIS.",
             }
         mime = result.get("content_type") or "application/octet-stream"
         payload = {
@@ -120,7 +118,7 @@ def register_tools(tool, run):
     @tool("profile:read", title="Discover your school modules")
     async def lanis_modules() -> dict[str, Any]:
         """Account-specific Schulportal app catalog. Use for available modules and integration coverage. integrated=true identifies server-supported apps; available_tools from lanis_connection identifies granted callable tools. integrated=false identifies an accessible app to open in the portal. Returns app names and support status."""
-        from urllib.parse import urlsplit
+        from urllib.parse import urljoin, urlsplit
 
         from .agent_mcp import PORTAL_MODULES, normalized_manifest
 
@@ -151,10 +149,13 @@ def register_tools(tool, run):
                         ),
                     }
                 )
+                if not modules[-1]["integrated"] and link.scheme in ("", "http", "https"):
+                    url = urlsplit(urljoin(client.BASE_START_URL.rstrip("/") + "/", link.geturl()))
+                    if not url.username and not url.password:
+                        modules[-1]["url"] = url._replace(query="", fragment="").geturl()
             return {
                 "success": True,
                 "modules": modules,
-                "coverage": "Account app list. External apps without a dedicated integration must be opened in the portal.",
             }
 
         return await run(
@@ -249,7 +250,6 @@ def register_tools(tool, run):
                 "exams": sorted(
                     result.get("exams", []), key=lambda exam: exam.get("date") or "9999"
                 ),
-                "coverage": "Exam records published in Schulportal Lerngruppen; describe missing dates as unspecified.",
             }
 
         return await run("schoolwork:read", read)
@@ -436,7 +436,6 @@ def register_tools(tool, run):
             return {
                 "success": False,
                 "error": "FILE_TOO_LARGE",
-                "next_step": "Upload larger files in LANIS.",
             }
         from .api import meinunterricht_submission_upload
 
