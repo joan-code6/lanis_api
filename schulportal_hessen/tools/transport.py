@@ -1,5 +1,7 @@
 """Request-local transport facts, also available when applets catch exceptions."""
 
+import codecs
+import re
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -85,6 +87,21 @@ def set_html_encoding(response, *, stream=False):
     try:
         content.decode("utf-8-sig")
     except UnicodeDecodeError:
+        # Honor explicit HTTP charsets before statistical detection. Requests'
+        # implicit Latin-1 default is not an explicit declaration.
+        match = re.search(r"charset\s*=\s*[\"']?([^;\s\"']+)",
+                          response.headers.get("Content-Type", ""), re.I)
+        if match:
+            declared = match.group(1)
+            try:
+                codec = codecs.lookup(declared).name
+                content.decode(declared, errors="strict")
+            except (LookupError, UnicodeError):
+                pass
+            else:
+                if codec not in {"utf-8", "utf-8-sig"}:
+                    response.encoding = declared
+                    return
         detected = UnicodeDammit(content, is_html=True)
         if detected.original_encoding and not detected.contains_replacement_characters:
             response.encoding = detected.original_encoding
