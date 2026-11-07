@@ -234,7 +234,7 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
                 opened_count=0,
             )
 
-        modules = client.get_available_modules(apps_result)
+        modules = client.get_available_modules(apps_result, resolve_urls=False)
         if not modules:
             return _feature(
                 "modules",
@@ -260,6 +260,10 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
                 response.close()
                 if 200 <= status_code < 400:
                     opened_count += 1
+                    # One successful module proves this feature is available.
+                    # Avoid opening every remaining app (including third-party
+                    # tools) and exhausting the isolated worker deadline.
+                    break
             except requests.RequestException:
                 continue
 
@@ -276,7 +280,7 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
     except Exception as error:  # noqa: BLE001 - a monitor must classify SDK failures
         return _feature(
             "modules",
-            "down",
+            "down" if isinstance(error, requests.RequestException) else "unknown",
             started,
             error=_error_code(error, "modules_check_failed"),
             module_count=0,
@@ -481,7 +485,7 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
         except Exception as error:  # noqa: BLE001 - a monitor must classify SDK failures
             login_ok = False
             login_error = _error_code(error, "login_check_failed")
-        features.append(_feature("login", "up" if login_ok else "down", login_started, error=login_error))
+        features.append(_feature("login", "up" if login_ok else "unknown" if login_error == "login_check_failed" else "down", login_started, error=login_error))
 
         if login_ok:
             features.append(_check_modules(client))
@@ -489,15 +493,15 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
             features.append(_feature("modules", "skipped", overall_started, error="login_failed"))
 
         failed = [feature for feature in features if feature["status"] == "down"]
-        status = "down" if not login_ok else "degraded" if failed else "up"
+        status = "unknown" if any(feature["status"] == "unknown" for feature in features) else "down" if not login_ok else "degraded" if failed else "up"
         return {
             "checked_at": checked_at,
             "url": get_uptime_url(),
             "status": status,
-            "is_available": status == "up",
+            "is_available": None if status == "unknown" else status == "up",
             "status_code": None,
             "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
-            "error": failed[0]["error"] if failed else None,
+            "error": next((feature["error"] for feature in features if feature["status"] in {"down", "unknown"}), None),
             "features": features,
         }
     finally:
@@ -974,6 +978,15 @@ def _classify_round(results: list[dict[str, Any]]) -> tuple[str, str]:
     if failures:
         if failures == 1:
             return "degraded", "isolated"
+        failed_results = [r for r in results if r["status"] in {"down", "degraded"}]
+        feature_failures = [
+            {f.get("name") for f in r.get("features", []) if f.get("status") == "down"}
+            for r in failed_results
+        ]
+        if all(feature_failures) and not set.intersection(*feature_failures):
+            # Different failing features across accounts do not corroborate
+            # one shared portal incident.
+            return "unknown", "inconclusive"
         if all(result["status"] == "down" for result in results):
             return "down", "confirmed"
         return "degraded", "confirmed"

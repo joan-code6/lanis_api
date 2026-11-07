@@ -27,6 +27,8 @@ class FakeSession:
         return FakeResponse(200)
 
     def get(self, url, **kwargs):
+        if url == uptime.PORTAL_START_URL:
+            return FakeResponse(200)
         if isinstance(self.module_status, list):
             status = self.module_status[self.module_requests]
         else:
@@ -50,7 +52,7 @@ class FakeClient:
     def get_apps(self):
         return {"success": True, "data": {"entrys": [{"name": "Kalender"}]}}
 
-    def get_available_modules(self, apps_result):
+    def get_available_modules(self, apps_result, *, resolve_urls=True):
         return [
             {"name": "Kalender", "url": "https://start.example/kalender"},
             {"name": "Vertretungsplan", "url": "https://start.example/vertretung"},
@@ -150,7 +152,7 @@ def test_probe_resumes_authenticated_checks_after_maintenance(monkeypatch):
     assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
 
 
-def test_probe_runs_login_and_opens_all_modules(monkeypatch):
+def test_probe_stops_after_first_available_module(monkeypatch):
     configure_monitor(monkeypatch)
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
 
@@ -160,7 +162,7 @@ def test_probe_runs_login_and_opens_all_modules(monkeypatch):
     assert result["is_available"] is True
     assert [feature["status"] for feature in result["features"]] == ["up", "up"]
     assert result["features"][1]["module_count"] == 2
-    assert result["features"][1]["opened_count"] == 2
+    assert result["features"][1]["opened_count"] == 1
     assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
 
 
@@ -344,3 +346,39 @@ def test_slow_maintenance_preflight_is_reaped(monkeypatch):
     assert check["error"] == "probe_deadline"
     assert time.monotonic() - started < 12
     assert {child.pid for child in multiprocessing.active_children()} == children
+
+
+def test_monitor_programming_error_is_not_sph_downtime(monkeypatch):
+    client = FakeClient()
+    def broken():
+        raise TypeError('SDK contract changed')
+    monkeypatch.setattr(client, 'get_apps', broken)
+    result = uptime._check_modules(client)
+    assert result['status'] == 'unknown'
+    assert result['error'] == 'modules_check_failed'
+    assert uptime._classify_round([result, result]) == ('unknown', 'inconclusive')
+
+
+def test_unrelated_account_failures_do_not_confirm_shared_incident():
+    results = [
+        {"status": "down", "features": [{"name": "login", "status": "down"}]},
+        {"status": "degraded", "features": [{"name": "login", "status": "up"}, {"name": "modules", "status": "down"}]},
+        {"status": "up"}, {"status": "up"},
+    ]
+    assert uptime._classify_round(results) == ("unknown", "inconclusive")
+
+
+def test_monitor_module_discovery_does_not_resolve_external_apps(monkeypatch):
+    client = uptime.SchulportalHessenAPI()
+    def unexpected_resolution(*args):
+        pytest.fail('monitor must not resolve app redirects')
+    monkeypatch.setattr(client, '_resolve_direct_url', unexpected_resolution)
+    try:
+        modules = client.get_available_modules(
+            {'success': True, 'data': {'entrys': [{'name': 'Kalender', 'link': 'kalender.php'}]}},
+            resolve_urls=False,
+        )
+        assert len(modules) == 1
+        assert modules[0]['url'].endswith('/kalender.php')
+    finally:
+        client.close()
