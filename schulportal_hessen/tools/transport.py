@@ -68,6 +68,14 @@ def is_login_gate(response, requested_url, *, stream=False):
 
 
 class ObservedSession(requests.Session):
+    module_guard = None
+
+    def send(self, request, **kwargs):
+        # send() also sees redirect hops, unlike the initial request() call.
+        if self.module_guard is not None:
+            self.module_guard(request.url, method=request.method)
+        return super().send(request, **kwargs)
+
     def request(self, method, url, **kwargs):
         current = observation.get()
         if current and current.fail_fast and current.unavailable:

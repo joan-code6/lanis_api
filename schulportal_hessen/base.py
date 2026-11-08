@@ -6,6 +6,9 @@ from urllib.parse import urlencode
 import json
 
 from schulportal_hessen.tools.cryptor import Cryptor
+from schulportal_hessen.tools.capabilities import (
+    ModuleCapabilities, ModuleUnavailable, CapabilityLookupFailed,
+)
 
 
 class SchulportalHessenAPI:
@@ -94,8 +97,16 @@ class SchulportalHessenAPI:
         self.dsb_logged_in: bool = False
         self.dsb_plan_urls: List[str] = []
         self._dsb_lock = threading.RLock()
+        self._module_capabilities = ModuleCapabilities(lambda: self.get_apps(), self.BASE_START_URL)
+        self.session.module_guard = self._module_capabilities.require
 
     def get_apps(self) -> Dict[str, Any]:
+        """Fetch app discovery and update this authenticated client's capabilities."""
+        result = self._fetch_apps()
+        self._module_capabilities.remember(result)
+        return result
+
+    def _fetch_apps(self) -> Dict[str, Any]:
         """Retrieve available apps/modules for the logged-in user.
 
         Fetches the user's personalized list of available modules from the
@@ -670,15 +681,29 @@ class SchulportalHessenAPI:
 
     # Vertretungsplan methods
     def vertretungsplan_get_plan(self, include_raw: bool = False) -> Dict[str, Any]:
-        """Fetch the substitution plan (vertretungsplan.php).
+        """Fetch the native plan only when the account advertises that module.
 
-        Args:
-            include_raw: Include the raw HTML response in the payload.
-
-        Returns:
-            Dict containing the parsed substitution days and metadata.
+        SPH can replace the authenticated SID when this endpoint is requested
+        by an account without the native plan, breaking unrelated applets.
+        Inspect the raw app list; resolving all module URLs would itself send
+        additional requests before this capability check.
         """
-        ...
+        try:
+            self._module_capabilities.require(self.BASE_START_URL + "/vertretungsplan.php")
+        except CapabilityLookupFailed as error:
+            return error.result
+        except ModuleUnavailable:
+            return {
+                "success": True,
+                "source": "schulportal",
+                "available": False,
+                "mode": "non_ajax",
+                "last_updated": None,
+                "days": [],
+                "count": 0,
+                "raw_html": None,
+            }
+        return vertretungsplan_get_plan(self, include_raw)
 
     # Stundenplan methods
     def stundenplan_get_plan(self) -> Dict[str, Any]:
@@ -915,10 +940,8 @@ SchulportalHessenAPI.kalender_get_overview = kalender_get_overview
 SchulportalHessenAPI.kalender_get_events = kalender_get_events
 SchulportalHessenAPI.kalender_get_event = kalender_get_event
 
-# Import and attach the vertretungsplan methods
+# Native parser used by the guarded public Vertretungsplan method.
 from .applets.vertretungsplan.api import vertretungsplan_get_plan
-
-SchulportalHessenAPI.vertretungsplan_get_plan = vertretungsplan_get_plan
 
 # Import and attach the Videokonferenz methods
 from .applets.videokonferenz.api import videokonferenz_get_rooms
