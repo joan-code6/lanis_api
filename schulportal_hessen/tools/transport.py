@@ -73,7 +73,7 @@ class ObservedSession(requests.Session):
     def send(self, request, **kwargs):
         # send() also sees redirect hops, unlike the initial request() call.
         if self.module_guard is not None:
-            self.module_guard(request.url)
+            self.module_guard(request.url, method=request.method)
         return super().send(request, **kwargs)
 
     def request(self, method, url, **kwargs):

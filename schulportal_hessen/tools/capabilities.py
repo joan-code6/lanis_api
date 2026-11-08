@@ -1,7 +1,7 @@
 """Per-session module capabilities checked before applet HTTP requests."""
 import threading
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
 
@@ -100,7 +100,7 @@ class ModuleCapabilities:
             if session not in current.expired_sessions:
                 current.expired_sessions.append(session)
 
-    def require(self, url):
+    def require(self, url, method="GET"):
         target = urlsplit(urljoin(self._portal_url, url))
         if target.hostname != self._host or target.path not in APPLET_PATHS:
             return
@@ -136,4 +136,21 @@ class ModuleCapabilities:
                 self._paths = paths
                 self._expires = time.monotonic() + self._ttl
             if target.path not in self._paths:
+                # Lesson/submission attachments use shared file backends even
+                # when those backends have no standalone app entry. This is a
+                # file operation, not permission to open or write that applet;
+                # SPH still authorizes access to the individual file.
+                query = parse_qs(target.query, keep_blank_values=True)
+                linked_download = (
+                    method.upper() in {"GET", "HEAD"}
+                    and target.path in {"/dateiverteilung.php", "/dateispeicher.php"}
+                    and query.get("a") == ["download"]
+                    and (
+                        (len(query.get("f", [])) == 1 and bool(query["f"][0]))
+                        or query.get("b") == ["zip"]
+                    )
+                    and "/meinunterricht.php" in self._paths
+                )
+                if linked_download:
+                    return
                 raise ModuleUnavailable("Schulportal module unavailable for this account")
