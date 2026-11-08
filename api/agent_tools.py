@@ -166,13 +166,10 @@ def register_tools(tool, run):
                             modules[-1]["url"] = url._replace(
                                 query=urlencode({"a": "f", "e": params["e"]}), fragment=""
                             ).geturl()
-                            modules[-1]["access"] = "portal_launch"
                         elif not url.query:
                             modules[-1]["url"] = url._replace(fragment="").geturl()
-                            modules[-1]["access"] = "portal_launch"
-                    else:
-                        modules[-1]["url"] = url._replace(query="", fragment="").geturl()
-                        modules[-1]["access"] = "external"
+                    elif not url.query:
+                        modules[-1]["url"] = url._replace(fragment="").geturl()
             return {
                 "success": True,
                 "modules": modules,
