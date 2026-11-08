@@ -5,6 +5,8 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
+from .transport import TransportObservation, observation
+
 
 # Authentication, app discovery, encryption, profile bootstrap and external
 # providers are infrastructure, not applets. Guard every native applet used by
@@ -39,6 +41,7 @@ class ModuleCapabilities:
         self._paths = None
         self._expires = 0.0
         self._failure = None
+        self._failure_observation = None
         self._retry_at = 0.0
 
     def clear(self):
@@ -46,6 +49,7 @@ class ModuleCapabilities:
             self._paths = None
             self._expires = 0.0
             self._failure = None
+            self._failure_observation = None
             self._retry_at = 0.0
 
     def _parse(self, result):
@@ -82,7 +86,19 @@ class ModuleCapabilities:
                 return
             self._paths = paths
             self._failure = None
+            self._failure_observation = None
             self._expires = time.monotonic() + self._ttl
+
+    @staticmethod
+    def _replay_observation(facts):
+        current = observation.get()
+        if current is None or facts is None:
+            return
+        current.unavailable |= facts.unavailable
+        current.security_failure |= facts.security_failure
+        for session in facts.expired_sessions:
+            if session not in current.expired_sessions:
+                current.expired_sessions.append(session)
 
     def require(self, url):
         target = urlsplit(urljoin(self._portal_url, url))
@@ -91,7 +107,17 @@ class ModuleCapabilities:
         with self._lock:
             if self._paths is None or time.monotonic() >= self._expires:
                 if self._failure is not None and time.monotonic() < self._retry_at:
+                    self._replay_observation(self._failure_observation)
                     raise CapabilityLookupFailed(self._failure)
+                parent = observation.get()
+                facts = TransportObservation(
+                    fail_fast=bool(parent and parent.fail_fast),
+                    unavailable=bool(parent and parent.unavailable),
+                )
+                # Capture discovery independently, even when a background
+                # caller has no request observation. Never retain another
+                # request's identity/cache metadata with the shared failure.
+                token = observation.set(facts)
                 try:
                     paths = self._parse(self._fetch_apps())
                 except CapabilityLookupFailed as error:
@@ -99,9 +125,14 @@ class ModuleCapabilities:
                     # do not serialize a network timeout for every waiter.
                     self._paths = None
                     self._failure = error.result
+                    self._failure_observation = facts
                     self._retry_at = time.monotonic() + 1
                     raise
+                finally:
+                    observation.reset(token)
+                    self._replay_observation(facts)
                 self._failure = None
+                self._failure_observation = None
                 self._paths = paths
                 self._expires = time.monotonic() + self._ttl
             if target.path not in self._paths:
