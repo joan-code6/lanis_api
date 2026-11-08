@@ -28,7 +28,7 @@ SPH identifiers.
 Use a protected environment variable for the access token:
 
 ```bash
-export LANIS_BASE_URL='https://lanis-backend.joancode.dev'
+export LANIS_BASE_URL='https://api.lanis.arg-server.de'
 export LANIS_ACCESS_TOKEN='<access_token returned by /login>'
 ```
 
@@ -37,7 +37,7 @@ For Python examples:
 ```python
 import httpx
 
-base_url = "https://lanis-backend.joancode.dev"
+base_url = "https://api.lanis.arg-server.de"
 headers = {"X-Session-Token": access_token}
 ```
 
@@ -72,7 +72,7 @@ from pathlib import Path
 import httpx
 
 response = httpx.post(
-    "https://lanis-backend.joancode.dev/login",
+    "https://api.lanis.arg-server.de/login",
     json={
         "school_id": school_id,
         "username": sph_username,
@@ -88,7 +88,7 @@ session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 os.chmod(session_dir, 0o700)
 session_path = session_dir / "session.json"
 session_data = {
-    "base_url": "https://lanis-backend.joancode.dev",
+    "base_url": "https://api.lanis.arg-server.de",
     "school_id": school_id,
     "username": sph_username,
     "access_token": tokens["access_token"],

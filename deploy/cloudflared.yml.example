@@ -1,0 +1,10 @@
+# Replace tunnel ID and credential path with the existing deployment values.
+tunnel: YOUR_EXISTING_TUNNEL_ID
+credentials-file: /home/bennet/.cloudflared/YOUR_EXISTING_TUNNEL_ID.json
+
+ingress:
+  - hostname: api.lanis.arg-server.de
+    service: http://127.0.0.1:8000
+  - hostname: lanis-backend.joancode.dev
+    service: http://127.0.0.1:8000
+  - service: http_status:404
