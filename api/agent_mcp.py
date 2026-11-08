@@ -576,7 +576,7 @@ async def lanis_messages(
     )
 
 
-@tool("messages:read", title="Read a message conversation")
+@tool("messages:read", write=True, title="Read a message conversation")
 async def lanis_message(
     conversation_id: Annotated[
         str,
@@ -587,7 +587,7 @@ async def lanis_message(
         ),
     ],
 ) -> dict[str, Any]:
-    """Previously loaded Nachrichten conversation contents, preserving unread status. Use to read a cached conversation ID from lanis_messages. MESSAGE_NOT_CACHED means fresh contents require lanis_open_message, whose separate permission allows opening and marking the conversation read."""
+    """Nachrichten conversation contents. With messages:mark-read permission, fetches fresh contents and marks the conversation read. Otherwise returns cached contents, or MESSAGE_NOT_CACHED."""
     from .api import _make_param_key, sessions
 
     async def read(auth):
@@ -601,9 +601,18 @@ async def lanis_message(
         return {
             "success": False,
             "error": "MESSAGE_NOT_CACHED",
-            "next_step": "Opening this conversation in Schulportal marks it as read. Use lanis_open_message only if its permission was granted; otherwise ask the user to open it in LANIS.",
+            "required_scope": "messages:mark-read",
         }
 
+    grant = await identity("messages:read")
+    if "messages:mark-read" in grant["scopes"]:
+        from .api import get_conversation
+
+        return await run(
+            "messages:mark-read",
+            lambda auth: get_conversation(conversation_id=conversation_id, last=0, auth=auth),
+            write=True,
+        )
     return await run("messages:read", read)
 
 
