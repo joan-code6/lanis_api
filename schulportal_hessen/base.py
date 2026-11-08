@@ -670,15 +670,48 @@ class SchulportalHessenAPI:
 
     # Vertretungsplan methods
     def vertretungsplan_get_plan(self, include_raw: bool = False) -> Dict[str, Any]:
-        """Fetch the substitution plan (vertretungsplan.php).
+        """Fetch the native plan only when the account advertises that module.
 
-        Args:
-            include_raw: Include the raw HTML response in the payload.
-
-        Returns:
-            Dict containing the parsed substitution days and metadata.
+        SPH can replace the authenticated SID when this endpoint is requested
+        by an account without the native plan, breaking unrelated applets.
+        Inspect the raw app list; resolving all module URLs would itself send
+        additional requests before this capability check.
         """
-        ...
+        from urllib.parse import urljoin, urlsplit
+
+        apps = self.get_apps()
+        if not apps.get("success"):
+            return apps
+        data = apps.get("data")
+        entries = data.get("entrys") if isinstance(data, dict) else None
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, dict) or not isinstance(entry.get("link"), str)
+            for entry in entries
+        ):
+            return {
+                "success": False,
+                "error": "Invalid Schulportal app list",
+                "error_kind": "upstream",
+            }
+        portal_host = urlsplit(self.BASE_START_URL).hostname
+        available = any(
+            (target := urlsplit(urljoin(self.BASE_START_URL + "/", entry["link"]))).hostname
+            == portal_host
+            and target.path == "/vertretungsplan.php"
+            for entry in entries
+        )
+        if not available:
+            return {
+                "success": True,
+                "source": "schulportal",
+                "available": False,
+                "mode": "non_ajax",
+                "last_updated": None,
+                "days": [],
+                "count": 0,
+                "raw_html": None,
+            }
+        return vertretungsplan_get_plan(self, include_raw)
 
     # Stundenplan methods
     def stundenplan_get_plan(self) -> Dict[str, Any]:
@@ -915,10 +948,8 @@ SchulportalHessenAPI.kalender_get_overview = kalender_get_overview
 SchulportalHessenAPI.kalender_get_events = kalender_get_events
 SchulportalHessenAPI.kalender_get_event = kalender_get_event
 
-# Import and attach the vertretungsplan methods
+# Native parser used by the guarded public Vertretungsplan method.
 from .applets.vertretungsplan.api import vertretungsplan_get_plan
-
-SchulportalHessenAPI.vertretungsplan_get_plan = vertretungsplan_get_plan
 
 # Import and attach the Videokonferenz methods
 from .applets.videokonferenz.api import videokonferenz_get_rooms
