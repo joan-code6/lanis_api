@@ -536,15 +536,12 @@ def test_school_tool_error_recovery(
         assert result["success"] is False
         if write and expected_error == "SCHOOL_UNAVAILABLE":
             assert result["error"] == "OUTCOME_UNKNOWN"
-            assert "Verify the existing result in LANIS first" in result["next_step"]
-            assert "A further write requires a confirmed need" in result["next_step"]
+            assert "next_step" not in result
             assert "details" not in result
             return
         assert result["error"] == expected_error
         if expected_error == "INVALID_REQUEST":
-            assert result["next_step"] == (
-                "Correct the request using these details before submitting it again."
-            )
+            assert "next_step" not in result
             if failure == "validation":
                 assert result["details"] == [
                     {
@@ -557,19 +554,7 @@ def test_school_tool_error_recovery(
                 assert result["details"] == details
         else:
             assert "details" not in result
-            if expected_error == "SCHOOL_SESSION_EXPIRED":
-                assert result["next_step"] == (
-                    "Ask the user to sign in to LANIS again, then retry."
-                )
-            elif failure == "unexpected":
-                assert (
-                    result["next_step"]
-                    == "Explain that school data is temporarily unavailable and try reading it later."
-                )
-            else:
-                assert result["next_step"] == (
-                    "Explain that school data is temporarily unavailable and try reading it later."
-                )
+            assert "next_step" not in result
 
     asyncio.run(scenario())
 
@@ -1980,6 +1965,8 @@ def test_module_catalog_distinguishes_unsupported_from_inaccessible(
                 "data": {
                     "entrys": [
                         {"Name": "Videokonferenz", "link": "videokonferenz.php"},
+                        {"Name": "bettermarks", "link": "index.php?a=f&e=t108-1"},
+                        {"Name": "Course", "link": "https://school.example/course/view.php?id=42"},
                         {
                             "Name": "Moodle",
                             "link": "https://school.example/moodle?secret=must-not-leak",
@@ -1996,6 +1983,8 @@ def test_module_catalog_distinguishes_unsupported_from_inaccessible(
         result = await mcp._tool_manager.get_tool("lanis_modules").fn()
         assert result["modules"] == [
             {"name": "Videokonferenz", "integrated": True},
+            {"name": "bettermarks", "integrated": False, "url": "https://start.schulportal.hessen.de/index.php?a=f&e=t108-1"},
+            {"name": "Course", "integrated": False},
             {"name": "Moodle", "integrated": False},
         ]
         assert "secret" not in str(result)
@@ -2401,7 +2390,7 @@ def test_malformed_apps_do_not_hide_valid_modules(environment, monkeypatch):
         result = await mcp._tool_manager.get_tool("lanis_modules").fn()
         assert result["modules"] == [
             {"name": "Stundenplan", "integrated": True},
-            {"name": "Moodle", "integrated": False},
+            {"name": "Moodle", "integrated": False, "url": "https://school.example/moodle"},
         ]
 
     asyncio.run(scenario())
