@@ -304,6 +304,8 @@ def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool
 
 async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
     """Notify Discord only when uptime changes between healthy and unhealthy."""
+    if check.get("status") not in {"up", "down", "degraded"}:
+        return
     webhook_url = _discord_webhook_url()
     if not webhook_url:
         return
@@ -477,11 +479,21 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
             with contextlib.redirect_stdout(io.StringIO()):
                 login_result = client.login(school_id, username, password)
             login_ok = bool(login_result.get("success"))
-            login_error = None if login_ok else "login_failed"
+            login_error = None
+            if not login_ok:
+                login_error = (
+                    "account_rejected"
+                    if login_result.get("error_kind") == "account_rejected"
+                    else "login_failed"
+                )
         except Exception as error:  # noqa: BLE001 - a monitor must classify SDK failures
             login_ok = False
             login_error = _error_code(error, "login_check_failed")
-        features.append(_feature("login", "up" if login_ok else "down", login_started, error=login_error))
+        login_status = (
+            "unknown" if login_error == "account_rejected"
+            else "up" if login_ok else "down"
+        )
+        features.append(_feature("login", login_status, login_started, error=login_error))
 
         if login_ok:
             features.append(_check_modules(client))
@@ -489,15 +501,18 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
             features.append(_feature("modules", "skipped", overall_started, error="login_failed"))
 
         failed = [feature for feature in features if feature["status"] == "down"]
-        status = "down" if not login_ok else "degraded" if failed else "up"
+        status = (
+            "unknown" if login_error == "account_rejected"
+            else "down" if not login_ok else "degraded" if failed else "up"
+        )
         return {
             "checked_at": checked_at,
             "url": get_uptime_url(),
             "status": status,
-            "is_available": status == "up",
+            "is_available": None if status == "unknown" else status == "up",
             "status_code": None,
             "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
-            "error": failed[0]["error"] if failed else None,
+            "error": login_error or (failed[0]["error"] if failed else None),
             "features": features,
         }
     finally:
@@ -968,6 +983,7 @@ async def _probe_round(
 
 def _classify_round(results: list[dict[str, Any]]) -> tuple[str, str]:
     """Classify observed availability independently of confidence or breadth."""
+    results = [r for r in results if r.get("error") != "account_rejected"]
     if len(results) < 2:
         return "unknown", "inconclusive"
     failures = sum(result["status"] in {"down", "degraded"} for result in results)
@@ -1073,7 +1089,17 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
             _uptime_cycle_phase = "waiting"
             await asyncio.sleep(15)
             _uptime_cycle_phase = "confirmation"
-            results = await _probe_round(selected + replacements, labels)
+            # Do not retry explicitly blocked/unauthorized accounts. Fresh
+            # independent accounts can establish availability without them.
+            rejected = {
+                result.get("account") for result in initial
+                if result.get("error") == "account_rejected"
+            }
+            confirmation_accounts = [
+                account for account in selected + replacements
+                if labels[account[:2]] not in rejected
+            ]
+            results = await _probe_round(confirmation_accounts, labels)
             details["rounds"].append({"name": "confirmation", "results": results})
         observed_status, classification = _classify_round(results)
         if classification == "healthy" and len(details["rounds"]) == 2:

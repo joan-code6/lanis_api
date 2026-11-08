@@ -604,6 +604,17 @@ async def check_user_messages(
         session_data = await get_client(user_id)
         client = getattr(session_data, "client", session_data)
         result = await run_in_threadpool(client.nachrichten_get_headers, "All", 0)
+        # App routes recover an expired upstream session in OutageCacheRoute;
+        # background polls bypass that route. Restore once for this read too.
+        if not result.get("success") and getattr(
+            getattr(client, "session", None), "upstream_expired", False
+        ):
+            restored = await get_client(user_id)
+            restored_client = getattr(restored, "client", restored)
+            if restored_client is not client:
+                result = await run_in_threadpool(
+                    restored_client.nachrichten_get_headers, "All", 0
+                )
         result = await overlay_headers(user_id, result)
     except Exception as error:
         logger.warning("Message notification poll failed for %s: %s", user_id, error)

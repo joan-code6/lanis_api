@@ -144,8 +144,21 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
                 and self.cryptor.authenticated,
             }
         else:
+            # A reachable login service may reject a disabled account or deny
+            # application access. This is not evidence of a portal outage.
+            from bs4 import BeautifulSoup
+
+            alerts = " ".join(
+                node.get_text(" ", strip=True).casefold()
+                for node in BeautifulSoup(response.text, "html.parser").select(".alert, .error")
+            )
+            account_rejected = response.status_code == 200 and (
+                "gesperrt" in alerts
+                or "um auf diese anwendung zuzugreifen" in alerts
+            )
             return {
                 "success": False,
+                "error_kind": "account_rejected" if account_rejected else "upstream",
                 "message": "Login failed - no session cookie received",
                 "status_code": response.status_code,
                 "cookies": cookies_dict,
