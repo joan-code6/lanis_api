@@ -41,6 +41,25 @@ def _normalize_recipient(user: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _structured_recipients(conversation, limit=None):
+    from bs4 import BeautifulSoup
+
+    for key in ("Empfaenger", "WeitereEmpfaenger"):
+        value = conversation.get(key)
+        if isinstance(value, str):
+            soup = BeautifulSoup(value, "html.parser")
+            labels = soup.select("span.label")
+            values = [{"name": label.get_text(" ", strip=True)} for label in labels]
+            if not labels and soup.get_text(strip=True):
+                values = [{"name": soup.get_text(" ", strip=True)}]
+        elif isinstance(value, list):
+            values = value
+        else:
+            continue
+        conversation[key + "Total"] = len(values)
+        conversation[key] = values if limit is None else values[:limit]
+
+
 def nachrichten_get_headers(
     self, get_type: str = "All", last: int = 0
 ) -> Dict[str, Any]:
@@ -140,6 +159,7 @@ def nachrichten_get_headers(
 
             # Normalize read/unread: portal provides unread (0/1) inconsistently.
             for conv in conversations:
+                _structured_recipients(conv, limit=100)
                 if "unread" in conv:
                     unread_val = conv.get("unread")
                     try:
@@ -251,6 +271,8 @@ def nachrichten_get_conversation(
         if "message" in data:
             decrypted = self.cryptor.decrypt(data["message"])
             message_data = json.loads(decrypted)
+            if isinstance(message_data, dict):
+                _structured_recipients(message_data)
 
             # The structure returned is a single message object with a 'reply' list
             # We want to return a list of messages including the main one and replies

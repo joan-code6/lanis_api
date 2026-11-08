@@ -61,7 +61,7 @@ def test_user_preferences_defaults_and_partial_updates(tmp_path, monkeypatch) ->
     assert defaults["dashboard"]["notifications_enabled"] is True
     assert defaults["dashboard"]["notification_show_read"] is False
     assert defaults["dashboard"]["notification_limit"] == 20
-    assert defaults["homework"] == {"completed_display": "green"}
+    assert defaults["homework"] == {"completed_display": "green", "hide_completed_in_overview": False}
     assert defaults["vertretungsplan"] == {"class_override": ""}
     assert defaults["onboarding"]["status"] == "not_started"
 
@@ -396,3 +396,56 @@ def test_dashboard_module_order_is_accepted_and_bounded():
     assert DashboardPreferencesRequest(module_order=order).model_dump(exclude_none=True) == {"module_order": order}
     with pytest.raises(ValueError):
         DashboardPreferencesRequest(module_order=["module"] * 51)
+
+
+def test_preferences_http_contract_round_trip(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+    asyncio.run(auth_db.initialize())
+    async def identity():
+        return SimpleNamespace(user_id='5201:student')
+    api_module.app.dependency_overrides[api_module.local_auth_dependency] = identity
+    try:
+        client = TestClient(api_module.app)
+        response = client.get('/settings/preferences')
+        assert response.status_code == 200, response.text
+        response = client.patch('/settings/preferences', json={'appearance': {'theme_color': '#F43F5E', 'secondary_theme_color': '#047857'}, 'homework': {'hide_completed_in_overview': True}})
+        assert response.status_code == 200, response.text
+        saved = client.get('/settings/preferences').json()['preferences']
+        assert saved['homework']['hide_completed_in_overview'] is True
+        assert saved['appearance']['theme_color'] == '#f43f5e'
+        assert saved['appearance']['secondary_theme_color'] == '#047857'
+        response = client.patch('/settings/preferences', json={'homework': {'hide_completed_in_overview': False}})
+        assert response.status_code == 200
+        saved = client.get('/settings/preferences').json()['preferences']
+        assert saved['homework']['hide_completed_in_overview'] is False
+        assert saved['appearance']['secondary_theme_color'] == '#047857'
+    finally:
+        api_module.app.dependency_overrides.pop(api_module.local_auth_dependency, None)
+
+
+@pytest.mark.parametrize('color', ['#abc', '#ABCDEF', 'cyan'])
+def test_appearance_accepts_current_and_legacy_colors(color):
+    assert AppearancePreferencesRequest(theme_color=color, secondary_theme_color=color).theme_color
+
+
+@pytest.mark.parametrize('color', ['red', '#xyz', '#12345', 'url(example)'])
+def test_appearance_rejects_invalid_colors(color):
+    with pytest.raises(ValidationError):
+        AppearancePreferencesRequest(theme_color=color)
+
+
+def test_homework_orange_survives_preferences_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'auth.db'))
+    asyncio.run(auth_db.initialize())
+    user_id = '5201:student'
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, {'homework': {'completed_display': 'orange'}}))
+    assert saved['homework'] == {'completed_display': 'orange', 'hide_completed_in_overview': False}
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, saved))
+    assert saved['homework']['completed_display'] == 'orange'
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, {'homework': {'hide_completed_in_overview': False}}))
+    assert saved['homework']['completed_display'] == 'orange'
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, {'homework': {'hide_completed_in_overview': True}}))
+    assert saved['homework']['completed_display'] == 'hidden'
+    saved = asyncio.run(auth_db.save_user_preferences(user_id, {'homework': {'hide_completed_in_overview': False}}))
+    assert saved['homework']['completed_display'] == 'green'
