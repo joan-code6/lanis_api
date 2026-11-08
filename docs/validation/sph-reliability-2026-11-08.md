@@ -2,8 +2,11 @@
 
 Date: 2026-11-08. Development base: `origin/main` at `ae45f19`.
 Production was inspected read-only. No deployment, restart, production database
-write, or notification was performed. Live SPH testing used only the designated
-test account; no messages were opened or sent.
+write, or notification was performed. Initial live SPH testing used the designated test account. Follow-up testing used
+stored production credentials, explicitly authorized by the user. Credentials
+were decrypted only in process memory and sent only to SPH's login endpoint;
+identities, passwords, tokens, and response bodies were omitted from outputs.
+No messages were opened or sent.
 
 ## Findings
 
@@ -59,7 +62,7 @@ accepted as proof that a module opened.
 
 ## Validation
 
-139 focused tests passed across login evidence, monitoring, public status,
+146 focused tests passed across login evidence, monitoring, public status,
 registered-account sampling, session expiry/recovery, and outage caching.
 `git diff --check` passed. Remaining Ruff findings in the checked files also
 exist on the base revision (legacy typing, broad exception handling, and naive
@@ -81,3 +84,73 @@ session-restoration warnings and client request IDs when failures recur. A
 persistently unconfirmed login requires an account credential/login-flow check;
 unknown status must not be interpreted as verified health. The current evidence
 does not justify attributing all app errors to an SPH outage or to one cause.
+
+
+## Follow-up: reproduce the cold-session failure
+
+The user clarified that failures mainly happen when reopening an existing LANIS
+session. Six accounts repeatedly failing restoration in the preceding 24 hours
+were identified from the journal and matched to their valid local refresh-token
+rows using read-only SQLite. Decryption succeeded; stored identities matched
+those rows. The affected accounts did not contain the known test-password
+placeholders checked. Multiple active tokens for an affected account contained
+the same password, ruling out inconsistent device credentials in this sample.
+
+Submitting these stored credentials with the portal's own hidden form fields
+and server-assigned cookies reproduced rejection for every affected account:
+HTTP 200, no authenticated session cookie, and `#lemon_code` state `5`. This
+state is interpreted by SPH's delivered frontend bundle as a rejected login,
+with instructions to check school, username, and password. Hidden static error
+text is present even on ordinary login pages and was not used as evidence.
+A production account without restoration failures in one of the affected
+schools successfully obtained authenticated cookies using the same procedure.
+The reproduction did not require simultaneous requests or heavy traffic.
+
+Read-only metrics also show that some affected accounts previously had portal
+profile data collected successfully. The evidence establishes rejection of their
+saved login today; it does not establish whether a password changed, an account
+was renamed/restricted, or SPH imposes an account/source-specific restriction.
+A working existing browser session does not test a fresh password login.
+
+A concrete backend failure chain is now reproduced:
+
+1. LANIS's persisted refresh token remains valid for up to 90 days; refreshing
+   its access token deliberately does not authenticate with SPH.
+2. The live SPH client is held only in memory and discarded after one hour of
+   inactivity, on detected SPH session expiry, or on process restart.
+3. The next data request restores the client using the saved password. For the
+   affected accounts SPH explicitly rejects that login, even through the
+   portal-equivalent form flow.
+4. Previously this was always reported as retryable HTTP 503. The app therefore
+   kept a locally valid login and repeatedly retried credentials SPH rejected.
+   The monitor independently counted the same rejection as portal downtime.
+
+The patch now recognizes explicit portal rejection states `4`/`5` and returns
+401 with a fresh-login instruction during cold restoration. The existing UI
+401 interceptor tries local refresh once, then redirects to login after the
+repeated 401. Temporary network failures remain 503 and keep existing tokens.
+Both failure status and cooldown are shared across parallel requests. A fresh
+successful login immediately clears the rejection. No server-side token or
+private snapshot is deleted merely because SPH rejects a saved login.
+
+The client also added a hardcoded `sph-login-upstream=3` cookie alongside SPH's
+server-assigned `.hessen.de` cookie. Live requests confirmed duplicate conflicting
+routing cookies. That assignment is removed, and an outgoing-cookie regression
+test covers preserving the server choice. Paired live checks did not establish
+that the duplicate caused the sampled failures: the designated test account
+worked with either flow and a rejected account still failed with the server
+choice preserved. This is treated as a separate protocol defect, not the proven
+reason for credential rejection.
+
+A local regression sends 1,000 concurrent restoration requests after explicit
+rejection, verifies a shared 401 and one upstream attempt, and verifies immediate
+recovery through a fresh successful login. Follow-up live restoration tests also
+exercise the actual AuthManager with read-only production credential lookups;
+production service state and databases remain untouched.
+
+The live AuthManager reproduction completed 1,000 concurrent requests with a
+rejected production login (all returned the new 401) and another 1,000 with a
+working production login (all shared a restored session). Each scenario made
+exactly one upstream login attempt. Thus the test exercised 2,000 backend
+restoration calls while sending only two real credential submissions to SPH.
+No browser sessions, local auth rows, or production process state were modified.

@@ -355,6 +355,7 @@ def test_slow_maintenance_preflight_is_reaped(monkeypatch):
 @pytest.mark.parametrize("login_result,expected", [
     ({"success": False}, "unknown"),
     ({"success": False, "error_kind": "unconfirmed", "error_code": "login_unconfirmed"}, "unknown"),
+    ({"success": False, "error_kind": "authentication", "error_code": "login_rejected"}, "unknown"),
     ({"success": False, "error_kind": "upstream", "error_code": "tls_error"}, "unknown"),
     ({"success": False, "error_kind": "upstream", "error_code": "timeout"}, "down"),
     ({"success": False, "error_kind": "upstream", "error_code": "login_http_error"}, "down"),

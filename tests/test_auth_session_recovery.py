@@ -280,3 +280,41 @@ def test_shutdown_closes_clients_without_remote_logout():
         assert client.logout_calls == 0
 
     asyncio.run(scenario())
+
+
+def test_rejected_saved_credentials_prompt_login_and_share_failure_across_1000_requests(monkeypatch):
+    attempts = []
+
+    class FakeClient:
+        def login(self, school_id, username, password):
+            attempts.append(password)
+            if password == "updated-password":
+                return {"success": True}
+            return {"success": False, "error_kind": "authentication", "error_code": "login_rejected"}
+
+        def close(self):
+            pass
+
+    async def stored(_user_id):
+        return _refresh_token_data()
+
+    monkeypatch.setattr(api_module, "SchulportalHessenAPI", FakeClient)
+    monkeypatch.setattr(api_module, "get_refresh_token_by_user_id", stored)
+
+    async def scenario():
+        manager = AuthManager()
+        responses = await asyncio.gather(*(
+            manager._get_or_create_schulportal_client("5201:student")
+            for _ in range(1000)
+        ), return_exceptions=True)
+        assert all(isinstance(response, HTTPException) and response.status_code == 401 for response in responses)
+        assert all("log in again" in response.detail for response in responses)
+        assert len(attempts) == 1
+        # A fresh successful login must immediately clear the shared rejection.
+        await manager.create_schulportal_session("5201", "student", "updated-password")
+        restored = await manager._get_or_create_schulportal_client("5201:student")
+        assert isinstance(restored.client, FakeClient)
+        assert len(attempts) == 2
+        assert not manager._schulportal_restore_failures
+
+    asyncio.run(scenario())

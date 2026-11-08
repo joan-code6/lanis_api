@@ -656,7 +656,7 @@ class AuthManager:
     def __init__(self, ttl_seconds: int = SESSION_TTL_SECONDS) -> None:
         self._schulportal_clients: Dict[str, SchulportalSessionData] = {}
         self._schulportal_restore_locks: Dict[str, asyncio.Lock] = {}
-        self._schulportal_restore_retry_at: Dict[str, float] = {}
+        self._schulportal_restore_failures: Dict[str, tuple[float, int]] = {}
         self._cache: Dict[str, CacheEntry] = {}
         self._cache_versions: Dict[tuple[str, str], int] = {}
         self._cache_generation = 0
@@ -731,7 +731,7 @@ class AuthManager:
         await self.drop_schulportal_session(user_id)
         async with self._lock:
             self._schulportal_restore_locks.pop(user_id, None)
-            self._schulportal_restore_retry_at.pop(user_id, None)
+            self._schulportal_restore_failures.pop(user_id, None)
             for key in [key for key in self._cache_versions if key[0] == user_id]:
                 self._cache_versions.pop(key, None)
         snapshots.delete_user_data(user_id)
@@ -785,13 +785,10 @@ class AuthManager:
 
             # A failed login must also be shared by a page's parallel requests.
             # Otherwise each waiter immediately retries the same failed login.
-            if self._schulportal_restore_retry_at.get(user_id, 0) > time.monotonic():
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Schulportal session could not be restored — please retry",
-                    headers={"Retry-After": "5"},
-                )
-            self._schulportal_restore_retry_at.pop(user_id, None)
+            failure = self._schulportal_restore_failures.get(user_id)
+            if failure and failure[0] > time.monotonic():
+                raise self._schulportal_restore_error(failure[1])
+            self._schulportal_restore_failures.pop(user_id, None)
 
             # Cache miss — re-establish Schulportal session from DB credentials.
             rt_data = await get_refresh_token_by_user_id(user_id)
@@ -810,7 +807,9 @@ class AuthManager:
                     rt_data["password"],
                 )
             except Exception:
-                self._schulportal_restore_retry_at[user_id] = time.monotonic() + 5
+                self._schulportal_restore_failures[user_id] = (
+                    time.monotonic() + 5, status.HTTP_503_SERVICE_UNAVAILABLE
+                )
                 client.close()
                 logger.exception(
                     "Schulportal session restoration raised an exception for %s",
@@ -823,7 +822,14 @@ class AuthManager:
                 )
 
             if not login_result.get("success"):
-                self._schulportal_restore_retry_at[user_id] = time.monotonic() + 5
+                failure_status = (
+                    status.HTTP_401_UNAUTHORIZED
+                    if login_result.get("error_code") == "login_rejected"
+                    else status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+                self._schulportal_restore_failures[user_id] = (
+                    time.monotonic() + 5, failure_status
+                )
                 client.close()
                 logger.warning(
                     "Schulportal session restoration failed for %s: code=%s status=%s",
@@ -831,15 +837,9 @@ class AuthManager:
                     login_result.get("error_code", "login_unconfirmed"),
                     login_result.get("status_code"),
                 )
-                # A failed upstream login can be a short-lived network or
-                # Schulportal problem.  Keep the persisted refresh token so a
-                # later request can retry instead of permanently logging out
-                # every browser belonging to this account.
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Schulportal session could not be restored — please retry",
-                    headers={"Retry-After": "5"},
-                )
+                # Rejected saved credentials need a fresh login. Timeouts and
+                # ambiguous failures remain retryable without erasing tokens.
+                raise self._schulportal_restore_error(failure_status)
 
             session_data = SchulportalSessionData(
                 client=client,
@@ -853,6 +853,19 @@ class AuthManager:
                 self._schulportal_clients[user_id] = session_data
 
             return session_data
+
+    @staticmethod
+    def _schulportal_restore_error(status_code: int) -> HTTPException:
+        if status_code == status.HTTP_401_UNAUTHORIZED:
+            return HTTPException(
+                status_code=status_code,
+                detail="Schulportal rejected the saved credentials — please log in again",
+            )
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Schulportal session could not be restored — please retry",
+            headers={"Retry-After": "5"},
+        )
 
     async def create_schulportal_session(
         self, school_id: str, username: str, password: str
@@ -881,7 +894,7 @@ class AuthManager:
         )
         async with self._lock:
             self._schulportal_clients[user_id] = session_data
-            self._schulportal_restore_retry_at.pop(user_id, None)
+            self._schulportal_restore_failures.pop(user_id, None)
         return user_id
 
     async def invalidate_schulportal_client(
@@ -932,7 +945,7 @@ class AuthManager:
             sessions = list(self._schulportal_clients.items())
             self._schulportal_clients.clear()
             self._schulportal_restore_locks.clear()
-            self._schulportal_restore_retry_at.clear()
+            self._schulportal_restore_failures.clear()
         for _, data in sessions:
             # A deploy is not a user logout.  In particular, logout() calls
             # Schulportal's `logout=all` endpoint and can invalidate sessions

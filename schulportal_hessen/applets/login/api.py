@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
+from bs4 import BeautifulSoup
 
 from schulportal_hessen.tools.cryptor import Cryptor
 
@@ -93,7 +94,8 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
         }
 
         # Set additional cookies that are typically present
-        self.session.cookies.set("sph-login-upstream", "3", domain="hessen.de")
+        # Preserve SPH's load-balancer routing cookie from the initial GET.
+        # Adding a hardcoded domain variant sends duplicate, conflicting cookies.
         self.session.cookies.set("Ilnglanguage", "de", domain="hessen.de")
         self.session.cookies.set(
             "schulportal_lastschool", school_id, domain="hessen.de"
@@ -147,12 +149,30 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
                 and self.cryptor.authenticated,
             }
         else:
+            # SPH's frontend reads this state to display a rejected-login error.
+            # Static hidden error text exists on healthy login pages too, so it
+            # must never be used as evidence of bad credentials.
+            state = BeautifulSoup(response.content, "html.parser").select_one("#lemon_code")
+            rejected = (
+                response.status_code == 200
+                and state is not None
+                and state.get_text(strip=True) in {"4", "5"}
+            )
+            if response.status_code >= 500:
+                error_kind, error_code = "upstream", "login_http_error"
+            elif rejected:
+                error_kind, error_code = "authentication", "login_rejected"
+            else:
+                error_kind, error_code = "unconfirmed", "login_unconfirmed"
             return {
                 "success": False,
-                "message": "Login failed - no session cookie received",
+                "message": (
+                    "Schulportal rejected the login" if rejected
+                    else "Login failed - no session cookie received"
+                ),
                 "status_code": response.status_code,
-                "error_kind": "upstream" if response.status_code >= 500 else "unconfirmed",
-                "error_code": "login_http_error" if response.status_code >= 500 else "login_unconfirmed",
+                "error_kind": error_kind,
+                "error_code": error_code,
                 "cookies": cookies_dict,
             }
 
