@@ -144,17 +144,15 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
                 and self.cryptor.authenticated,
             }
         else:
-            # A reachable login service may reject a disabled account or deny
-            # application access. This is not evidence of a portal outage.
+            # Read the actual server error code, not hidden error-panel text
+            # which is also present in the ordinary login template.
             from bs4 import BeautifulSoup
 
-            alerts = " ".join(
-                node.get_text(" ", strip=True).casefold()
-                for node in BeautifulSoup(response.text, "html.parser").select(".alert, .error")
-            )
+            page = BeautifulSoup(response.text, "html.parser")
+            code = page.select_one("#lemon_code")
             account_rejected = response.status_code == 200 and (
-                "gesperrt" in alerts
-                or "um auf diese anwendung zuzugreifen" in alerts
+                (code is not None and code.get_text(strip=True) in {"4", "5"})
+                or page.select_one("#authErrorLocktime") is not None
             )
             return {
                 "success": False,
