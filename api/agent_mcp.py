@@ -2,6 +2,8 @@
 
 import logging
 import time
+import uuid
+import traceback
 from contextvars import ContextVar
 from functools import wraps
 from typing import Annotated, Any
@@ -285,6 +287,21 @@ def write_outcome_unknown():
     }
 
 
+def failure_diagnostics(exc, stage):
+    error_id = uuid.uuid4().hex
+    # Frame locations identify the bug without logging credentials in exception text.
+    frames = traceback.extract_tb(exc.__traceback__)
+    logger.error(
+        "MCP failure error_id=%s stage=%s exception_type=%s frames=%s",
+        error_id, stage, type(exc).__name__,
+        [(frame.filename, frame.lineno, frame.name) for frame in frames],
+    )
+    return {
+        "error_id": error_id,
+        "diagnostics": {"stage": stage, "exception_type": type(exc).__name__},
+    }
+
+
 async def run(scope, fn, *, write=False):
     grant = await identity(scope)
     if not await store.rate_limit("tool:" + grant["id"], 120, 60):
@@ -301,8 +318,10 @@ async def run(scope, fn, *, write=False):
         # Deletion or revocation may have completed while this call waited.
         grant = await identity(scope)
         started = False
+        stage = "school_session"
         try:
             session = await sessions._get_or_create_schulportal_client(grant["user_id"])
+            stage = "account_credentials"
             credentials = await auth_db.get_refresh_token_by_user_id(grant["user_id"])
             if not credentials:
                 raise HTTPException(401)
@@ -313,6 +332,7 @@ async def run(scope, fn, *, write=False):
                 username=credentials["username"],
                 session_id=credentials["session_id"],
             )
+            stage = "module_access"
             requirement = _required_module.get()
             if requirement and requirement not in await account_modules(auth):
                 return {
@@ -320,6 +340,7 @@ async def run(scope, fn, *, write=False):
                     "error": "MODULE_UNAVAILABLE",
                     "next_step": "Explain that this Schulportal module is unavailable to the account and use the account’s available tools for supported requests.",
                 }
+            stage = "tool_execution"
             started = True
             result = await fn(auth)
             if (
@@ -352,20 +373,25 @@ async def run(scope, fn, *, write=False):
                     "details": exc.detail,
                     "next_step": "Correct the request using these details before submitting it again.",
                 }
+            diagnostics = failure_diagnostics(exc, stage)
+            diagnostics["diagnostics"]["http_status"] = exc.status_code
             if write and started:
-                return write_outcome_unknown()
+                return {**write_outcome_unknown(), **diagnostics}
             return {
+                **diagnostics,
                 "success": False,
                 "error": "SCHOOL_UNAVAILABLE",
                 "next_step": "Explain that school data is temporarily unavailable and try reading it later.",
             }
-        except Exception:  # noqa: BLE001 -- upstream failures must not expose session internals
+        except Exception as exc:  # Preserve diagnostics without exposing session data.
+            diagnostics = failure_diagnostics(exc, stage)
             if write and started:
-                return write_outcome_unknown()
+                return {**write_outcome_unknown(), **diagnostics}
             return {
+                **diagnostics,
                 "success": False,
-                "error": "SCHOOL_UNAVAILABLE",
-                "next_step": "Explain that school data is temporarily unavailable and try reading it later.",
+                "error": "INTERNAL_ERROR",
+                "next_step": "Explain that LANIS encountered an internal error, report the diagnostic ID and stage.",
             }
         try:
             async with store.database(True) as db:
