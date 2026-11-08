@@ -6,6 +6,9 @@ from urllib.parse import urlencode
 import json
 
 from schulportal_hessen.tools.cryptor import Cryptor
+from schulportal_hessen.tools.capabilities import (
+    ModuleCapabilities, ModuleUnavailable, CapabilityLookupFailed,
+)
 
 
 class SchulportalHessenAPI:
@@ -94,8 +97,16 @@ class SchulportalHessenAPI:
         self.dsb_logged_in: bool = False
         self.dsb_plan_urls: List[str] = []
         self._dsb_lock = threading.RLock()
+        self._module_capabilities = ModuleCapabilities(lambda: self.get_apps(), self.BASE_START_URL)
+        self.session.module_guard = self._module_capabilities.require
 
     def get_apps(self) -> Dict[str, Any]:
+        """Fetch app discovery and update this authenticated client's capabilities."""
+        result = self._fetch_apps()
+        self._module_capabilities.remember(result)
+        return result
+
+    def _fetch_apps(self) -> Dict[str, Any]:
         """Retrieve available apps/modules for the logged-in user.
 
         Fetches the user's personalized list of available modules from the
@@ -677,30 +688,11 @@ class SchulportalHessenAPI:
         Inspect the raw app list; resolving all module URLs would itself send
         additional requests before this capability check.
         """
-        from urllib.parse import urljoin, urlsplit
-
-        apps = self.get_apps()
-        if not apps.get("success"):
-            return apps
-        data = apps.get("data")
-        entries = data.get("entrys") if isinstance(data, dict) else None
-        if not isinstance(entries, list) or any(
-            not isinstance(entry, dict) or not isinstance(entry.get("link"), str)
-            for entry in entries
-        ):
-            return {
-                "success": False,
-                "error": "Invalid Schulportal app list",
-                "error_kind": "upstream",
-            }
-        portal_host = urlsplit(self.BASE_START_URL).hostname
-        available = any(
-            (target := urlsplit(urljoin(self.BASE_START_URL + "/", entry["link"]))).hostname
-            == portal_host
-            and target.path == "/vertretungsplan.php"
-            for entry in entries
-        )
-        if not available:
+        try:
+            self._module_capabilities.require(self.BASE_START_URL + "/vertretungsplan.php")
+        except CapabilityLookupFailed as error:
+            return error.result
+        except ModuleUnavailable:
             return {
                 "success": True,
                 "source": "schulportal",
