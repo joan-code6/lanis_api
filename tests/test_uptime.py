@@ -27,6 +27,8 @@ class FakeSession:
         return FakeResponse(200)
 
     def get(self, url, **kwargs):
+        if url == uptime.PORTAL_START_URL:
+            return FakeResponse(200)
         if isinstance(self.module_status, list):
             status = self.module_status[self.module_requests]
         else:
@@ -48,7 +50,11 @@ class FakeClient:
         return {"success": True}
 
     def get_apps(self):
-        return {"success": True, "data": {"entrys": [{"name": "Kalender"}]}}
+        return {"success": True, "data": {"entrys": [
+            {"Name": "Kalender", "link": "kalender.php"},
+            {"Name": "Stundenplan", "link": "stundenplan.php"},
+            {"Name": "External", "link": "https://vendor.invalid/"},
+        ]}}
 
     def get_available_modules(self, apps_result):
         return [
@@ -150,7 +156,7 @@ def test_probe_resumes_authenticated_checks_after_maintenance(monkeypatch):
     assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
 
 
-def test_probe_runs_login_and_opens_all_modules(monkeypatch):
+def test_probe_runs_login_and_stops_after_one_native_module(monkeypatch):
     configure_monitor(monkeypatch)
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
 
@@ -160,7 +166,7 @@ def test_probe_runs_login_and_opens_all_modules(monkeypatch):
     assert result["is_available"] is True
     assert [feature["status"] for feature in result["features"]] == ["up", "up"]
     assert result["features"][1]["module_count"] == 2
-    assert result["features"][1]["opened_count"] == 2
+    assert result["features"][1]["opened_count"] == 1
     assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
 
 
@@ -344,3 +350,51 @@ def test_slow_maintenance_preflight_is_reaped(monkeypatch):
     assert check["error"] == "probe_deadline"
     assert time.monotonic() - started < 12
     assert {child.pid for child in multiprocessing.active_children()} == children
+
+
+@pytest.mark.parametrize("login_result,expected", [
+    ({"success": False}, "unknown"),
+    ({"success": False, "error_kind": "unconfirmed", "error_code": "login_unconfirmed"}, "unknown"),
+    ({"success": False, "error_kind": "upstream", "error_code": "tls_error"}, "unknown"),
+    ({"success": False, "error_kind": "upstream", "error_code": "timeout"}, "down"),
+    ({"success": False, "error_kind": "upstream", "error_code": "login_http_error"}, "down"),
+])
+def test_login_evidence_distinguishes_unconfirmed_accounts_from_upstream_failure(monkeypatch, login_result, expected):
+    monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
+    monkeypatch.setattr(FakeClient, "login", lambda *args: login_result)
+    check = uptime._probe_portal(("1234", "private-user", "private-password"))
+    assert check["status"] == expected
+    assert check["features"][0]["status"] == expected
+    if expected == "unknown":
+        assert check["is_available"] is None
+
+
+def test_monitor_does_not_resolve_external_apps_or_open_all_modules(monkeypatch):
+    client = FakeClient()
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return FakeResponse(200)
+
+    client.session.get = get
+    client.get_available_modules = lambda *_: pytest.fail("Must not resolve SSO/vendor URLs")
+    check = uptime._check_modules(client)
+    assert check["status"] == "up"
+    assert calls == ["https://start.schulportal.hessen.de/kalender.php"]
+
+
+def test_external_only_directory_is_inconclusive(monkeypatch):
+    client = FakeClient()
+    client.get_apps = lambda: {"success": True, "data": {"entrys": [
+        {"link": "https://vendor.invalid/"},
+        {"link": "kalender.php?logout=all"},
+    ]}}
+    client.session.get = lambda *_args, **_kwargs: pytest.fail("No safe native module")
+    assert uptime._check_modules(client)["status"] == "unknown"
+
+
+def test_expired_account_does_not_prove_modules_are_down():
+    client = FakeClient()
+    client.get_apps = lambda: {"success": False, "error_kind": "authentication"}
+    assert uptime._check_modules(client)["status"] == "unknown"

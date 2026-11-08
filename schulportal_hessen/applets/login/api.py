@@ -1,6 +1,8 @@
-from typing import Dict, Any, Optional
-import requests
 from pathlib import Path
+from typing import Any, Dict, Optional
+
+import requests
+
 from schulportal_hessen.tools.cryptor import Cryptor
 
 
@@ -16,6 +18,7 @@ def login_using_env(self, env_path: Optional[str] = None) -> Dict[str, Any]:
     """
     try:
         import os
+
         from dotenv import load_dotenv
     except ImportError:
         return {
@@ -148,11 +151,23 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
                 "success": False,
                 "message": "Login failed - no session cookie received",
                 "status_code": response.status_code,
+                "error_kind": "upstream" if response.status_code >= 500 else "unconfirmed",
+                "error_code": "login_http_error" if response.status_code >= 500 else "login_unconfirmed",
                 "cookies": cookies_dict,
             }
 
     except requests.RequestException as e:
-        return {"success": False, "message": f"Login request failed: {str(e)}"}
+        return {
+            "success": False,
+            "message": "Login request failed",
+            "error_kind": "upstream",
+            "error_code": (
+                "tls_error" if isinstance(e, requests.exceptions.SSLError)
+                else "timeout" if isinstance(e, requests.Timeout)
+                else "connection_error" if isinstance(e, requests.ConnectionError)
+                else "request_error"
+            ),
+        }
 
 
 def logout(self) -> Dict[str, Any]:

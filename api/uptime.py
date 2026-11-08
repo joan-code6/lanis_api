@@ -17,13 +17,14 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
 from fastapi.concurrency import run_in_threadpool
 
 from schulportal_hessen.base import SchulportalHessenAPI
+from schulportal_hessen.tools.transport import UpstreamSessionExpired
 
 from .metrics import user_metrics_db
 
@@ -216,7 +217,7 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
         if not apps_result.get("success"):
             return _feature(
                 "modules",
-                "down",
+                "unknown" if apps_result.get("error_kind") == "authentication" else "down",
                 started,
                 error="modules_request_failed",
                 module_count=0,
@@ -234,11 +235,29 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
                 opened_count=0,
             )
 
-        modules = client.get_available_modules(apps_result)
+        # Synthetic availability must not resolve external SSO apps or contact
+        # every vendor in a school's app directory. Probe only native read pages.
+        native_pages = {
+            "/kalender.php", "/stundenplan.php", "/meinunterricht.php",
+            "/lerngruppen.php", "/vertretungsplan.php",
+        }
+        modules = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            target = urlsplit(urljoin(PORTAL_START_URL, str(entry.get("link") or "")))
+            if (
+                target.scheme == "https"
+                and target.netloc == "start.schulportal.hessen.de"
+                and target.path in native_pages
+                and not target.query
+                and target.path not in modules
+            ):
+                modules.append(target.path)
         if not modules:
             return _feature(
                 "modules",
-                "down",
+                "unknown",
                 started,
                 error="modules_empty",
                 module_count=0,
@@ -247,9 +266,7 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
 
         opened_count = 0
         for module in modules:
-            module_url = str(module.get("url") or "")
-            if not module_url:
-                continue
+            module_url = urljoin(PORTAL_START_URL, module)
             try:
                 response = client.session.get(
                     module_url,
@@ -258,8 +275,11 @@ def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
                 )
                 status_code = int(response.status_code)
                 response.close()
-                if 200 <= status_code < 400:
+                if status_code == 200:
                     opened_count += 1
+                    break
+            except UpstreamSessionExpired:
+                return _feature("modules", "unknown", started, error="session_expired")
             except requests.RequestException:
                 continue
 
@@ -477,11 +497,22 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
             with contextlib.redirect_stdout(io.StringIO()):
                 login_result = client.login(school_id, username, password)
             login_ok = bool(login_result.get("success"))
-            login_error = None if login_ok else "login_failed"
+            login_error = None if login_ok else login_result.get("error_code", "login_unconfirmed")
+            login_status = (
+                "up" if login_ok
+                else "down" if login_result.get("error_kind") == "upstream"
+                and login_error != "tls_error"
+                else "unknown"
+            )
         except Exception as error:  # noqa: BLE001 - a monitor must classify SDK failures
             login_ok = False
             login_error = _error_code(error, "login_check_failed")
-        features.append(_feature("login", "up" if login_ok else "down", login_started, error=login_error))
+            login_status = (
+                "down" if isinstance(error, (requests.Timeout, requests.ConnectionError))
+                and not isinstance(error, requests.exceptions.SSLError)
+                else "unknown"
+            )
+        features.append(_feature("login", login_status, login_started, error=login_error))
 
         if login_ok:
             features.append(_check_modules(client))
@@ -489,15 +520,20 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
             features.append(_feature("modules", "skipped", overall_started, error="login_failed"))
 
         failed = [feature for feature in features if feature["status"] == "down"]
-        status = "down" if not login_ok else "degraded" if failed else "up"
+        status = (
+            login_status if not login_ok
+            else "degraded" if failed
+            else "unknown" if any(feature["status"] == "unknown" for feature in features)
+            else "up"
+        )
         return {
             "checked_at": checked_at,
             "url": get_uptime_url(),
             "status": status,
-            "is_available": status == "up",
+            "is_available": None if status == "unknown" else status == "up",
             "status_code": None,
             "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
-            "error": failed[0]["error"] if failed else None,
+            "error": next((f["error"] for f in features if f["status"] in {"down", "unknown"}), None),
             "features": features,
         }
     finally:

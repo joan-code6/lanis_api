@@ -1,4 +1,4 @@
-from schulportal_hessen.tools.transport import ObservedSession
+from schulportal_hessen.tools.transport import ObservedSession, UpstreamSessionExpired
 import requests
 import threading
 from typing import Optional, Dict, Any, List
@@ -78,7 +78,7 @@ class SchulportalHessenAPI:
             {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Accept-Encoding": requests.utils.DEFAULT_ACCEPT_ENCODING,
                 "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
                 "Sec-Fetch-Dest": "document",
                 "Sec-Fetch-Mode": "navigate",
@@ -187,7 +187,8 @@ class SchulportalHessenAPI:
                 "success": False,
                 "error": f"Failed to retrieve apps: {str(e)}",
                 "error_kind": "authentication"
-                if getattr(e.response, "status_code", None) in (401, 403)
+                if isinstance(e, UpstreamSessionExpired)
+                or getattr(e.response, "status_code", None) in (401, 403)
                 else "upstream",
             }
         except json.JSONDecodeError as e:

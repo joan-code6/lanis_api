@@ -155,6 +155,8 @@ def test_refresh_does_not_require_a_live_schulportal_session(monkeypatch):
 def test_failed_restore_is_retryable_and_keeps_the_refresh_token(monkeypatch):
     attempts = 0
     token_lookups = 0
+    clock = [100.0]
+    monkeypatch.setattr(api_module.time, "monotonic", lambda: clock[0])
 
     class FakeClient:
         def __init__(self):
@@ -189,6 +191,14 @@ def test_failed_restore_is_retryable_and_keeps_the_refresh_token(monkeypatch):
         assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert exc_info.value.headers == {"Retry-After": "5"}
 
+        # Parallel page requests share the failure during Retry-After.
+        responses = await asyncio.gather(*(
+            manager._get_or_create_schulportal_client("5201:student")
+            for _ in range(8)
+        ), return_exceptions=True)
+        assert all(isinstance(response, HTTPException) for response in responses)
+        assert attempts == 1
+        clock[0] += 5
         restored = await manager._get_or_create_schulportal_client("5201:student")
         assert isinstance(restored.client, FakeClient)
 

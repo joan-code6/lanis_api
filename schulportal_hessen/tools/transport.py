@@ -1,11 +1,15 @@
 """Request-local transport facts, also available when applets catch exceptions."""
 
+import logging
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urljoin, urlsplit
 
 import requests
+
+logger = logging.getLogger("schulportal.transport")
 
 
 @dataclass
@@ -74,16 +78,35 @@ class ObservedSession(requests.Session):
             raise requests.ConnectionError("Earlier Schulportal request unavailable")
         # An unavailable upstream must eventually return control to the caller.
         kwargs.setdefault("timeout", (5, 15))
+        started = time.monotonic()
+
+        def record_failure(code, status=None):
+            # Fixed portal origins and numeric timing only: never query strings,
+            # credentials, cookie values, response bodies, or exception messages.
+            host = urlsplit(url).hostname
+            if host in {"start.schulportal.hessen.de", "login.schulportal.hessen.de"}:
+                logger.warning(
+                    "SPH request failed: host=%s code=%s status=%s duration_ms=%d",
+                    host, code, status, round((time.monotonic() - started) * 1000),
+                )
+
         try:
             response = super().request(method, url, **kwargs)
         except requests.exceptions.SSLError:
+            record_failure("tls_error")
             if current:
                 current.security_failure = True
             raise
-        except (requests.Timeout, requests.ConnectionError):
+        except (requests.Timeout, requests.ConnectionError) as error:
+            record_failure("timeout" if isinstance(error, requests.Timeout) else "connection_error")
             if current:
                 current.unavailable = True
             raise
+        except requests.RequestException:
+            record_failure("request_error")
+            raise
+        if response.status_code >= 500:
+            record_failure("http_error", response.status_code)
         # Mein Unterricht can return a database-selection error when the
         # session is gone, rather than redirecting to the login gate. Probe the
         # apps endpoint to distinguish expiry from a genuine module failure.
@@ -106,6 +129,7 @@ class ObservedSession(requests.Session):
                 raise
             probe.close()
         if is_login_gate(response, url, stream=kwargs.get("stream", False)):
+            record_failure("session_expired", response.status_code)
             self.upstream_expired = True
             if current:
                 current.security_failure = True

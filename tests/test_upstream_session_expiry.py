@@ -301,3 +301,19 @@ def test_next_request_discards_client_after_consumed_write_expiry(monkeypatch):
         assert closed == [True]
 
     asyncio.run(scenario())
+
+
+def test_apps_preserves_authentication_classification_for_monitor(monkeypatch):
+    from schulportal_hessen.base import SchulportalHessenAPI
+
+    client = SchulportalHessenAPI()
+    client.logged_in = True
+
+    def expired(*args, **kwargs):
+        raise UpstreamSessionExpired('Schulportal session expired')
+
+    monkeypatch.setattr(client.session, 'get', expired)
+    try:
+        assert client.get_apps()['error_kind'] == 'authentication'
+    finally:
+        client.close()
