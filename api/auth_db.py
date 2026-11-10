@@ -2406,13 +2406,13 @@ async def save_push_subscription(
     user_id: str,
     subscription: Dict[str, Any],
     session_id: str,
-) -> None:
+) -> bool:
     """Associate a browser push subscription with a user."""
     user_id = _canonical_user_id(user_id)
     keys = subscription.get("keys") or {}
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
+            cursor = await db.execute(
                 """
                 INSERT INTO push_subscriptions
                     (endpoint, user_id, session_id, p256dh, auth, created_at, updated_at)
@@ -2440,6 +2440,7 @@ async def save_push_subscription(
                 ),
             )
             await db.commit()
+            return cursor.rowcount > 0
 
 
 async def get_push_subscriptions(user_id: str) -> List[Dict[str, Any]]:
