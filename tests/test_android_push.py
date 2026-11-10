@@ -109,7 +109,9 @@ def test_registration_rotation_and_account_cleanup(tmp_path, monkeypatch):
         await auth_db.delete_user_tokens(auth.user_id)
         assert await auth_db.get_push_subscriptions(auth.user_id) == []
         # A request authenticated before revocation cannot restore its device registration.
-        await routes.register_android_push(routes.AndroidPushRequest(token=TOKEN, binding=BINDING), auth)
+        with pytest.raises(HTTPException) as error:
+            await routes.register_android_push(routes.AndroidPushRequest(token=TOKEN, binding=BINDING), auth)
+        assert error.value.status_code == 401
         assert await auth_db.get_push_subscriptions(auth.user_id) == []
 
     asyncio.run(scenario())
@@ -134,3 +136,33 @@ def test_payload_is_bounded_for_unicode(monkeypatch):
     monkeypatch.setattr('requests.post', lambda *args, **kwargs: (captured.update(kwargs) or SimpleNamespace(ok=True)))
     android.send_android_push(android.android_subscription(TOKEN, BINDING), {key: '🎒' * 2000 for key in ('title', 'body', 'url', 'tag')})
     assert len(json.dumps(captured['json']['message']['data'], ensure_ascii=False).encode()) < 4096
+
+
+def test_busy_credential_refresh_fails_without_waiting(monkeypatch):
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/unused/test.json")
+    android._lock.acquire()
+    try:
+        with pytest.raises(android.AndroidPushError):
+            android._access_token()
+    finally:
+        android._lock.release()
+
+
+@pytest.mark.parametrize('message,permanent', [
+    ('The registration token is not a valid FCM registration token', True),
+    ('Invalid data payload', False),
+])
+def test_invalid_argument_only_removes_confirmed_invalid_token(monkeypatch, message, permanent):
+    monkeypatch.setenv('LANIS_FIREBASE_PROJECT_ID', 'lanis-test-project')
+    monkeypatch.setattr(android, '_access_token', lambda: 'test')
+    monkeypatch.setattr('requests.post', lambda *args, **kwargs: SimpleNamespace(
+        ok=False, json=lambda: {'error': {'message': message, 'details': [
+            {'errorCode': 'INVALID_ARGUMENT'}]}}))
+    with pytest.raises(android.AndroidPushError) as error:
+        android.send_android_push(android.android_subscription(TOKEN, BINDING), {})
+    assert error.value.permanent is permanent
+
+
+def test_unregistration_uses_local_authentication():
+    route = next(route for route in routes.app.routes if getattr(route, 'path', None) == '/notifications/android' and 'DELETE' in route.methods)
+    assert any(dependency.call is routes.local_auth_dependency for dependency in route.dependant.dependencies)

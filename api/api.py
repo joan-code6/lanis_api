@@ -2915,7 +2915,8 @@ async def register_android_push(
         previous = android_subscription(payload.previous_token) if payload.previous_token else None
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    await save_push_subscription(auth.user_id, subscription, auth.session_id)
+    if not await save_push_subscription(auth.user_id, subscription, auth.session_id):
+        raise HTTPException(status_code=401, detail="Session is no longer valid")
     if previous and previous["endpoint"] != subscription["endpoint"]:
         await delete_push_subscription(auth.user_id, previous["endpoint"])
     return {"success": True}
@@ -2924,7 +2925,7 @@ async def register_android_push(
 @app.delete("/notifications/android")
 async def unregister_android_push(
     payload: AndroidPushRequest,
-    auth: AuthSession = Depends(client_dependency),
+    auth: AuthSession = Depends(local_auth_dependency),
 ) -> Dict[str, object]:
     try:
         subscription = android_subscription(payload.token, payload.binding)

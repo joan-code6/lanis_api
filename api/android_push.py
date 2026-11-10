@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 from typing import Any
 
 PREFIX = "fcm://"
@@ -13,6 +14,7 @@ TOKEN = re.compile(r"^[A-Za-z0-9_:\-]{20,4096}$")
 _lock = threading.Lock()
 _credentials = None
 _credentials_path = None
+_refresh_retry_at = 0.0
 
 
 def android_push_configured() -> bool:
@@ -47,9 +49,13 @@ def _access_token() -> str:
     # Lock credential refresh because one notification cycle delivers concurrently.
     from google.auth.transport.requests import Request
     from google.oauth2 import service_account
-    global _credentials, _credentials_path
+    global _credentials, _credentials_path, _refresh_retry_at
     path = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-    with _lock:
+    if not _lock.acquire(blocking=False):
+        raise AndroidPushError()
+    try:
+        if path == _credentials_path and time.monotonic() < _refresh_retry_at:
+            raise AndroidPushError()
         if _credentials is None or path != _credentials_path:
             _credentials = service_account.Credentials.from_service_account_file(
                 path, scopes=["https://www.googleapis.com/auth/firebase.messaging"])
@@ -59,8 +65,15 @@ def _access_token() -> str:
             def bounded_request(*args, **kwargs):
                 kwargs["timeout"] = 15
                 return transport(*args, **kwargs)
-            _credentials.refresh(bounded_request)
+            try:
+                _credentials.refresh(bounded_request)
+            except Exception:
+                _refresh_retry_at = time.monotonic() + 60
+                raise AndroidPushError() from None
+            _refresh_retry_at = 0.0
         return str(_credentials.token)
+    finally:
+        _lock.release()
 
 
 def send_android_push(subscription: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -90,4 +103,7 @@ def send_android_push(subscription: dict[str, Any], payload: dict[str, Any]) -> 
     except (ValueError, AttributeError, TypeError):
         codes = set()
     # Don't delete devices for permission/configuration/quota failures.
-    raise AndroidPushError(permanent="UNREGISTERED" in codes)
+    invalid_token = ("INVALID_ARGUMENT" in codes
+                     and response.json().get("error", {}).get("message")
+                     == "The registration token is not a valid FCM registration token")
+    raise AndroidPushError(permanent="UNREGISTERED" in codes or invalid_token)
