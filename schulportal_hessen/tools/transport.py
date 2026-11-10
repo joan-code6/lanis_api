@@ -130,6 +130,14 @@ def check_portal_session(session, response, url, *, stream=False):
 
 
 class ObservedSession(requests.Session):
+    module_guard = None
+
+    def send(self, request, **kwargs):
+        # send() also sees redirect hops, unlike the initial request() call.
+        if self.module_guard is not None:
+            self.module_guard(request.url, method=request.method)
+        return super().send(request, **kwargs)
+
     def request(self, method, url, **kwargs):
         kwargs.setdefault("timeout", (5, 15))
 

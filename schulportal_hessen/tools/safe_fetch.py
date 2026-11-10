@@ -128,6 +128,10 @@ def fetch_document(session: requests.Session, url: str) -> requests.Response:
 
 
 def _fetch_document(session: requests.Session, url: str) -> requests.Response:
+    validate_document_url(url)
+    guard = getattr(session, "module_guard", None)
+    if guard is not None:
+        guard(url, method="GET")
     host, addresses = public_https_url(url)
     addresses = addresses[:MAX_CONNECT_ATTEMPTS]
     deadline = time.monotonic() + MAX_DOCUMENT_SECONDS

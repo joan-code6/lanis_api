@@ -21,6 +21,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 from fastapi.concurrency import run_in_threadpool
 
+from .android_push import (
+    AndroidPushError,
+    android_push_configured,
+    is_android_subscription,
+    send_android_push,
+)
 from .auth_db import (
     delete_push_subscription,
     get_enabled_notification_users,
@@ -484,7 +490,8 @@ def _release_push_slot(user_id):
 
 def _send_push_reserved(subscription, payload, user_id):
     try:
-        return _send_push_sync(subscription, payload)
+        sender = send_android_push if is_android_subscription(subscription) else _send_push_sync
+        return sender(subscription, payload)
     finally:
         _release_push_slot(user_id)
 
@@ -545,12 +552,12 @@ async def _send_push_payloads(
     trusted_deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
     canonical_endpoints = set()
     for endpoint, delivery in deliveries.items():
-        if not is_trusted_push_endpoint(endpoint):
+        if not is_android_subscription(delivery[0]) and not is_trusted_push_endpoint(endpoint):
             logger.warning("Dropping untrusted stored push endpoint for %s: %s", user_id, endpoint)
             await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
             continue
-        normalized = normalize_push_endpoint(endpoint)
+        normalized = endpoint if is_android_subscription(delivery[0]) else normalize_push_endpoint(endpoint)
         if normalized in canonical_endpoints:
             statuses[endpoint] = "retry"
             continue
@@ -572,10 +579,14 @@ async def _send_push_payloads(
     selected = set(ordered[:MAX_PUSH_SUBSCRIPTIONS])
     statuses.update({endpoint: "retry" for endpoint in endpoints if endpoint not in selected})
     trusted_deliveries = {endpoint: trusted_deliveries[endpoint] for endpoint in ordered if endpoint in selected}
-    if not push_configured():
-        logger.warning("Push notification skipped: VAPID configuration is incomplete")
-        statuses.update({endpoint: "retry" for endpoint in trusted_deliveries})
-        return statuses
+    ready = {}
+    for endpoint, delivery in trusted_deliveries.items():
+        configured = android_push_configured() if is_android_subscription(delivery[0]) else push_configured()
+        if configured:
+            ready[endpoint] = delivery
+        else:
+            statuses[endpoint] = "retry"
+    trusted_deliveries = ready
 
     # Attempt a user's bounded batch sequentially so its own device deliveries
     # do not compete for the single per-user slot. Other users retain capacity.
@@ -592,7 +603,8 @@ async def _send_push_payloads(
             statuses[endpoint] = "delivered"
             continue
 
-        if _is_permanent_push_failure(result):
+        if ((isinstance(result, AndroidPushError) and result.permanent)
+                or (not is_android_subscription(_subscription) and _is_permanent_push_failure(result))):
             await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
             continue

@@ -74,6 +74,7 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
         >>> result = api.login("1234", "firstname.lastname", "password123")
         >>> print(result)
     """
+    self._module_capabilities.clear()
     self.school_id = school_id
 
     # First, set initial cookies by visiting the login page
@@ -170,6 +171,7 @@ def logout(self) -> Dict[str, Any]:
         self.session.get(logout_url)
 
         self.logged_in = False
+        self._module_capabilities.clear()
         self.cryptor = None
 
         return {"success": True, "message": "Logged out successfully"}

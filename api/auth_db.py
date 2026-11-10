@@ -2408,6 +2408,7 @@ async def _canonicalize_push_endpoints(
 ) -> None:
     """Merge legacy endpoint aliases, retaining the newest keys and session."""
     from .message_notifications import normalize_push_endpoint
+    from .android_push import is_android_subscription
 
     db.row_factory = aiosqlite.Row
     query = "SELECT rowid AS __rowid, * FROM push_subscriptions"
@@ -2419,6 +2420,8 @@ async def _canonicalize_push_endpoints(
         rows = await cursor.fetchall()
     groups = defaultdict(list)
     for row in rows:
+        if is_android_subscription({"endpoint": row["endpoint"], "keys": {"p256dh": row["p256dh"], "auth": row["auth"]}}):
+            continue
         try:
             endpoint = normalize_push_endpoint(row["endpoint"])
         except ValueError:
@@ -2453,11 +2456,14 @@ async def save_push_subscription(
     user_id: str,
     subscription: Dict[str, Any],
     session_id: str,
-) -> None:
-    """Associate a browser push subscription with a user."""
+    *, previous_endpoint: Optional[str] = None,
+) -> bool:
+    """Associate a push device with a live session, enforcing a shared device cap."""
     from .message_notifications import MAX_PUSH_SUBSCRIPTIONS, normalize_push_endpoint
+    from .android_push import is_android_subscription
 
-    subscription = {**subscription, "endpoint": normalize_push_endpoint(subscription["endpoint"])}
+    if not is_android_subscription(subscription):
+        subscription = {**subscription, "endpoint": normalize_push_endpoint(subscription["endpoint"])}
     user_id = _canonical_user_id(user_id)
     keys = subscription.get("keys") or {}
     async with _lock:
@@ -2465,12 +2471,25 @@ async def save_push_subscription(
             await db.execute("BEGIN IMMEDIATE")
             await _canonicalize_push_endpoints(db, user_id)
             async with db.execute(
+                "SELECT 1 FROM refresh_tokens WHERE user_id = ? AND session_id = ? AND expires_at > ?",
+                (user_id, session_id, datetime.utcnow()),
+            ) as cursor:
+                if await cursor.fetchone() is None:
+                    return False
+            # Android token refresh replaces the same session's old registration
+            # atomically, including when the account is already at the cap.
+            if previous_endpoint and is_android_subscription(subscription):
+                await db.execute(
+                    "DELETE FROM push_subscriptions WHERE user_id = ? AND session_id = ? AND endpoint = ? AND endpoint != ? AND p256dh = ?",
+                    (user_id, session_id, previous_endpoint, subscription["endpoint"], keys["p256dh"]),
+                )
+            async with db.execute(
                 "SELECT endpoint FROM push_subscriptions WHERE user_id = ?", (user_id,)
             ) as cursor:
                 existing = {row[0] for row in await cursor.fetchall()}
             if subscription["endpoint"] not in existing and len(existing) >= MAX_PUSH_SUBSCRIPTIONS:
                 raise ValueError("Push subscription limit reached; remove an existing device first")
-            await db.execute(
+            cursor = await db.execute(
                 """
                 INSERT INTO push_subscriptions
                     (endpoint, user_id, session_id, p256dh, auth, created_at, updated_at)
@@ -2498,6 +2517,7 @@ async def save_push_subscription(
                 ),
             )
             await db.commit()
+            return cursor.rowcount > 0
 
 
 async def get_push_subscriptions(user_id: str) -> List[Dict[str, Any]]:

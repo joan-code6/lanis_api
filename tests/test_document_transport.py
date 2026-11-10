@@ -76,6 +76,8 @@ def test_real_adapter_keeps_pinning_and_enforces_deadline_inside_reads(
         # Session.send and HTTPAdapter.send are intentionally real here. Only
         # actual socket creation and TLS wrapping are replaced at the boundary.
         with requests.Session() as session:
+            guarded = []
+            session.module_guard = lambda url, **kwargs: guarded.append((url, kwargs))
             if mode == "ordinary":
                 assert (
                     safe_fetch.fetch_document(
@@ -89,6 +91,7 @@ def test_real_adapter_keeps_pinning_and_enforces_deadline_inside_reads(
                     safe_fetch.fetch_document(session, "https://plans.example/one")
                 assert time.monotonic() - start < 0.6
                 assert current.unavailable and not current.security_failure
+        assert guarded == [("https://plans.example/one", {"method": "GET"})]
         assert targets == [("93.184.216.34", 443)]
         assert tls_hosts == ["plans.example"]
         assert b"Host: plans.example\r\n" in received[0]
@@ -131,3 +134,24 @@ def test_dns_deadline_bounds_both_caller_wait_and_outstanding_resolver_threads(
         "plans.example",
         ("93.184.216.34",),
     )
+
+
+def test_document_guard_rejects_unavailable_module_before_dns(monkeypatch):
+    from schulportal_hessen.tools.capabilities import ModuleUnavailable
+    from schulportal_hessen.tools.transport import ObservedSession
+
+    def deny(url, *, method):
+        assert url == "https://start.schulportal.hessen.de/meinunterricht.php"
+        assert method == "GET"
+        raise ModuleUnavailable("Schulportal module unavailable for this account")
+
+    def unexpected_dns(*args):
+        pytest.fail("Denied modules must not reach document DNS or transport")
+
+    monkeypatch.setattr(safe_fetch, "_resolve", unexpected_dns)
+    with ObservedSession() as session:
+        session.module_guard = deny
+        with pytest.raises(ModuleUnavailable):
+            safe_fetch.fetch_document(
+                session, "https://start.schulportal.hessen.de/meinunterricht.php"
+            )
