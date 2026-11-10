@@ -166,3 +166,35 @@ def test_invalid_argument_only_removes_confirmed_invalid_token(monkeypatch, mess
 def test_unregistration_uses_local_authentication():
     route = next(route for route in routes.app.routes if getattr(route, 'path', None) == '/notifications/android' and 'DELETE' in route.methods)
     assert any(dependency.call is routes.local_auth_dependency for dependency in route.dependant.dependencies)
+
+
+def test_failed_refresh_is_backed_off(monkeypatch):
+    attempts = []
+    def fail(request):
+        attempts.append(request)
+        raise RuntimeError('credential refresh failed')
+    monkeypatch.setenv('GOOGLE_APPLICATION_CREDENTIALS', '/unused/test.json')
+    monkeypatch.setattr(android, '_credentials_path', '/unused/test.json')
+    monkeypatch.setattr(android, '_credentials', SimpleNamespace(valid=False, refresh=fail))
+    monkeypatch.setattr(android, '_refresh_retry_at', 0)
+    for _ in range(2):
+        with pytest.raises(android.AndroidPushError):
+            android._access_token()
+    assert len(attempts) == 1
+
+
+def test_failed_registration_preserves_previous_token(monkeypatch):
+    deleted = []
+    async def save(*args):
+        return False
+    async def delete(*args):
+        deleted.append(args)
+    monkeypatch.setattr(routes, 'android_push_configured', lambda: True)
+    monkeypatch.setattr(routes, 'save_push_subscription', save)
+    monkeypatch.setattr(routes, 'delete_push_subscription', delete)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(routes.register_android_push(
+            routes.AndroidPushRequest(token=TOKEN, binding=BINDING, previous_token=TOKEN+'-old'),
+            SimpleNamespace(user_id='user', session_id='revoked')))
+    assert error.value.status_code == 401
+    assert deleted == []
