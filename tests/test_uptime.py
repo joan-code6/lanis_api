@@ -27,6 +27,8 @@ class FakeSession:
         return FakeResponse(200)
 
     def get(self, url, **kwargs):
+        if url == uptime.PORTAL_START_URL:
+            return FakeResponse(200)
         if isinstance(self.module_status, list):
             status = self.module_status[self.module_requests]
         else:

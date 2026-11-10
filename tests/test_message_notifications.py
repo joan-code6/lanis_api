@@ -14,6 +14,59 @@ from api import auth_db
 from api import message_notifications as notifications
 
 
+def test_message_poll_persists_rotation_with_fresh_changes_for_legacy_devices(monkeypatch):
+    from datetime import timedelta
+
+    stored = None
+    sent = set()
+    device_count = notifications.MAX_PUSH_SUBSCRIPTIONS + 3
+    subscriptions = [{"endpoint": f"https://fcm.googleapis.com/{index}", "keys": {}} for index in range(device_count)]
+
+    async def get_state(_user_id):
+        return json.loads(stored) if stored is not None else None
+
+    async def save_state(_user_id, state):
+        nonlocal stored
+        stored = json.dumps(state)
+
+    async def get_subscriptions(_user_id):
+        return subscriptions
+
+    async def dispatch(subscription, _payload, **_kwargs):
+        sent.add(subscription["endpoint"])
+
+    class Client:
+        counter = 0
+
+        def nachrichten_get_headers(self, *_args):
+            self.counter += 1
+            return {"success": True, "conversations": [{"id": "one", "date": str(self.counter), "unread": True}]}
+
+    client = Client()
+
+    async def get_client(_user):
+        return SimpleNamespace(client=client)
+
+    monkeypatch.setattr(notifications, "get_message_notification_state", get_state)
+    monkeypatch.setattr(notifications, "save_message_notification_state", save_state)
+    monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
+    monkeypatch.setattr(notifications, "_dispatch_push", dispatch)
+    monkeypatch.setattr(notifications, "push_configured", lambda: True)
+
+    async def scenario():
+        user = {"user_id": "legacy", "enabled": True, "messages_enabled": True,
+                "timezone": "Europe/Berlin", "start_time": "07:00", "end_time": "21:00", "poll_interval_minutes": 15}
+        start = datetime(2026, 8, 28, 10, 0, tzinfo=ZoneInfo("Europe/Berlin"))
+        for poll in range(device_count + 1):
+            await notifications.check_user_messages(user, get_client, start + timedelta(minutes=15 * poll))
+            # Each poll loads a fresh state object from serialized storage,
+            # including after the initial baseline which sends nothing.
+            assert json.loads(stored)["push_cursor"] == poll
+        assert sent == {subscription["endpoint"] for subscription in subscriptions}
+
+    asyncio.run(scenario())
+
+
 @pytest.fixture(autouse=True)
 def isolate_unread_overlay(monkeypatch):
     """Keep notification unit tests independent of the separately tested unread database."""
@@ -188,13 +241,13 @@ def test_local_signing_failure_retains_devices_and_allows_a_retry(monkeypatch):
     deleted = []
     failing = True
 
-    async def send(*_args):
+    async def send(*_args, **_kwargs):
         return ValueError("bad signing key") if failing else None
 
     async def delete(*args):
         deleted.append(args)
 
-    monkeypatch.setattr(notifications, "run_in_threadpool", send)
+    monkeypatch.setattr(notifications, "_dispatch_push", send)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete)
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
 
@@ -240,7 +293,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
         await auth_db.save_push_subscription(
             "user-a",
             {
-                "endpoint": "https://push.example/subscription",
+                "endpoint": "https://fcm.googleapis.com/subscription",
                 "keys": {"p256dh": "public-key", "auth": "auth-key"},
             },
             session["session_id"],
@@ -300,7 +353,7 @@ def test_notification_storage_round_trip(tmp_path, monkeypatch):
         }
         assert await auth_db.get_push_subscriptions("user-a") == [
             {
-                "endpoint": "https://push.example/subscription",
+                "endpoint": "https://fcm.googleapis.com/subscription",
                 "keys": {"p256dh": "public-key", "auth": "auth-key"},
             }
         ]
@@ -523,7 +576,7 @@ def test_vertretungsplan_poll_baselines_then_notifies_for_a_new_own_class_entry(
     async def get_subscriptions(_user_id):
         return [{"endpoint": "https://push.example/subscription", "keys": {}}]
 
-    async def send_push(_user_id, deliveries):
+    async def send_push(_user_id, deliveries, **_kwargs):
         sent_payloads.extend(payload for _subscription, payload in deliveries.values())
         return {endpoint: "delivered" for endpoint in deliveries}
 
@@ -601,7 +654,7 @@ def test_vertretungsplan_poll_rebaselines_when_the_users_own_class_changes(monke
     async def get_subscriptions(_user_id):
         return [{"endpoint": "https://push.example/subscription", "keys": {}}]
 
-    async def send_push(_user_id, deliveries):
+    async def send_push(_user_id, deliveries, **_kwargs):
         sent_payloads.extend(payload for _subscription, payload in deliveries.values())
         return {endpoint: "delivered" for endpoint in deliveries}
 
@@ -687,7 +740,7 @@ def test_message_poll_baselines_then_notifies_on_a_changed_conversation(monkeypa
             }
         ]
 
-    async def send_push(_user_id, deliveries):
+    async def send_push(_user_id, deliveries, **_kwargs):
         sent_payloads.extend(payload for _subscription, payload in deliveries.values())
         return {endpoint: "delivered" for endpoint in deliveries}
 
@@ -787,7 +840,7 @@ def test_message_poll_rechecks_preferences_before_delivery(monkeypatch):
     async def get_subscriptions(_user_id):
         return [{"endpoint": "https://push.example/subscription", "keys": {}}]
 
-    async def send_push(_user_id, deliveries):
+    async def send_push(_user_id, deliveries, **_kwargs):
         sent_bodies.extend(payload["body"] for _subscription, payload in deliveries.values())
         return {endpoint: "delivered" for endpoint in deliveries}
 
@@ -868,7 +921,7 @@ def test_message_poll_reloads_baseline_after_preferences_recheck(monkeypatch):
     async def get_subscriptions(_user_id):
         return [{"endpoint": "https://push.example/subscription", "keys": {}}]
 
-    async def send_push(_user_id, deliveries):
+    async def send_push(_user_id, deliveries, **_kwargs):
         sent_payloads.extend(deliveries.values())
         return {endpoint: "delivered" for endpoint in deliveries}
 
@@ -1020,7 +1073,7 @@ def test_message_poll_advances_baseline_without_notifying_for_read_activity(monk
     async def get_subscriptions(_user_id):
         return [{"endpoint": "https://push.example/subscription", "keys": {}}]
 
-    async def send_push(_user_id, deliveries):
+    async def send_push(_user_id, deliveries, **_kwargs):
         delivery_attempts.append(deliveries)
         return {endpoint: "delivered" for endpoint in deliveries}
 
@@ -1084,7 +1137,7 @@ def test_message_poll_retries_only_the_device_that_failed(monkeypatch):
     async def get_subscriptions(_user_id):
         return subscriptions
 
-    async def send_push(_user_id, deliveries):
+    async def send_push(_user_id, deliveries, **_kwargs):
         delivery_attempts.append(set(deliveries))
         delivery_payloads.append(
             {endpoint: payload["body"] for endpoint, (_subscription, payload) in deliveries.items()}
@@ -1161,7 +1214,7 @@ def test_message_poll_retries_the_latest_payload_after_new_activity(monkeypatch)
     async def get_subscriptions(_user_id):
         return [{"endpoint": endpoint, "keys": {}}]
 
-    async def send_push(_user_id, deliveries):
+    async def send_push(_user_id, deliveries, **_kwargs):
         sent_bodies.extend(payload["body"] for _subscription, payload in deliveries.values())
         return {endpoint: "retry" if len(sent_bodies) == 1 else "delivered"}
 
@@ -1249,7 +1302,10 @@ def test_push_delivery_retries_when_any_device_has_a_transient_failure(monkeypat
 
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
     monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
-    monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
+    monkeypatch.setattr(
+        notifications, "_dispatch_push",
+        lambda subscription, payload, **_kwargs: run_in_threadpool(None, subscription, payload),
+    )
 
     async def scenario():
         return await notifications._send_push_to_subscriptions(
@@ -1281,6 +1337,10 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
 
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
     monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
+    monkeypatch.setattr(
+        notifications, "_dispatch_push",
+        lambda subscription, payload, **_kwargs: run_in_threadpool(None, subscription, payload),
+    )
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
 
@@ -1293,7 +1353,7 @@ def test_push_delivery_reports_failure_when_all_devices_are_gone(monkeypatch):
         "https://push.example/one": "gone",
         "https://push.example/two": "gone",
     }
-    assert deleted == [("user-a", "https://push.example/one"), ("user-a", "https://push.example/two")]
+    assert sorted(deleted) == [("user-a", "https://push.example/one"), ("user-a", "https://push.example/two")]
 
 
 def test_push_delivery_drops_untrusted_stored_endpoints(monkeypatch):
@@ -1306,6 +1366,10 @@ def test_push_delivery_drops_untrusted_stored_endpoints(monkeypatch):
         deleted.append((user_id, endpoint))
 
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
+    monkeypatch.setattr(
+        notifications, "_dispatch_push",
+        lambda subscription, payload, **_kwargs: run_in_threadpool(None, subscription, payload),
+    )
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
 
@@ -1358,6 +1422,10 @@ def test_message_poll_persists_delivery_state_when_stale_cleanup_fails(monkeypat
     monkeypatch.setattr(notifications, "get_push_subscriptions", get_subscriptions)
     monkeypatch.setattr(notifications, "push_configured", lambda: True)
     monkeypatch.setattr(notifications, "is_trusted_push_endpoint", lambda _endpoint: True)
+    monkeypatch.setattr(
+        notifications, "_dispatch_push",
+        lambda subscription, payload, **_kwargs: run_in_threadpool(None, subscription, payload),
+    )
     monkeypatch.setattr(notifications, "run_in_threadpool", run_in_threadpool)
     monkeypatch.setattr(notifications, "delete_push_subscription", delete_subscription)
 

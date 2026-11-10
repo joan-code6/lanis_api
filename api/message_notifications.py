@@ -10,12 +10,15 @@ import json
 import logging
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time, timedelta
 from html import unescape
 from typing import Any, Awaitable, Callable, Dict, List, Tuple
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import requests
 from fastapi.concurrency import run_in_threadpool
 
 from .android_push import (
@@ -37,6 +40,12 @@ from .auth_db import (
 from .message_read_state import overlay_headers
 
 logger = logging.getLogger("message_notifications")
+
+MAX_PUSH_SUBSCRIPTIONS = 10
+_PUSH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="webpush")
+_PUSH_SLOTS = threading.BoundedSemaphore(4)
+_PUSH_USERS: set[str] = set()
+_PUSH_ADMISSION_LOCK = threading.Lock()
 
 SCHEDULER_TICK_SECONDS = 60
 MAX_CONCURRENT_USER_POLLS = 4
@@ -376,8 +385,17 @@ def _get_pending_deliveries(
         return {}
 
     pending: Dict[str, List[Dict[str, Any]]] = {}
+    # Subscriptions stored before endpoint canonicalization can still have a
+    # queued retry under their former spelling. Keep that retry deliverable.
+    normalized_pending = {}
+    for endpoint, queued in raw_pending.items():
+        try:
+            canonical = endpoint if endpoint in endpoints else normalize_push_endpoint(endpoint)
+        except ValueError:
+            continue
+        normalized_pending[canonical] = queued
     for endpoint in endpoints:
-        queued = raw_pending.get(endpoint)
+        queued = normalized_pending.get(endpoint)
         if isinstance(queued, dict):
             queued = [queued]
         if not isinstance(queued, list):
@@ -431,6 +449,8 @@ def push_configured() -> bool:
 def is_trusted_push_endpoint(endpoint: str) -> bool:
     """Allow only HTTPS endpoints exposed by known browser push services."""
     try:
+        if not isinstance(endpoint, str) or len(endpoint) > 4096 or "#" in endpoint or "\\" in endpoint or any(ord(c) <= 32 for c in endpoint):
+            return False
         parsed = urlsplit(endpoint)
         hostname = parsed.hostname
         port = parsed.port
@@ -440,8 +460,8 @@ def is_trusted_push_endpoint(endpoint: str) -> bool:
     if (
         parsed.scheme.lower() != "https"
         or not hostname
-        or parsed.username
-        or parsed.password
+        or parsed.username is not None
+        or parsed.password is not None
         or port not in (None, 443)
     ):
         return False
@@ -451,6 +471,46 @@ def is_trusted_push_endpoint(endpoint: str) -> bool:
         normalized_hostname.endswith(suffix)
         for suffix in TRUSTED_PUSH_ENDPOINT_SUFFIXES
     )
+
+
+def normalize_push_endpoint(endpoint: str) -> str:
+    if not is_trusted_push_endpoint(endpoint):
+        raise ValueError("Invalid Web Push endpoint")
+    parsed = urlsplit(endpoint)
+    canonical = urlunsplit(("https", parsed.hostname.rstrip(".").lower(), parsed.path or "/", parsed.query, ""))
+    # Match Requests' wire representation (dot segments and unreserved escapes).
+    return requests.Request("GET", canonical).prepare().url
+
+
+def _release_push_slot(user_id):
+    with _PUSH_ADMISSION_LOCK:
+        _PUSH_USERS.remove(user_id)
+        _PUSH_SLOTS.release()
+
+
+def _send_push_reserved(subscription, payload, user_id):
+    try:
+        sender = send_android_push if is_android_subscription(subscription) else _send_push_sync
+        return sender(subscription, payload)
+    finally:
+        _release_push_slot(user_id)
+
+
+async def _dispatch_push(subscription, payload, *, user_id):
+    # Admit at most four deliveries across all users/requests. Excess work is
+    # retried by the scheduler instead of queueing on the API's worker pool.
+    with _PUSH_ADMISSION_LOCK:
+        if user_id in _PUSH_USERS or not _PUSH_SLOTS.acquire(blocking=False):
+            raise RuntimeError("Push delivery capacity reached")
+        _PUSH_USERS.add(user_id)
+    try:
+        future = asyncio.get_running_loop().run_in_executor(
+            _PUSH_EXECUTOR, _send_push_reserved, subscription, payload, user_id
+        )
+    except BaseException:
+        _release_push_slot(user_id)
+        raise
+    return await asyncio.shield(future)
 
 
 def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -482,6 +542,7 @@ def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> No
 async def _send_push_payloads(
     user_id: str,
     deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]],
+    *, state: Dict[str, Any] | None = None,
 ) -> Dict[str, str]:
     """Send one queued payload per device and report each device's outcome."""
     if not deliveries:
@@ -489,16 +550,35 @@ async def _send_push_payloads(
 
     statuses: Dict[str, str] = {}
     trusted_deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
+    canonical_endpoints = set()
     for endpoint, delivery in deliveries.items():
         if not is_android_subscription(delivery[0]) and not is_trusted_push_endpoint(endpoint):
             logger.warning("Dropping untrusted stored push endpoint for %s: %s", user_id, endpoint)
             await _remove_push_subscription(user_id, endpoint)
             statuses[endpoint] = "gone"
             continue
+        normalized = endpoint if is_android_subscription(delivery[0]) else normalize_push_endpoint(endpoint)
+        if normalized in canonical_endpoints:
+            statuses[endpoint] = "retry"
+            continue
+        canonical_endpoints.add(normalized)
         trusted_deliveries[endpoint] = delivery
 
     if not trusted_deliveries:
         return statuses
+    # Grandfather existing devices above the registration limit. Rotate the
+    # bounded batch on every poll, including polls with newly changed content.
+    endpoints = list(trusted_deliveries)
+    state = state if state is not None else {}
+    try:
+        offset = int(state.get("push_cursor", 0)) % len(endpoints)
+    except (TypeError, ValueError):
+        offset = 0
+    state["push_cursor"] = offset + 1
+    ordered = endpoints[offset:] + endpoints[:offset]
+    selected = set(ordered[:MAX_PUSH_SUBSCRIPTIONS])
+    statuses.update({endpoint: "retry" for endpoint in endpoints if endpoint not in selected})
+    trusted_deliveries = {endpoint: trusted_deliveries[endpoint] for endpoint in ordered if endpoint in selected}
     ready = {}
     for endpoint, delivery in trusted_deliveries.items():
         configured = android_push_configured() if is_android_subscription(delivery[0]) else push_configured()
@@ -508,15 +588,14 @@ async def _send_push_payloads(
             statuses[endpoint] = "retry"
     trusted_deliveries = ready
 
-    results = await asyncio.gather(
-        *(
-            run_in_threadpool(
-                send_android_push if is_android_subscription(subscription) else _send_push_sync,
-                subscription, payload)
-            for subscription, payload in trusted_deliveries.values()
-        ),
-        return_exceptions=True,
-    )
+    # Attempt a user's bounded batch sequentially so its own device deliveries
+    # do not compete for the single per-user slot. Other users retain capacity.
+    results = []
+    for subscription, payload in trusted_deliveries.values():
+        try:
+            results.append(await _dispatch_push(subscription, payload, user_id=user_id))
+        except Exception as error:
+            results.append(error)
     for (endpoint, (_subscription, _payload)), result in zip(trusted_deliveries.items(), results):
         if isinstance(result, asyncio.CancelledError):
             raise result
@@ -716,7 +795,8 @@ async def check_user_messages(
         for endpoint, queued in pending_deliveries.items()
         if queued
     }
-    statuses = await _send_push_payloads(user_id, deliveries) if deliveries else {}
+    dispatch_state = dict(previous_state or {})
+    statuses = await _send_push_payloads(user_id, deliveries, state=dispatch_state) if deliveries else {}
     for endpoint, status in statuses.items():
         if status in {"delivered", "gone"} and endpoint in pending_deliveries:
             pending_deliveries.pop(endpoint)
@@ -724,6 +804,7 @@ async def check_user_messages(
     next_state: Dict[str, Any] = {
         "checked_at": local_now.isoformat(),
         "conversations": current_snapshot,
+        "push_cursor": dispatch_state.get("push_cursor", 0),
     }
     if pending_deliveries:
         next_state["pending_deliveries"] = pending_deliveries
@@ -897,7 +978,8 @@ async def check_user_vertretungsplan(
         for endpoint, queued in pending_deliveries.items()
         if queued and endpoint in subscriptions_by_endpoint
     }
-    statuses = await _send_push_payloads(user_id, deliveries) if deliveries else {}
+    dispatch_state = dict(previous_state or {})
+    statuses = await _send_push_payloads(user_id, deliveries, state=dispatch_state) if deliveries else {}
     for endpoint, status in statuses.items():
         if status in {"delivered", "gone"}:
             pending_deliveries.pop(endpoint, None)
@@ -906,6 +988,7 @@ async def check_user_vertretungsplan(
         "checked_at": local_now.isoformat(),
         "entries": current_snapshot,
         "scope": current_scope,
+        "push_cursor": dispatch_state.get("push_cursor", 0),
     }
     if pending_deliveries:
         next_state["pending_deliveries"] = pending_deliveries
