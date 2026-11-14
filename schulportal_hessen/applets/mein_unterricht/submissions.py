@@ -333,7 +333,15 @@ def parse_submission_detail(
 
     can_upload = form is not None and bool(form_values["b"])
     title_node = soup.select_one("#content h1")
-    course_node = soup.select_one("a[href*='a=sus_view']")
+    # The portal navigation lists other courses before the active breadcrumb.
+    # Match the upload's course identity instead of taking the first link.
+    course_node = None
+    if form_values["b"]:
+        for link in soup.select("a[href]"):
+            query = parse_qs(urlparse(link["href"]).query)
+            if query.get("a") == ["sus_view"] and query.get("id") == [form_values["b"]]:
+                course_node = link.select_one(".name") or link
+                break
     title = title_node.get_text(" ", strip=True) if title_node else "Abgabe"
     course_name = course_node.get_text(" ", strip=True) if course_node else ""
     uploaded_count = len(own_files)
