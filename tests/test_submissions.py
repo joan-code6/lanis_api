@@ -162,6 +162,31 @@ def test_submission_detail_parser_handles_closed_page_without_upload_form() -> N
     assert detail["deadline"] == "Freitag, 5.9.26 23:59"
 
 
+
+def test_submission_course_matches_identity_instead_of_first_navigation_link() -> None:
+    navigation = """
+    <nav><a href="meinunterricht.php?a=sus_view&amp;id=12">Chemie 10b</a></nav>
+    <a href="meinunterricht.php?id=42&amp;a=sus_view"><span class="name">Geschichte 10b</span></a>
+    """
+    detail = parse_submission_detail(navigation + DETAIL_HTML, BASE_URL, "ref")
+    assert detail["course_name"] == "Geschichte 10b"
+
+
+def test_closed_submission_course_uses_source_url_without_upload_form() -> None:
+    html = '<nav><a href="?a=sus_view&amp;id=12">Chemie 10b</a></nav>' + DETAIL_HTML
+    html = html.replace('<form><input name="b" value="42"><input name="e" value="7"><input name="id" value="9"></form>', '')
+    html += '<a href="?a=sus_view&amp;id=42">Geschichte 10b</a>'
+    detail = parse_submission_detail(html, BASE_URL, "ref", BASE_URL + "/meinunterricht.php?a=sus_abgabe&b=42&e=7&id=9")
+    assert detail["course_name"] == "Geschichte 10b"
+    assert detail["status"] == "closed"
+
+
+def test_unmatched_course_is_empty_instead_of_unrelated_navigation_course() -> None:
+    html = '<nav><a href="?a=sus_view&amp;id=12">Chemie 10b</a></nav>' + DETAIL_HTML
+    assert parse_submission_detail(html, BASE_URL, "ref")["course_name"] == ""
+    assert parse_submission_detail(html, BASE_URL, "ref", BASE_URL + "/?b=42")["course_name"] == ""
+
+
 def test_upload_status_parser_keeps_per_file_messages() -> None:
     statuses = parse_upload_statuses(
         """
