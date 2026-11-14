@@ -15,6 +15,7 @@ import statistics
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -39,6 +40,9 @@ UPTIME_HISTORY_LIMIT = 100
 UPTIME_INCIDENT_LIMIT = 100
 UPTIME_SUMMARY_DAYS = 90
 UPTIME_ALERT_RETRY_SECONDS = 300
+UPTIME_CONFIRMATION_SECONDS = 60
+UPTIME_REQUEST_BUDGET = 12
+UPTIME_MAX_BACKOFF_SECONDS = 3600
 DISCORD_WEBHOOK_ENV = "LANIS_UPTIME_DISCORD_WEBHOOK_URL"
 
 _uptime_cycle_task: asyncio.Task | None = None
@@ -196,92 +200,81 @@ def _feature(
     }
 
 
-def _install_request_timeout(client: SchulportalHessenAPI) -> None:
-    """Give client requests a default timeout where the client omits one."""
-    original_request = client.session.request
+class _ProbeStopped(requests.RequestException):
+    """Stop SDK retries without exposing a URL or response body."""
+
+
+def _retry_after_seconds(value: str | None) -> int:
+    try:
+        if value and value.strip().isdigit():
+            return min(int(value), 365 * 86400)
+        stamp = parsedate_to_datetime(value or "")
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return max(0, min(365 * 86400, math.ceil(
+            (stamp - _utcnow().replace(tzinfo=timezone.utc)).total_seconds()
+        )))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _install_probe_transport(client: SchulportalHessenAPI) -> None:
+    """Bound wire requests, including redirects, and retain swallowed HTTP errors.
+
+    SDK methods catch RequestException, so the stop marker is sticky and checked
+    before every send. No later SDK fallback can make another network request.
+    """
+    original_send = client.session.send
     timeout = get_uptime_timeout_seconds()
+    client._uptime_observation = {"request_count": 0}
+    observation = client._uptime_observation
 
-    def request(method: str, url: str, **kwargs: Any):
-        kwargs.setdefault("timeout", timeout)
-        return original_request(method, url, **kwargs)
+    def send(request, **kwargs: Any):
+        if observation.get("error"):
+            raise _ProbeStopped(observation["error"])
+        if observation["request_count"] >= UPTIME_REQUEST_BUDGET:
+            observation["error"] = "request_budget_exhausted"
+            raise _ProbeStopped(observation["error"])
+        observation["request_count"] += 1
+        # Override the SDK's longer explicit timeouts as well as missing ones.
+        kwargs["timeout"] = timeout
+        response = original_send(request, **kwargs)
+        status = response.status_code
+        retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+        if status == 429 or (status == 503 and response.headers.get("Retry-After")):
+            observation.update(error="rate_limited", status_code=status,
+                               retry_after_seconds=retry_after)
+        elif status in {401, 403}:
+            observation.update(error="access_denied", status_code=status)
+        if observation.get("error"):
+            response.close()
+            raise _ProbeStopped(observation["error"])
+        return response
 
-    client.session.request = request  # type: ignore[method-assign]
+    client.session.send = send  # type: ignore[method-assign]
 
 
 def _check_modules(client: SchulportalHessenAPI) -> dict[str, Any]:
-    """Fetch the account's modules and verify at least one can open."""
+    """Check authenticated discovery once; never resolve or open every module.
+
+    Discovery is evidence for navigation availability, not for every applet's
+    operations. Opening arbitrary applets adds unbounded requests and redirects.
+    """
     started = time.perf_counter()
     try:
         apps_result = client.get_apps()
         if not apps_result.get("success"):
-            return _feature(
-                "modules",
-                "down",
-                started,
-                error="modules_request_failed",
-                module_count=0,
-                opened_count=0,
-            )
-
-        entries = apps_result.get("data", {}).get("entrys", [])
+            return _feature("modules", "down", started, error="modules_request_failed")
+        data = apps_result.get("data")
+        entries = data.get("entrys") if isinstance(data, dict) else None
         if not isinstance(entries, list):
-            return _feature(
-                "modules",
-                "down",
-                started,
-                error="modules_response_invalid",
-                module_count=0,
-                opened_count=0,
-            )
-
-        modules = client.get_available_modules(apps_result)
-        if not modules:
-            return _feature(
-                "modules",
-                "down",
-                started,
-                error="modules_empty",
-                module_count=0,
-                opened_count=0,
-            )
-
-        opened_count = 0
-        for module in modules:
-            module_url = str(module.get("url") or "")
-            if not module_url:
-                continue
-            try:
-                response = client.session.get(
-                    module_url,
-                    allow_redirects=False,
-                    stream=True,
-                )
-                status_code = int(response.status_code)
-                response.close()
-                if 200 <= status_code < 400:
-                    opened_count += 1
-            except requests.RequestException:
-                continue
-
-        module_count = len(modules)
-        modules_available = opened_count > 0
-        return _feature(
-            "modules",
-            "up" if modules_available else "down",
-            started,
-            error=None if modules_available else "module_open_failed",
-            module_count=module_count,
-            opened_count=opened_count,
-        )
-    except Exception as error:  # noqa: BLE001 - a monitor must classify SDK failures
-        return _feature(
-            "modules",
-            "down",
-            started,
-            error=_error_code(error, "modules_check_failed"),
-            module_count=0,
-            opened_count=0,
-        )
+            return _feature("modules", "down", started, error="modules_response_invalid")
+        if not entries:
+            return _feature("modules", "unknown", started, error="modules_empty")
+        return _feature("modules", "up", started, module_count=len(entries))
+    except Exception as error:  # noqa: BLE001 - SDK diagnostics stay private
+        return _feature("modules", "down", started,
+                        error=_error_code(error, "modules_check_failed"))
 
 
 def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool) -> None:
@@ -305,7 +298,7 @@ def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool
 async def _notify_discord_on_transition(check: dict[str, Any]) -> None:
     """Notify Discord only when uptime changes between healthy and unhealthy."""
     webhook_url = _discord_webhook_url()
-    if not webhook_url:
+    if check.get("status") not in {"up", "down", "degraded"} or not webhook_url:
         return
 
     is_issue = check.get("status") != "up"
@@ -421,7 +414,30 @@ def _is_maintenance_page(html: str) -> bool:
 
 
 def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, Any]:
-    """Log in and open the configured account's available modules."""
+    client = SchulportalHessenAPI()
+    _install_probe_transport(client)
+    try:
+        result = _probe_authenticated(client, credentials)
+        observation = client._uptime_observation
+        result["request_count"] = observation["request_count"]
+        if observation.get("error"):
+            result.update(status="unknown", is_available=None,
+                          error=observation["error"],
+                          status_code=observation.get("status_code"),
+                          retry_after_seconds=observation.get("retry_after_seconds", 0))
+            result["features"] = [
+                {**feature, "status": "unknown", "is_available": None,
+                 "error": observation["error"]}
+                for feature in result.get("features", [])
+            ]
+        return result
+    finally:
+        with contextlib.suppress(Exception):
+            client.close()
+
+
+def _probe_authenticated(client: SchulportalHessenAPI, credentials: tuple[str, str, str] | None) -> dict[str, Any]:
+    """Check maintenance, authentication and authenticated module discovery."""
     checked_at = _utcnow().isoformat()
     overall_started = time.perf_counter()
     if credentials is None:
@@ -440,71 +456,66 @@ def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, 
         }
 
     school_id, username, password = credentials
-    client = SchulportalHessenAPI()
-    _install_request_timeout(client)
     features: list[dict[str, Any]] = []
+    # The portal serves its maintenance page with HTTP 200. Check the
+    # page heading/title rather than treating a successful GET as healthy.
+    # A failed preflight must not replace the authenticated checks.
+    maintenance_response = None
     try:
-        # The portal serves its maintenance page with HTTP 200. Check the
-        # page heading/title rather than treating a successful GET as healthy.
-        # A failed preflight must not replace the authenticated checks.
-        maintenance_response = None
-        try:
-            maintenance_response = client.session.get(PORTAL_START_URL)
-            maintenance = _is_maintenance_page(maintenance_response.text)
-        except requests.RequestException:
-            maintenance = False
-        finally:
-            if maintenance_response is not None:
-                maintenance_response.close()
-        if maintenance:
-            return {
-                "checked_at": checked_at,
-                "url": get_uptime_url(),
-                "status": "down",
-                "is_available": False,
-                "status_code": maintenance_response.status_code,
-                "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
-                "error": "maintenance",
-                "features": [
-                    _feature("login", "skipped", overall_started, error="maintenance"),
-                    _feature("modules", "skipped", overall_started, error="maintenance"),
-                ],
-            }
-        login_started = time.perf_counter()
-        try:
-            # The client currently prints encryption setup diagnostics. Keep
-            # those implementation details out of service logs as well.
-            with contextlib.redirect_stdout(io.StringIO()):
-                login_result = client.login(school_id, username, password)
-            login_ok = bool(login_result.get("success"))
-            login_error = None if login_ok else "login_failed"
-        except Exception as error:  # noqa: BLE001 - a monitor must classify SDK failures
-            login_ok = False
-            login_error = _error_code(error, "login_check_failed")
-        features.append(_feature("login", "up" if login_ok else "down", login_started, error=login_error))
-
-        if login_ok:
-            features.append(_check_modules(client))
-        else:
-            features.append(_feature("modules", "skipped", overall_started, error="login_failed"))
-
-        failed = [feature for feature in features if feature["status"] == "down"]
-        status = "down" if not login_ok else "degraded" if failed else "up"
+        maintenance_response = client.session.get(PORTAL_START_URL)
+        maintenance = _is_maintenance_page(maintenance_response.text)
+    except requests.RequestException:
+        maintenance = False
+    finally:
+        if maintenance_response is not None:
+            maintenance_response.close()
+    if maintenance:
         return {
             "checked_at": checked_at,
             "url": get_uptime_url(),
-            "status": status,
-            "is_available": status == "up",
-            "status_code": None,
+            "status": "down",
+            "is_available": False,
+            "status_code": maintenance_response.status_code,
             "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
-            "error": failed[0]["error"] if failed else None,
-            "features": features,
+            "error": "maintenance",
+            "features": [
+                _feature("login", "skipped", overall_started, error="maintenance"),
+                _feature("modules", "skipped", overall_started, error="maintenance"),
+            ],
         }
-    finally:
-        try:
-            client.close()
-        except Exception:
-            logger.debug("Schulportal monitor client close failed", exc_info=True)
+    login_started = time.perf_counter()
+    try:
+        # The client currently prints encryption setup diagnostics. Keep
+        # those implementation details out of service logs as well.
+        with contextlib.redirect_stdout(io.StringIO()):
+            login_result = client.login(school_id, username, password)
+        login_ok = bool(login_result.get("success"))
+        login_error = None if login_ok else "login_failed"
+    except Exception as error:  # noqa: BLE001 - a monitor must classify SDK failures
+        login_ok = False
+        login_error = _error_code(error, "login_check_failed")
+    features.append(_feature("login", "up" if login_ok else "down", login_started, error=login_error))
+
+    if login_ok:
+        features.append(_check_modules(client))
+    else:
+        features.append(_feature("modules", "skipped", overall_started, error="login_failed"))
+
+    failed = [feature for feature in features if feature["status"] == "down"]
+    status = (
+        "down" if not login_ok else "degraded" if failed else "unknown"
+        if any(f["status"] == "unknown" for f in features) else "up"
+    )
+    return {
+        "checked_at": checked_at,
+        "url": get_uptime_url(),
+        "status": status,
+        "is_available": None if status == "unknown" else status == "up",
+        "status_code": None,
+        "latency_ms": max(0, round((time.perf_counter() - overall_started) * 1000)),
+        "error": failed[0]["error"] if failed else None,
+        "features": features,
+    }
 
 
 def incident_id(value: str) -> str:
@@ -951,11 +962,18 @@ async def _probe_round(
                     probing.discard(task)
         return {"account": labels[account[:2]], "school_group": schools.index(account[0]) + 1, **result}
 
-    workers = [asyncio.create_task(probe(account)) for account in accounts]
+    workers = []
+    results = []
     try:
-        # Let explicit shutdown signal the threads and wait for process cleanup.
-        # Cancelling the async wrappers alone could abandon live child processes.
-        return await asyncio.shield(asyncio.gather(*workers))
+        for account in accounts:
+            worker = asyncio.create_task(probe(account))
+            workers.append(worker)
+            observation = await asyncio.shield(worker)
+            results.append(observation)
+            if observation.get("error") == "rate_limited":
+                # All accounts share the same egress IP. Stop the entire round.
+                break
+        return results
     finally:
         stopped.set()
         # Waiting for a login/deletion lease must not hold up shutdown. Only
@@ -968,11 +986,15 @@ async def _probe_round(
 
 def _classify_round(results: list[dict[str, Any]]) -> tuple[str, str]:
     """Classify observed availability independently of confidence or breadth."""
+    if any(result.get("error") == "rate_limited" for result in results):
+        return "unknown", "rate_limited"
     if len(results) < 2:
         return "unknown", "inconclusive"
     failures = sum(result["status"] in {"down", "degraded"} for result in results)
     if failures:
         if failures == 1:
+            if not any(result["status"] == "up" for result in results):
+                return "unknown", "inconclusive"
             return "degraded", "isolated"
         if all(result["status"] == "down" for result in results):
             return "down", "confirmed"
@@ -1047,7 +1069,7 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
     }
     details = {
         "pool_size": len(accounts),
-        "reduced_coverage": len(accounts) < 4,
+        "reduced_coverage": len({a[0] for a in accounts}) < 2,
         "classification": "insufficient_accounts",
         "rounds": [],
         "recovery_streak": 0,
@@ -1061,19 +1083,21 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
     check["monitoring"] = details
     if len(accounts) >= 2:
         selected = _choose_accounts(accounts, 2)
-        replacements = _choose_accounts([a for a in accounts if a not in selected], 2)
         labels = {
             account[:2]: f"Account {index + 1}"
-            for index, account in enumerate(selected + replacements)
+            for index, account in enumerate(selected)
         }
         initial = await _probe_round(selected, labels)
         details["rounds"].append({"name": "initial", "results": initial})
         results = initial
-        if any(result["status"] != "up" for result in initial):
+        needs_confirmation = any(
+            result["status"] in {"down", "degraded"} for result in initial
+        ) and not any(result.get("error") == "rate_limited" for result in initial)
+        if needs_confirmation:
             _uptime_cycle_phase = "waiting"
-            await asyncio.sleep(15)
+            await asyncio.sleep(UPTIME_CONFIRMATION_SECONDS)
             _uptime_cycle_phase = "confirmation"
-            results = await _probe_round(selected + replacements, labels)
+            results = await _probe_round(selected, labels)
             details["rounds"].append({"name": "confirmation", "results": results})
         observed_status, classification = _classify_round(results)
         if classification == "healthy" and len(details["rounds"]) == 2:
@@ -1082,8 +1106,12 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
         details.update(_round_evidence(
             results,
             initial if len(details["rounds"]) == 2 else [],
-            4 if len(details["rounds"]) == 2 else 2,
+            2,
         ))
+        if classification == "confirmed" and details["repeated_failures"] < 2:
+            # Failures must repeat for both accounts after the quiet interval.
+            observed_status, classification = "unknown", "inconclusive"
+            details.update(classification=classification, confidence="inconclusive", scope="unknown")
         # A single failing registered account is an account-scoped finding, not
         # evidence that the portal is unavailable to users generally. Keep the
         # observed failure and its scope in monitoring diagnostics, while the
@@ -1120,6 +1148,8 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
             )
             if classification == "isolated":
                 feature_status = "up"
+            elif observed_status == "unknown":
+                feature_status = "unknown"
             latencies = [
                 f["latency_ms"]
                 for r in results
@@ -1232,6 +1262,24 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
             details["pending_scope"] = last_monitoring.get(
                 "pending_scope", last_monitoring.get("scope")
             )
+    if details["classification"] == "rate_limited":
+        previous = await user_metrics_db.get_uptime_checks(limit=1)
+        prior = (previous[0].get("monitoring") or {}) if previous else {}
+        streak = min(10, int(prior.get("rate_limit_streak", 0)) + 1)
+        backoff = min(
+            UPTIME_MAX_BACKOFF_SECONDS, get_uptime_interval_seconds() * 2 ** streak
+        )
+        server_delay = max(
+            (r.get("retry_after_seconds", 0) for round_ in details["rounds"]
+             for r in round_["results"]), default=0,
+        )
+        delay = max(get_uptime_interval_seconds(), backoff, server_delay)
+        details["rate_limit_streak"] = streak
+        details["next_probe_at"] = (_utcnow() + timedelta(seconds=delay)).isoformat()
+    else:
+        details["next_probe_at"] = (
+            _utcnow() + timedelta(seconds=get_uptime_interval_seconds())
+        ).isoformat()
     check["checked_at"] = _utcnow().isoformat()
     check["latency_ms"] = max(0, round((time.perf_counter() - started) * 1000))
     check["sample_interval_seconds"] = get_uptime_interval_seconds() + math.ceil(
@@ -1243,13 +1291,24 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
     return check
 
 
+async def _run_uptime_when_due(scheduled: bool) -> dict[str, Any]:
+    previous = await user_metrics_db.get_uptime_checks(limit=1)
+    if previous:
+        next_probe = _parse_check_time({
+            "checked_at": (previous[0].get("monitoring") or {}).get("next_probe_at")
+        })
+        if next_probe is not None and _utcnow() < next_probe:
+            return previous[0]
+    return await _run_uptime_cycle(scheduled)
+
+
 async def run_uptime_check(*, scheduled: bool = False) -> dict[str, Any]:
     """Join the current cycle; cancellation of one HTTP waiter cannot cancel it."""
     global _uptime_cycle_task
     if _uptime_stopping:
         raise RuntimeError("Uptime monitor is shutting down")
     if _uptime_cycle_task is None or _uptime_cycle_task.done():
-        _uptime_cycle_task = asyncio.create_task(_run_uptime_cycle(scheduled))
+        _uptime_cycle_task = asyncio.create_task(_run_uptime_when_due(scheduled))
 
         def completed(task: asyncio.Task) -> None:
             if not task.cancelled() and task.exception() is not None:
@@ -1398,8 +1457,10 @@ async def get_uptime_status(limit: int = UPTIME_HISTORY_LIMIT) -> dict[str, Any]
             "interval_seconds": get_uptime_interval_seconds(),
             "incident_interval_seconds": get_uptime_interval_seconds(),
             "timeout_seconds": get_uptime_timeout_seconds(),
-            "parallel_accounts": 2,
-            "confirmation_accounts": 4,
+            "parallel_accounts": 1,
+            "confirmation_accounts": 2,
+            "confirmation_delay_seconds": UPTIME_CONFIRMATION_SECONDS,
+            "request_budget_per_account": UPTIME_REQUEST_BUDGET,
             "pool_size": len(_monitor_accounts()),
             "probe_deadline_seconds": _positive_env(
                 "LANIS_UPTIME_PROBE_DEADLINE_SECONDS", 90, 5, 180
@@ -1442,13 +1503,20 @@ async def run_uptime_scheduler() -> asyncio.Task:
 
     async def _loop() -> None:
         while True:
+            check = None
             try:
-                await run_uptime_check(scheduled=True)
+                check = await run_uptime_check(scheduled=True)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Schulportal synthetic check failed unexpectedly")
             interval = get_uptime_interval_seconds()
+            if check is not None:
+                next_probe = _parse_check_time({
+                    "checked_at": (check.get("monitoring") or {}).get("next_probe_at")
+                })
+                if next_probe is not None:
+                    interval = max(interval, (next_probe - _utcnow()).total_seconds())
             await asyncio.sleep(interval)
 
     return asyncio.create_task(_loop(), name="schulportal-uptime")

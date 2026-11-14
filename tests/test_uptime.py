@@ -13,6 +13,7 @@ class FakeResponse:
     def __init__(self, status_code: int):
         self.status_code = status_code
         self.text = ""
+        self.headers = {}
 
     def close(self):
         pass
@@ -22,6 +23,9 @@ class FakeSession:
     def __init__(self, module_status: int | list[int] = 200):
         self.module_status = module_status
         self.module_requests = 0
+
+    def send(self, request, **kwargs):
+        return FakeResponse(200)
 
     def request(self, method, url, **kwargs):
         return FakeResponse(200)
@@ -150,7 +154,7 @@ def test_probe_resumes_authenticated_checks_after_maintenance(monkeypatch):
     assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
 
 
-def test_probe_runs_login_and_opens_all_modules(monkeypatch):
+def test_probe_runs_login_and_checks_discovery(monkeypatch):
     configure_monitor(monkeypatch)
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
 
@@ -159,42 +163,28 @@ def test_probe_runs_login_and_opens_all_modules(monkeypatch):
     assert result["status"] == "up"
     assert result["is_available"] is True
     assert [feature["status"] for feature in result["features"]] == ["up", "up"]
-    assert result["features"][1]["module_count"] == 2
-    assert result["features"][1]["opened_count"] == 2
+    assert result["features"][1]["module_count"] == 1
+    assert result["features"][1]["opened_count"] is None
     assert FakeClient.login_arguments == ("5201", "monitor-user", "monitor-password")
 
 
-def test_one_open_module_is_enough_for_modules_to_be_healthy(monkeypatch):
-    configure_monitor(monkeypatch)
-    FakeClient.module_status = [200, 503]
+def test_discovery_never_resolves_or_opens_modules(monkeypatch):
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
-
-    try:
-        result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
-    finally:
-        FakeClient.module_status = 200
-
+    def unexpected(*args):
+        raise AssertionError("Module URL resolution must not run")
+    monkeypatch.setattr(FakeClient, "get_available_modules", unexpected)
+    result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
     assert result["status"] == "up"
-    assert result["features"][1]["status"] == "up"
-    assert result["features"][1]["module_count"] == 2
-    assert result["features"][1]["opened_count"] == 1
-    assert result["features"][1]["error"] is None
+    assert result["features"][1]["opened_count"] is None
 
 
-def test_probe_reports_module_failure_when_none_open_without_exposing_credentials(monkeypatch):
-    configure_monitor(monkeypatch)
-    FakeClient.module_status = 503
+def test_probe_reports_discovery_failure_without_exposing_credentials(monkeypatch):
     monkeypatch.setattr(uptime, "SchulportalHessenAPI", FakeClient)
-
-    try:
-        result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
-    finally:
-        FakeClient.module_status = 200
-
+    monkeypatch.setattr(FakeClient, "get_apps", lambda self: {"success": False})
+    result = uptime._probe_portal(("5201", "monitor-user", "monitor-password"))
     assert result["status"] == "degraded"
     assert result["features"][0]["status"] == "up"
-    assert result["features"][1]["status"] == "down"
-    assert result["features"][1]["error"] == "module_open_failed"
+    assert result["features"][1]["error"] == "modules_request_failed"
     assert "monitor-password" not in str(result)
 
 

@@ -16,6 +16,9 @@ _cache_deadline = 0.0
 _cache_configuration: tuple | None = None
 _PUBLIC_ERROR_CODES = {
     "maintenance",
+    "rate_limited",
+    "access_denied",
+    "request_budget_exhausted",
     "timeout",
     "connection_error",
     "request_error",
@@ -537,7 +540,7 @@ async def _build_public_status() -> dict[str, Any]:
             "stale_after_seconds": stale_after,
             "period_start": _iso(start),
             "period_end": _iso(now),
-            "description": "Authentifizierte Prüfungen von Anmeldung und Modulen mit zwei zufällig ausgewählten registrierten Konten. Die Verfügbarkeit wird zeitgewichtet aus beobachteten Messungen berechnet; fehlende Messzeiträume bleiben unbekannt und reduzieren die Abdeckung. Bei einem Fehler werden beide Konten und bis zu zwei weitere Konten parallel geprüft. Ein isolierter Fehler eines einzelnen Kontos wird als kontobezogener Hinweis dokumentiert, zählt aber nicht als allgemeine Beeinträchtigung der Verfügbarkeit. Mehrere betroffene Konten werden entsprechend ihrer Stichprobe als teilweise Beeinträchtigung gewertet. Aussagekraft und beobachteter Umfang werden getrennt ausgewiesen. Unvollständige Prüfungen ohne beobachteten Funktionsfehler bleiben unbekannt. Eine Wiederherstellung benötigt zwei vollständig erfolgreiche reguläre Prüfrunden. Störungen fassen aufeinanderfolgende beobachtete Beeinträchtigungen zusammen. LANIS-Verfügbarkeit wird hier nicht gemessen.",
+            "description": "Zwei zufällig ausgewählte registrierte Konten prüfen nacheinander Anmeldung und Modulübersicht, keine einzelnen Moduloperationen. Funktionale Fehler werden nach 60 Sekunden mit denselben Konten einmal bestätigt. Nur wiederholte Fehler mehrerer Konten gelten als allgemeine Beeinträchtigung; isolierte Kontofehler bleiben kontobezogen. HTTP 429 und HTTP 503 mit Retry-After unterbrechen alle weiteren Prüfungen und starten eine gemeinsame Wartezeit. Solche Messungen bleiben unbekannt, zählen weder als verfügbar noch als ausgefallen und reduzieren die Abdeckung. Zugriffssperren und ausgeschöpfte Anfragebudgets bleiben ebenfalls unbekannt. Die Verfügbarkeit wird zeitgewichtet berechnet; fehlende und veraltete Messzeiträume bleiben unbekannt. Eine Wiederherstellung benötigt zwei vollständig erfolgreiche reguläre Prüfrunden. Alle Konten nutzen denselben Serverzugang; die Stichprobe belegt keine weltweite Verfügbarkeit. LANIS-Verfügbarkeit wird hier nicht gemessen.",
         },
     }
 
