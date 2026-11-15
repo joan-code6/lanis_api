@@ -154,6 +154,7 @@ def test_shared_cooldown_survives_restart_excludes_downtime_and_does_not_resolve
                     "account": "Account 1",
                     "status": "unknown",
                     "error": "rate_limited",
+                    "status_code": 429,
                     "retry_after_seconds": 1800,
                     "features": [],
                 }
@@ -169,6 +170,7 @@ def test_shared_cooldown_survives_restart_excludes_downtime_and_does_not_resolve
         )
         first = await uptime._run_uptime_when_due(True)
         assert first["status"] == "unknown"
+        assert first["status_code"] == 429
         assert len(rounds) == 1  # No confirmation on the same IP.
         assert first["monitoring"]["pending_status"] == "down"
         assert not alerts
@@ -277,3 +279,16 @@ def test_unconfirmed_second_account_failure_stays_unknown(monkeypatch, tmp_path)
         )
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("code", [429, 503])
+def test_public_projection_preserves_actual_http_code(code):
+    check = public_status._check(
+        {"status": "unknown", "error": "rate_limited", "status_code": code,
+         "monitoring": {"rounds": [{"results": [
+             {"account": "Account 1", "status": "unknown", "status_code": code}
+         ]}]}},
+        datetime.fromisoformat("2026-11-16"),
+    )
+    assert check["status_code"] == code
+    assert check["account_checks"][0]["accounts"][0]["status_code"] == code

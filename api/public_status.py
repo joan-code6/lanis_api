@@ -75,11 +75,14 @@ def _check(
             for position, account in enumerate((round_data.get("results") or [])[:4]):
                 if not isinstance(account, dict):
                     continue
+                code = account.get("status_code")
+                http = {"status_code": code} if type(code) is int and 100 <= code <= 599 else {}
                 # Labels only link results inside this observation, never real identities.
                 source = str(account.get("account") or f"missing-{len(rounds)}-{position}")
                 label = labels.setdefault(source, f"Testkonto {len(labels) + 1}")
                 results.append({
                     "label": label,
+                    **http,
                     "status": account.get("status") if account.get("status") in {"up", "down", "degraded"} else "unknown",
                     "features": [{"name": name, "status": next((item.get("status")
                         for item in account.get("features") or []
@@ -120,6 +123,9 @@ def _check(
         result["latency_ms"] = row["latency_ms"]
     if row.get("sample_interval_seconds") is not None:
         result["sample_interval_seconds"] = row["sample_interval_seconds"]
+    code = row.get("status_code")
+    if type(code) is int and 100 <= code <= 599:
+        result["status_code"] = code
     if row.get("error") in _PUBLIC_ERROR_CODES:
         result["error"] = row["error"]
     for name in ("login", "modules"):

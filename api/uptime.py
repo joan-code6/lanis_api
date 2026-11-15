@@ -1121,6 +1121,11 @@ async def _run_uptime_cycle(scheduled: bool = False) -> dict[str, Any]:
         status = "up" if classification == "isolated" else observed_status
         check["status"] = status
         check["error"] = None if status == "up" else classification
+        if classification == "rate_limited":
+            check["status_code"] = next(
+                (r.get("status_code") for r in results if r.get("error") == "rate_limited"
+                 and r.get("status_code") in {429, 503}), None
+            )
         if status == "down" and results and all(
             result.get("error") == "maintenance" for result in results
         ):
