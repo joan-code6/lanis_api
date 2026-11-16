@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from contextlib import contextmanager, nullcontext
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from functools import wraps
 import inspect
 import logging
@@ -26,6 +26,7 @@ _logs = None
 _handler = None
 _tracer = None
 _sqlite = None
+_aiosqlite_bridge = None
 _processor_health = None
 _delivery_gate = None
 _lock = threading.Lock()
@@ -225,7 +226,7 @@ def operation(name, *, activate=True, **attributes):
     started = time.monotonic()
     if _tracer:
         from opentelemetry.trace import SpanKind
-        kind = SpanKind.CLIENT if name == 'http.outbound' else SpanKind.INTERNAL
+        kind = SpanKind.CLIENT if name in {'http.outbound', 'sqlite.async'} else SpanKind.INTERNAL
         manager = (_tracer.start_as_current_span(name, kind=kind, record_exception=False,
                     set_status_on_exception=False) if activate else _tracer.start_span(name, kind=kind,
                     record_exception=False, set_status_on_exception=False))
@@ -269,6 +270,37 @@ def observed_http(fn, url, *args, telemetry_method=None, **kwargs):
         if isinstance(status, int) and status >= 400:
             attributes['outcome'] = 'failed'
         return response
+
+
+def instrument_aiosqlite():
+    """Capture per-call context before aiosqlite queues work on its shared thread.
+
+    The async span includes queue wait and covers connection shortcut methods as
+    well as cursors. Arguments, SQL and results never become attributes.
+    """
+    global _aiosqlite_bridge
+    import aiosqlite
+    original = aiosqlite.Connection._execute
+
+    @wraps(original)
+    async def execute(connection, fn, *args, **kwargs):
+        with operation('sqlite.async', **{'db.system': 'sqlite'}):
+            context = copy_context()
+            return await original(connection, context.run, fn, *args, **kwargs)
+
+    aiosqlite.Connection._execute = execute
+    _aiosqlite_bridge = (original, execute)
+
+
+def uninstrument_aiosqlite():
+    global _aiosqlite_bridge
+    if _aiosqlite_bridge:
+        import aiosqlite
+        original, installed = _aiosqlite_bridge
+        # Do not remove a different integration installed after ours.
+        if aiosqlite.Connection.__dict__.get('_execute') is installed:
+            aiosqlite.Connection._execute = original
+        _aiosqlite_bridge = None
 
 
 def trace_id():
@@ -457,6 +489,7 @@ def configure():
         from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
         _sqlite = SQLite3Instrumentor()
         _sqlite.instrument(tracer_provider=_provider)
+        instrument_aiosqlite()
         bridge = LoggingHandler(logger_provider=_logs)
 
         class SafeLoggingHandler(logging.Handler):
@@ -494,6 +527,7 @@ def shutdown(timeout_millis=3000):
     """
     global _provider, _logs, _handler, _tracer, _sqlite, _processor_health, _delivery_gate
     deadline = time.monotonic() + max(0, timeout_millis) / 1000
+    uninstrument_aiosqlite()
     if _sqlite:
         _sqlite.uninstrument()
         _sqlite = None

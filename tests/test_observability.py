@@ -367,3 +367,66 @@ def test_shutdown_has_one_deadline_and_accounts_for_unfinished_export(capture, m
         release.set()
     assert spans.exporter.stopped.wait(2)
     assert telemetry.health()['delivery']['traces.shutdown_dropped'] >= 256
+
+
+
+def test_aiosqlite_shared_worker_keeps_each_requests_trace_context(capture):
+    import aiosqlite
+    from opentelemetry.trace import get_current_span
+    spans, logs, _ = capture
+    parents = {}
+    observed = []
+    main_thread = threading.get_ident()
+
+    def worker_trace():
+        observed.append((telemetry.trace_id(), threading.get_ident()))
+        return telemetry.trace_id()
+
+    async def scenario():
+        # The worker exists before either request; context must be copied per call.
+        async with aiosqlite.connect(':memory:') as db:
+            await db.create_function('worker_trace', 0, worker_trace)
+
+            async def request(name):
+                with telemetry.operation(name):
+                    parent = get_current_span().get_span_context()
+                    parents[name] = parent
+                    async with db.execute('SELECT worker_trace(), ?', ('PRIVATE',)) as cursor:
+                        row = await cursor.fetchone()
+                        assert row == (f'{parent.trace_id:032x}', 'PRIVATE')
+                    # Also exercise the cursor API, which uses native SQLite tracing.
+                    async with db.cursor() as cursor:
+                        await cursor.execute('SELECT worker_trace()')
+                        assert (await cursor.fetchone())[0] == f'{parent.trace_id:032x}'
+
+            await asyncio.gather(request('test.async.request_a'), request('test.async.request_b'))
+            with telemetry.operation('test.async.failed_request'):
+                parents['test.async.failed_request'] = get_current_span().get_span_context()
+                with pytest.raises(sqlite3.OperationalError):
+                    await db.execute('SELECT PRIVATE_MISSING_COLUMN')
+
+    asyncio.run(scenario())
+    flush()
+    for name, parent in parents.items():
+        children = [span for span in spans if span.attributes.get('operation') == 'sqlite.async'
+            and span.context.trace_id == parent.trace_id]
+        assert children and all(span.parent.span_id == parent.span_id for span in children)
+        if name.endswith('failed_request'):
+            assert any(span.attributes['outcome'] == 'failed' for span in children)
+    request_ids = {f'{parent.trace_id:032x}' for parent in parents.values()}
+    assert len(request_ids) == 3
+    assert all(trace in request_ids and thread != main_thread for trace, thread in observed)
+    native = [span for span in spans if span.attributes.get('db.system') == 'sqlite'
+        and span.attributes.get('operation') != 'sqlite.async']
+    assert native and all(f'{span.context.trace_id:032x}' in request_ids for span in native)
+    exported = repr([(span.name, dict(span.attributes), span.events) for span in spans])
+    exported += repr([(record.body, dict(record.attributes)) for record in logs])
+    assert 'PRIVATE' not in exported
+
+
+def test_aiosqlite_context_bridge_is_removed_on_shutdown(capture):
+    import aiosqlite
+    original, installed = telemetry._aiosqlite_bridge
+    assert aiosqlite.Connection._execute is installed
+    telemetry.shutdown()
+    assert aiosqlite.Connection._execute is original

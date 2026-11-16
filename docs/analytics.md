@@ -71,3 +71,6 @@ Existing Python application logs are exported as severity plus a fixed message a
 After deployment, verify real traffic appears under service `lanis_api` in Logs and Tracing and inspect the quality endpoint. Backend account events still require live consented sessions; login, expired sessions, bearer MCP and scheduled jobs are covered by operational signals instead. Operational signals omit account identity; only consenting browser sessions carry session correlation. This does not enable session replay, arbitrary console/stdout forwarding, LLM prompt capture or native Android crash collection.
 
 References: [Python Logs](https://posthog.com/docs/logs/installation/python), [Python tracing](https://posthog.com/docs/distributed-tracing/installation/python).
+
+
+Async database execution keeps the request/job trace context across aiosqlite’s per-connection queue. Each `_execute` call starts a content-free `sqlite.async` span in its caller, then copies that call’s context into the queued function. This covers connection shortcut queries, cursor operations, fetches and transactions, includes queue wait, and parents native SQLite cursor spans correctly even when concurrent requests share an existing connection. SQL text, parameters and results remain excluded from export. Shutdown removes the bridge without overwriting an integration installed after it.
