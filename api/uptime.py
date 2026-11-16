@@ -229,16 +229,9 @@ def _install_probe_transport(client: SchulportalHessenAPI) -> None:
     client._uptime_observation = {"request_count": 0}
     observation = client._uptime_observation
 
-    def send(request, **kwargs: Any):
-        if observation.get("error"):
-            raise _ProbeStopped(observation["error"])
-        if observation["request_count"] >= UPTIME_REQUEST_BUDGET:
-            observation["error"] = "request_budget_exhausted"
-            raise _ProbeStopped(observation["error"])
-        observation["request_count"] += 1
-        # Override the SDK's longer explicit timeouts as well as missing ones.
-        kwargs["timeout"] = timeout
-        response = original_send(request, **kwargs)
+    def capture_headers(response, **kwargs: Any):
+        # Requests dispatches response hooks before reading a non-streamed body
+        # or following redirects. Preserve throttling even if that body is broken.
         status = response.status_code
         retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
         if status == 429 or (status == 503 and response.headers.get("Retry-After")):
@@ -247,9 +240,27 @@ def _install_probe_transport(client: SchulportalHessenAPI) -> None:
         elif status in {401, 403}:
             observation.update(error="access_denied", status_code=status)
         if observation.get("error"):
-            response.close()
+            with contextlib.suppress(Exception):
+                response.close()
             raise _ProbeStopped(observation["error"])
         return response
+
+    def send(request, **kwargs: Any):
+        if observation.get("error"):
+            raise _ProbeStopped(observation["error"])
+        if observation["request_count"] >= UPTIME_REQUEST_BUDGET:
+            observation["error"] = "request_budget_exhausted"
+            raise _ProbeStopped(observation["error"])
+        observation["request_count"] += 1
+        # Install on each prepared request: SDK-provided hooks can override the
+        # session hooks, and redirects copy them. Keep ours first and unique.
+        request.hooks["response"] = [capture_headers] + [
+            hook for hook in request.hooks.get("response", [])
+            if hook is not capture_headers
+        ]
+        # Override the SDK's longer explicit timeouts as well as missing ones.
+        kwargs["timeout"] = timeout
+        return original_send(request, **kwargs)
 
     client.session.send = send  # type: ignore[method-assign]
 

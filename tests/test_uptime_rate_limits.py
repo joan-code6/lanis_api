@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 from requests.adapters import BaseAdapter
+from urllib3.exceptions import ReadTimeoutError
 
 from api import public_status, uptime
 from api.metrics.user_metrics_db import UserMetricsDB
@@ -23,7 +24,10 @@ class ScriptedAdapter(BaseAdapter):
         response = requests.Response()
         response.status_code = status
         response.headers.update(headers)
-        response._content = body.encode()
+        if isinstance(body, str):
+            response._content = body.encode()
+        else:
+            response.raw = body
         response.url = request.url
         response.request = request
         return response
@@ -40,12 +44,41 @@ def make_client(responses):
     return SimpleNamespace(session=session), adapter
 
 
+class FailingBody:
+    def __init__(self):
+        self.reads = 0
+        self.closed = False
+        self.released = False
+
+    def stream(self, *args, **kwargs):
+        self.reads += 1
+        raise ReadTimeoutError(None, "https://sph.example/", "body timed out")
+
+    def close(self):
+        self.closed = True
+
+    def release_conn(self):
+        self.released = True
+
+
+def test_failing_body_fixture_reproduces_requests_connection_error():
+    body = FailingBody()
+    client, _ = make_client([(429, {"Retry-After": "1200"}, body)])
+    with pytest.raises(requests.ConnectionError):
+        client.session.get("https://sph.example/")
+    assert body.reads == 1
+    client.session.close()
+
+
+@pytest.mark.parametrize("status_code", [429, 503])
+@pytest.mark.parametrize("failing_body", [False, True])
 @pytest.mark.parametrize("phase", ["preflight", "login", "modules", "redirect"])
 def test_rate_limit_survives_swallowed_sdk_errors_and_stops_fallbacks(
-    monkeypatch, phase
+    monkeypatch, phase, status_code, failing_body
 ):
     ok = (200, {}, "ok")
-    throttle = (429, {"Retry-After": "1200"}, "private diagnostics")
+    body = FailingBody() if failing_body else "private diagnostics"
+    throttle = (status_code, {"Retry-After": "1200"}, body)
     script = {
         "preflight": [throttle],
         "login": [ok, throttle],
@@ -81,6 +114,10 @@ def test_rate_limit_survives_swallowed_sdk_errors_and_stops_fallbacks(
     assert check["is_available"] is None
     assert check["error"] == "rate_limited"
     assert check["retry_after_seconds"] == 1200
+    assert check["status_code"] == status_code
+    if failing_body:
+        assert body.reads == 0
+        assert body.closed and body.released
     assert len(adapter.calls) == len(script)
     assert all(f["status"] == "unknown" for f in check["features"])
     assert "secret" not in str(check) and "private diagnostics" not in str(check)
@@ -292,3 +329,23 @@ def test_public_projection_preserves_actual_http_code(code):
     )
     assert check["status_code"] == code
     assert check["account_checks"][0]["accounts"][0]["status_code"] == code
+
+
+def test_monitor_hook_precedes_sdk_response_hooks():
+    body = FailingBody()
+    client, adapter = make_client([(429, {"Retry-After": "1200"}, body)])
+    uptime._install_probe_transport(client)
+    sdk_calls = []
+
+    def sdk_hook(response, **kwargs):
+        sdk_calls.append(response)
+        return response.content
+
+    with pytest.raises(uptime._ProbeStopped):
+        client.session.get("https://sph.example/", hooks={"response": [sdk_hook]})
+    assert sdk_calls == []
+    assert body.reads == 0
+    assert body.closed and body.released
+    assert client._uptime_observation["retry_after_seconds"] == 1200
+    assert len(adapter.calls) == 1
+    client.session.close()
