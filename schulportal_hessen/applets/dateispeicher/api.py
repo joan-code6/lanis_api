@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from schulportal_hessen.tools.telemetry import observe
+from schulportal_hessen.tools.telemetry import observe, observe_stream
 
 import json
 import re
@@ -148,6 +148,7 @@ def _close_response(response: Any) -> None:
         close()
 
 
+@observe_stream("schulportal_hessen.applets.dateispeicher.api.dateispeicher_download_file")
 def _iter_download_response(
     response: Any, first_chunk: bytes, chunks: Iterator[bytes]
 ) -> Iterator[bytes]:
@@ -161,7 +162,7 @@ def _iter_download_response(
         _close_response(response)
 
 
-@observe("schulportal_hessen.applets.dateispeicher.api.dateispeicher_download_file")
+@observe("schulportal_hessen.applets.dateispeicher.api.dateispeicher_download_file.prepare")
 def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
     """Download a file from the native dateispeicher using the portal session."""
     if not self.logged_in:

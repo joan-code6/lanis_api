@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -18,22 +19,27 @@ def capture(monkeypatch):
     import opentelemetry.exporter.otlp.proto.http.trace_exporter as traces
     import opentelemetry.exporter.otlp.proto.http._log_exporter as logs
 
-    spans, records, destinations = [], [], []
+    class Captured(list):
+        pass
+    spans, records, destinations = Captured(), Captured(), []
 
     class SpanExporter:
         def __init__(self, **kwargs):
             destinations.append(kwargs['endpoint'])
+            spans.exporter = self
+            self.stopped = threading.Event()
 
         def export(self, batch):
             spans.extend(batch)
             return SpanExportResult.SUCCESS
 
         def shutdown(self):
-            pass
+            self.stopped.set()
 
     class LogExporter:
         def __init__(self, **kwargs):
             destinations.append(kwargs['endpoint'])
+            records.exporter = self
 
         def export(self, batch):
             records.extend(row.log_record for row in batch)
@@ -180,3 +186,184 @@ def test_missing_config_does_not_require_optional_packages_or_break_boot(monkeyp
     assert not telemetry.health()['enabled']
     with telemetry.operation('test.noop'):
         pass
+
+
+@pytest.mark.parametrize('method', ['GET', 'POST'])
+def test_prepared_session_keeps_method_without_forwarding_metadata(capture, monkeypatch, method):
+    import requests
+    from schulportal_hessen.tools.transport import ObservedSession
+    spans, _, _ = capture
+    received = []
+
+    def send(session, request, **kwargs):
+        received.append(kwargs)
+        response = requests.Response()
+        response.status_code = 200
+        response.url = request.url
+        response._content = b'{}'
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.Session, 'send', send)
+    ObservedSession().request(method, 'https://start.schulportal.hessen.de/test')
+    flush()
+    outbound = [span for span in spans if span.attributes.get('operation') == 'http.outbound']
+    assert outbound[-1].attributes['http.request.method'] == method
+    assert 'telemetry_method' not in received[0]
+
+
+def test_boolean_validation_and_handled_job_failures(capture, monkeypatch):
+    from api import daily_cache, dsb_snapshot, uptime
+    from schulportal_hessen.applets.login.api import sid_validator
+    from unittest.mock import AsyncMock
+    spans, _, _ = capture
+    monkeypatch.setattr(uptime, 'run_uptime_check', AsyncMock(return_value={'status': 'down'}))
+    assert asyncio.run(daily_cache.warm_users()) is False
+    assert sid_validator(SimpleNamespace(logged_in=False))['valid'] is False
+    for key in ['DSB_USERNAME', 'DSB_PASSWORD', 'DSB_SCHOOL_ID']:
+        monkeypatch.setenv(key, 'fixture')
+    monkeypatch.setattr(dsb_snapshot, 'SchulportalHessenAPI', lambda: (_ for _ in ()).throw(RuntimeError('PRIVATE')))
+    assert asyncio.run(dsb_snapshot._fetch_and_store_dsb_snapshot()) is None
+    flush()
+    outcomes = {span.attributes.get('operation'): span.attributes.get('outcome') for span in spans}
+    assert outcomes['api.daily_cache.warm_users'] == 'business_failure'
+    assert outcomes['schulportal_hessen.applets.login.api.sid_validator'] == 'business_failure'
+    assert outcomes['api.dsb_snapshot._fetch_and_store_dsb_snapshot'] == 'failed'
+
+
+@pytest.mark.parametrize('fail', [False, True])
+@pytest.mark.parametrize('distribution', [False, True])
+def test_lazy_stream_span_survives_thread_handoff_and_late_failure(capture, fail, distribution):
+    from concurrent.futures import ThreadPoolExecutor
+    from schulportal_hessen.applets.dateispeicher.api import _iter_download_response
+    from schulportal_hessen.applets.dateiverteilung.api import _stream
+    spans, _, _ = capture
+    closed = []
+    iterator = _stream if distribution else _iter_download_response
+    suffix = '.dateiverteilung_download_file' if distribution else '.dateispeicher_download_file'
+
+    def chunks():
+        yield b'second'
+        if fail:
+            raise RuntimeError('PRIVATE stream failure')
+
+    stream = iterator(SimpleNamespace(close=lambda: closed.append(True)), b'first', chunks())
+    with ThreadPoolExecutor(max_workers=1) as first, ThreadPoolExecutor(max_workers=1) as second:
+        assert first.submit(next, stream).result() == b'first'
+        flush()
+        assert not [span for span in spans if span.name.endswith(suffix)]
+        assert second.submit(next, stream).result() == b'second'
+        with pytest.raises(RuntimeError if fail else StopIteration):
+            first.submit(next, stream).result()
+    flush()
+    span = next(span for span in spans if span.name.endswith(suffix))
+    assert span.attributes['outcome'] == ('failed' if fail else 'success')
+    assert closed == [True]
+
+
+@pytest.mark.parametrize('timeout', [False, True])
+def test_dsb_failure_does_not_poison_schulportal_fail_fast(monkeypatch, timeout):
+    import requests
+    from schulportal_hessen.external.dsb.api import _make_dsb_session
+    from schulportal_hessen.tools.transport import ObservedSession, TransportObservation, observation
+    calls = []
+
+    def send(session, request, **kwargs):
+        calls.append(request.url)
+        if timeout and 'dsbmobile' in request.url:
+            raise requests.Timeout('fixture')
+        response = requests.Response()
+        response.status_code = 500
+        response.url = request.url
+        response._content = b'{}'
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.Session, 'send', send)
+    current = TransportObservation(fail_fast=True)
+    token = observation.set(current)
+    try:
+        if timeout:
+            with pytest.raises(requests.Timeout):
+                _make_dsb_session().get('https://www.dsbmobile.de/test')
+        else:
+            assert _make_dsb_session().get('https://www.dsbmobile.de/test').status_code == 500
+        assert observation.get() is current and not current.unavailable
+        assert ObservedSession().get('https://start.schulportal.hessen.de/test').status_code == 500
+        assert current.unavailable
+        with pytest.raises(requests.ConnectionError):
+            ObservedSession().get('https://start.schulportal.hessen.de/test')
+        assert len(calls) == 2
+    finally:
+        observation.reset(token)
+
+
+def test_sdk_queue_drop_metrics_are_counted_once_for_both_signals(capture, monkeypatch):
+    import threading
+    from opentelemetry.sdk.trace.export import SpanExportResult
+    from opentelemetry.sdk._logs.export import LogRecordExportResult
+    spans, logs, _ = capture
+    release, trace_entered, log_entered = threading.Event(), threading.Event(), threading.Event()
+    before = telemetry.health()['delivery']
+
+    def blocked_spans(batch):
+        trace_entered.set()
+        assert release.wait(5)
+        return SpanExportResult.SUCCESS
+
+    def blocked_logs(batch):
+        log_entered.set()
+        assert release.wait(5)
+        return LogRecordExportResult.SUCCESS
+
+    monkeypatch.setattr(spans.exporter, 'export', blocked_spans)
+    monkeypatch.setattr(logs.exporter, 'export', blocked_logs)
+    try:
+        for _ in range(128):
+            with telemetry._tracer.start_as_current_span('queue.fixture'):
+                pass
+            telemetry.event('request.completed')
+        assert trace_entered.wait(1) and log_entered.wait(1)
+        for _ in range(2200):
+            with telemetry._tracer.start_as_current_span('queue.fixture'):
+                pass
+            telemetry.event('request.completed')
+        counted = telemetry.health()['delivery']
+        for signal in ['traces', 'logs']:
+            assert counted[signal + '.dropped'] >= before.get(signal + '.dropped', 0) + 152
+        assert telemetry.health()['delivery'] == counted
+    finally:
+        release.set()
+    flush()
+
+
+def test_shutdown_has_one_deadline_and_accounts_for_unfinished_export(capture, monkeypatch):
+    import threading
+    import time
+    from opentelemetry.sdk.trace.export import SpanExportResult
+    spans, _, _ = capture
+    release, entered = threading.Event(), threading.Event()
+    before = telemetry.health()['delivery'].get('traces.shutdown_unfinished', 0)
+
+    def blocked(batch):
+        entered.set()
+        assert release.wait(5)
+        return SpanExportResult.SUCCESS
+
+    monkeypatch.setattr(spans.exporter, 'export', blocked)
+    try:
+        for _ in range(128):
+            with telemetry._tracer.start_as_current_span('shutdown.fixture'):
+                pass
+        assert entered.wait(1)
+        for _ in range(256):
+            with telemetry._tracer.start_as_current_span('shutdown.fixture'):
+                pass
+        started = time.monotonic()
+        telemetry.shutdown(timeout_millis=100)
+        assert time.monotonic() - started < 0.75
+        assert telemetry.health()['delivery']['traces.shutdown_unfinished'] >= before + 256
+    finally:
+        release.set()
+    assert spans.exporter.stopped.wait(2)
+    assert telemetry.health()['delivery']['traces.shutdown_dropped'] >= 256

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from schulportal_hessen.tools.telemetry import observe
+from schulportal_hessen.tools.telemetry import observe, observe_stream
 
 import re
 from collections.abc import Iterator
@@ -320,6 +320,7 @@ def _close_response(response: Any) -> None:
         close()
 
 
+@observe_stream("schulportal_hessen.applets.dateiverteilung.api.dateiverteilung_download_file")
 def _stream(response: Any, first: bytes, iterator: Iterator[bytes]) -> Iterator[bytes]:
     try:
         if first:
@@ -347,7 +348,7 @@ def _filename(disposition: str, download_url: str) -> str:
     )
 
 
-@observe("schulportal_hessen.applets.dateiverteilung.api.dateiverteilung_download_file")
+@observe("schulportal_hessen.applets.dateiverteilung.api.dateiverteilung_download_file.prepare")
 def dateiverteilung_download_file(self, url: str) -> dict[str, Any]:
     if not self.logged_in:
         return {

@@ -185,7 +185,7 @@ def logout(self) -> Dict[str, Any]:
         return {"success": False, "error": f"Logout request failed: {str(e)}"}
 
 
-@observe("schulportal_hessen.applets.login.api.sid_validator")
+@observe("schulportal_hessen.applets.login.api.sid_validator", failed=lambda result: result.get("valid") is False)
 def sid_validator(self) -> Dict[str, Any]:
     """
     Validate the current session by checking if the apps endpoint is accessible

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from functools import wraps
 import inspect
 import logging
@@ -25,10 +26,13 @@ _logs = None
 _handler = None
 _tracer = None
 _sqlite = None
+_processor_health = None
+_delivery_gate = None
 _lock = threading.Lock()
 _counts = Counter()
 _last_success = {}
 _operations = set()
+_current_operation = ContextVar("lanis_telemetry_operation", default=None)
 _routes = set()
 _root = Path(__file__).resolve().parents[1]
 _sources = {str(p.resolve()): p.relative_to(_root).as_posix()
@@ -42,14 +46,16 @@ _cache = {'hit', 'fresh', 'stale', 'miss'}
 _events = {'request.completed', 'operation.completed', 'service.started', 'service.stopped'}
 
 
-def count(name):
+def count(name, amount=1):
     with _lock:
-        _counts[name] += 1
+        _counts[name] += amount
         if name.endswith('.sent'):
             _last_success[name.split('.')[0]] = int(time.time())
 
 
 def health():
+    if _processor_health:
+        _processor_health.collect()
     with _lock:
         return {'enabled': _tracer is not None, 'delivery': dict(_counts),
                 'last_success_unix': dict(_last_success),
@@ -65,6 +71,75 @@ def release_labels():
     return {'release': release if re.fullmatch(r'[a-f0-9]{7,40}', release) else 'unknown',
             'environment': environment if environment in {'production', 'staging', 'development', 'test'} else 'other'}
 
+
+
+class ProcessorHealth:
+    """Read supported SDK internal metrics locally, without a metrics exporter."""
+    def __init__(self, provider, reader):
+        self.provider, self.reader = provider, reader
+        self.seen = Counter()
+        self.queues = Counter()
+        self.closed = False
+        self.lock = threading.RLock()
+
+    def collect(self):
+        with self.lock:
+            if self.closed:
+                return self.queues.copy()
+            data = self.reader.get_metrics_data()
+            queues = Counter()
+            if data:
+                for resource in data.resource_metrics:
+                    for scope in resource.scope_metrics:
+                        for metric in scope.metrics:
+                            signal = 'traces' if '.span.' in metric.name else 'logs' if '.log.' in metric.name else None
+                            if signal is None:
+                                continue
+                            for point in metric.data.data_points:
+                                reason = point.attributes.get('error.type')
+                                if metric.name.endswith('.processed') and reason:
+                                    key = (metric.name, tuple(sorted(point.attributes.items())))
+                                    value = int(point.value)
+                                    count(signal + '.dropped', max(0, value - self.seen[key]))
+                                    self.seen[key] = value
+                                elif metric.name.endswith('.queue.size'):
+                                    queues[signal] += int(point.value)
+            self.queues = queues
+            return queues.copy()
+
+    def close(self):
+        with self.lock:
+            self.collect()
+            self.closed = True
+            self.provider.shutdown()
+
+
+class ExportGate:
+    def __init__(self):
+        self.closed = False
+        self.inflight = Counter()
+        self.lock = threading.Lock()
+
+    @contextmanager
+    def exporting(self, signal, size):
+        with self.lock:
+            allowed = not self.closed
+            if allowed:
+                self.inflight[signal] += size
+        if not allowed:
+            count(signal + '.dropped', size)
+            count(signal + '.shutdown_dropped', size)
+        try:
+            yield allowed
+        finally:
+            if allowed:
+                with self.lock:
+                    self.inflight[signal] -= size
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+            return self.inflight.copy()
 
 def safe_attributes(values):
     """Last-mile allowlist, including spans created by instrumented libraries."""
@@ -111,7 +186,7 @@ def event(name, **attributes):
         count('logs.emit_failed')
 
 
-def observe(name):
+def observe(name, *, failed=None):
     """Decorator for known IO/job boundaries, never arguments or return contents."""
     _operations.add(name)
 
@@ -121,7 +196,7 @@ def observe(name):
             async def asynchronous(*args, **kwargs):
                 with operation(name) as span:
                     result = await fn(*args, **kwargs)
-                    if isinstance(result, dict) and result.get('success') is False:
+                    if (failed(result) if failed else isinstance(result, dict) and result.get('success') is False):
                         span['outcome'] = 'business_failure'
                     return result
             return asynchronous
@@ -130,29 +205,42 @@ def observe(name):
         def synchronous(*args, **kwargs):
             with operation(name) as span:
                 result = fn(*args, **kwargs)
-                if isinstance(result, dict) and result.get('success') is False:
+                if (failed(result) if failed else isinstance(result, dict) and result.get('success') is False):
                     span['outcome'] = 'business_failure'
                 return result
         return synchronous
     return decorate
 
 
+def mark_outcome(outcome):
+    current = _current_operation.get()
+    if current is not None and outcome in _outcomes:
+        current['outcome'] = outcome
+
+
 @contextmanager
-def operation(name, **attributes):
+def operation(name, *, activate=True, **attributes):
     _operations.add(name)
     values = {'operation': name, **attributes, 'outcome': 'success'}
     started = time.monotonic()
     if _tracer:
         from opentelemetry.trace import SpanKind
-    manager = (_tracer.start_as_current_span(name, kind=SpanKind.CLIENT if name == 'http.outbound' else SpanKind.INTERNAL, record_exception=False,
-                set_status_on_exception=False) if _tracer else nullcontext(None))
+        kind = SpanKind.CLIENT if name == 'http.outbound' else SpanKind.INTERNAL
+        manager = (_tracer.start_as_current_span(name, kind=kind, record_exception=False,
+                    set_status_on_exception=False) if activate else _tracer.start_span(name, kind=kind,
+                    record_exception=False, set_status_on_exception=False))
+    else:
+        manager = nullcontext(None)
     with manager as span:
+        token = _current_operation.set(values) if activate else None
         try:
             yield values
         except BaseException as error:
-            values['outcome'] = 'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed'
+            values['outcome'] = 'cancelled' if isinstance(error, (asyncio.CancelledError, GeneratorExit)) else 'failed'
             raise
         finally:
+            if token is not None:
+                _current_operation.reset(token)
             values['duration_ms'] = round((time.monotonic() - started) * 1000)
             if span:
                 from opentelemetry.trace import Status, StatusCode
@@ -162,7 +250,7 @@ def operation(name, **attributes):
             event('operation.completed', **values)
 
 
-def observed_http(fn, url, *args, **kwargs):
+def observed_http(fn, url, *args, telemetry_method=None, **kwargs):
     """Outbound IO without propagating LANIS identity/trace headers to providers."""
     host = urlsplit(url).hostname or ''
     dependency = ('schulportal' if host.endswith('.schulportal.hessen.de') else
@@ -171,7 +259,7 @@ def observed_http(fn, url, *args, **kwargs):
                   'whatsapp' if host == 'graph.facebook.com' else
                   'discord' if host == 'discord.com' else 'external')
     name = getattr(fn, '__name__', '')
-    method = name.upper() if isinstance(name, str) else ''
+    method = telemetry_method if telemetry_method in _methods else name.upper() if isinstance(name, str) else ''
     with operation('http.outbound', dependency=dependency, **{'http.request.method': method}) as attributes:
         response = fn(url, *args, **kwargs)
         status = getattr(response, 'status_code', 0)
@@ -233,7 +321,7 @@ class ObservabilityMiddleware:
             try:
                 await self.app(scope, receive, observed_send)
             except BaseException as error:
-                outcome = 'cancelled' if isinstance(error, asyncio.CancelledError) else 'failed'
+                outcome = 'cancelled' if isinstance(error, (asyncio.CancelledError, GeneratorExit)) else 'failed'
                 raise
             finally:
                 route = getattr(scope.get('route'), 'path', '/unmatched')
@@ -254,7 +342,7 @@ class ObservabilityMiddleware:
 
 def configure():
     """Called once at startup. Explicit providers avoid altering global tracing."""
-    global _provider, _logs, _handler, _tracer, _sqlite
+    global _provider, _logs, _handler, _tracer, _sqlite, _processor_health, _delivery_gate
     if _provider is not None:
         return
     key = os.getenv('POSTHOG_PROJECT_KEY', '')
@@ -302,10 +390,13 @@ def configure():
                         parent=span.parent, resource=resource, attributes=attrs,
                         kind=span.kind, status=Status(span.status.status_code),
                         start_time=span.start_time, end_time=span.end_time))
-                try:
-                    result = self.exporter.export(sanitized)
-                except Exception:
-                    result = SpanExportResult.FAILURE
+                with gate.exporting('traces', len(sanitized)) as allowed:
+                    if not allowed:
+                        return SpanExportResult.FAILURE
+                    try:
+                        result = self.exporter.export(sanitized)
+                    except Exception:
+                        result = SpanExportResult.FAILURE
                 count('traces.sent' if result == SpanExportResult.SUCCESS else 'traces.failed')
                 return result
 
@@ -317,10 +408,13 @@ def configure():
                 self.exporter = exporter
 
             def export(self, batch):
-                try:
-                    result = self.exporter.export(batch)
-                except Exception:
-                    result = LogRecordExportResult.FAILURE
+                with gate.exporting('logs', len(batch)) as allowed:
+                    if not allowed:
+                        return LogRecordExportResult.FAILURE
+                    try:
+                        result = self.exporter.export(batch)
+                    except Exception:
+                        result = LogRecordExportResult.FAILURE
                 count('logs.sent' if result == LogRecordExportResult.SUCCESS else 'logs.failed')
                 return result
 
@@ -331,16 +425,34 @@ def configure():
                 flush = getattr(self.exporter, 'force_flush', None)
                 return flush(timeout_millis) if flush else True
 
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+        reader = InMemoryMetricReader()
+        metrics = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
+        processor_health = ProcessorHealth(metrics, reader)
+        gate = ExportGate()
+        _processor_health, _delivery_gate = processor_health, gate
         auth = {'Authorization': f'Bearer {key}'}
         # Send OTLP directly to EU: the analytics proxy need not support OTLP.
         _provider = TracerProvider(resource=resource, shutdown_on_exit=False)
-        _provider.add_span_processor(BatchSpanProcessor(SafeSpans(OTLPSpanExporter(
-            endpoint='https://eu.i.posthog.com/i/v1/traces', headers=auth, timeout=3)),
-            max_queue_size=2048, max_export_batch_size=128, schedule_delay_millis=5000))
         _logs = LoggerProvider(resource=resource, shutdown_on_exit=False)
-        _logs.add_log_record_processor(BatchLogRecordProcessor(CountedLogs(OTLPLogExporter(
-            endpoint='https://eu.i.posthog.com/i/v1/logs', headers=auth, timeout=3)),
-            max_queue_size=2048, max_export_batch_size=128, schedule_delay_millis=5000))
+        flag = 'OTEL_PYTHON_SDK_INTERNAL_METRICS_ENABLED'
+        previous_flag = os.environ.get(flag)
+        os.environ[flag] = 'true'
+        try:
+            _provider.add_span_processor(BatchSpanProcessor(SafeSpans(OTLPSpanExporter(
+                endpoint='https://eu.i.posthog.com/i/v1/traces', headers=auth, timeout=3)),
+                max_queue_size=2048, max_export_batch_size=128, schedule_delay_millis=5000,
+                meter_provider=metrics))
+            _logs.add_log_record_processor(BatchLogRecordProcessor(CountedLogs(OTLPLogExporter(
+                endpoint='https://eu.i.posthog.com/i/v1/logs', headers=auth, timeout=3)),
+                max_queue_size=2048, max_export_batch_size=128, schedule_delay_millis=5000,
+                meter_provider=metrics))
+        finally:
+            if previous_flag is None:
+                os.environ.pop(flag, None)
+            else:
+                os.environ[flag] = previous_flag
         _tracer = _provider.get_tracer('lanis.operations')
         from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
         _sqlite = SQLite3Instrumentor()
@@ -374,8 +486,14 @@ def configure():
         shutdown()
 
 
-def shutdown():
-    global _provider, _logs, _handler, _tracer, _sqlite
+def shutdown(timeout_millis=3000):
+    """One caller deadline across both providers; never call unbounded force_flush.
+
+    SDK workers are daemon threads. After the deadline queued batches are dropped,
+    while an HTTP export already in flight may finish using its own timeout.
+    """
+    global _provider, _logs, _handler, _tracer, _sqlite, _processor_health, _delivery_gate
+    deadline = time.monotonic() + max(0, timeout_millis) / 1000
     if _sqlite:
         _sqlite.uninstrument()
         _sqlite = None
@@ -385,12 +503,34 @@ def shutdown():
     event('service.stopped')
     from schulportal_hessen.tools.telemetry import set_observer
     set_observer()
-    providers = (_provider, _logs)
+    providers = [p for p in (_provider, _logs) if p is not None]
     _tracer = _provider = _logs = None
-    for provider in providers:
-        if provider:
-            try:
-                provider.force_flush(timeout_millis=3000)
-                provider.shutdown()
-            except Exception:
-                count('shutdown.failed')
+    metrics, gate = _processor_health, _delivery_gate
+    remaining = len(providers)
+    completed_lock = threading.Lock()
+
+    def stop(provider):
+        nonlocal remaining
+        try:
+            provider.shutdown()
+        except Exception:
+            count('shutdown.failed')
+        finally:
+            with completed_lock:
+                remaining -= 1
+                if remaining == 0 and metrics:
+                    metrics.close()
+
+    workers = [threading.Thread(target=stop, args=(p,), daemon=True,
+                name='lanis-telemetry-shutdown') for p in providers]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(max(0, deadline - time.monotonic()))
+    inflight = gate.close() if gate else Counter()
+    if any(worker.is_alive() for worker in workers):
+        queued = metrics.collect() if metrics else Counter()
+        for signal in ('traces', 'logs'):
+            count(signal + '.shutdown_unfinished', queued[signal] + inflight[signal])
+    elif not providers and metrics:
+        metrics.close()

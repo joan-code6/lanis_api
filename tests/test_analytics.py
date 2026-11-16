@@ -187,11 +187,14 @@ def test_backend_events_require_consent_and_strip_request_contents(tmp_path, mon
     monkeypatch.setenv('POSTHOG_PROJECT_KEY', 'phc_fakepublic')
     monkeypatch.setenv('POSTHOG_HOST', 'https://t.lanis.arg-server.de')
     sent = []
+    from api.observability import health
+    before_delivery = health()['delivery']
     def deliver(url, **kwargs):
         sent.append((url, kwargs))
         response = requests.Response()
         response.status_code = 200
         response._content = b'{"status":1}'
+        response._content_consumed = True
         return response
 
     monkeypatch.setattr(requests, 'post', deliver)
@@ -213,7 +216,7 @@ def test_backend_events_require_consent_and_strip_request_contents(tmp_path, mon
             assert not sent
             response = await client.get('/items/PRIVATE?query=PRIVATE', headers={'X-Session-Token': token, 'X-LANIS-Analytics-Consent': 'account-v2'})
             for _ in range(100):
-                if sent:
+                if sent and not app.state.analytics_pending:
                     break
                 await asyncio.sleep(0.01)
             assert len(sent) == 1
@@ -225,6 +228,8 @@ def test_backend_events_require_consent_and_strip_request_contents(tmp_path, mon
             assert props['request_id'] == response.headers['x-lanis-request-id']
             assert props['distinct_id'].startswith('la_')
             assert props['status'] == 200
+            assert health()['delivery'].get('events.sent', 0) == before_delivery.get('events.sent', 0) + 1
+            assert health()['delivery'].get('events.failed', 0) == before_delivery.get('events.failed', 0)
 
     asyncio.run(scenario())
 

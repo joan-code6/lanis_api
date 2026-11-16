@@ -189,7 +189,7 @@ def discover_files(path, data):
     return targets
 
 
-@observe("api.daily_cache.warm_users")
+@observe("api.daily_cache.warm_users", failed=lambda result: result is False)
 async def warm_users():
     """Refresh authenticated read views without discarding successful snapshots."""
     from .api import _school_dsb_credentials, app, sessions
