@@ -1,3 +1,5 @@
+
+from schulportal_hessen.tools.telemetry import observe
 from html import unescape
 from typing import Any, Dict, List, Optional
 import json
@@ -108,6 +110,7 @@ def _parse_calendar_page(html: str) -> Dict[str, Any]:
     }
 
 
+@observe("schulportal_hessen.applets.kalender.api.kalender_get_overview")
 def kalender_get_overview(self) -> Dict[str, Any]:
     """Fetch the calendar overview page and extract its metadata.
 
@@ -212,6 +215,7 @@ def _event_matches_search(event: Dict[str, Any], query: str) -> bool:
     return text_matches_query(searchable_text, query)
 
 
+@observe("schulportal_hessen.applets.kalender.api.kalender_get_events")
 def kalender_get_events(
     self,
     year: int = 0,
@@ -330,6 +334,7 @@ def kalender_get_events(
         return {"success": False, "error": f"Failed to parse calendar events: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.kalender.api.kalender_get_event")
 def kalender_get_event(
     self, event_id: str, view_id: Optional[str] = None
 ) -> Dict[str, Any]:

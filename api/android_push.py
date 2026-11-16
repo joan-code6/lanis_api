@@ -1,6 +1,8 @@
 """Android FCM transport; reuses notification queues and account cleanup."""
 from __future__ import annotations
 
+from api.observability import observe, observed_http
+
 import os
 import re
 import threading
@@ -76,6 +78,7 @@ def _access_token() -> str:
         _lock.release()
 
 
+@observe("api.android_push.send_android_push")
 def send_android_push(subscription: dict[str, Any], payload: dict[str, Any]) -> None:
     import requests
     if not is_android_subscription(subscription):
@@ -87,7 +90,7 @@ def send_android_push(subscription: dict[str, Any], payload: dict[str, Any]) -> 
     # It displays the notification immediately, then schedules widget refresh.
     data = {key: str(payload.get(key) or "")[:limit] for key, limit in (("title", 100), ("body", 350), ("url", 200), ("tag", 100))}
     data["binding"] = subscription["keys"]["auth"]
-    response = requests.post(
+    response = observed_http(requests.post,
         f"https://fcm.googleapis.com/v1/projects/{project}/messages:send",
         headers={"Authorization": "Bearer " + _access_token()},
         json={"message": {

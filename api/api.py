@@ -67,6 +67,7 @@ load_dotenv()
 
 from schulportal_hessen.base import SchulportalHessenAPI
 
+from . import observability
 from .analytics_routes import router as analytics_router, register_request_diagnostics
 from .agents import router as agents_router
 from .hosted_agents import router as hosted_agents_router
@@ -1513,8 +1514,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At", "X-LANIS-Request-ID"],
+    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At", "X-LANIS-Request-ID", "X-LANIS-Trace-ID"],
 )
+
+app.add_middleware(observability.ObservabilityMiddleware)
 
 # The MCP SDK owns its task group for the complete ASGI lifespan.
 _existing_lifespan = app.router.lifespan_context
@@ -1553,6 +1556,7 @@ app.include_router(school_pages_router)
 async def _startup() -> None:
     """Initialize stores and start the API's background schedulers."""
     global _daily_cache_task, _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
+    observability.configure()
     await auth_db_initialize()
     await run_in_threadpool(purge_staged_files)
     from .auth_db import DB_PATH
@@ -1614,6 +1618,7 @@ async def _cleanup_sessions() -> None:
             await asyncio.gather(*pending_confirmations, return_exceptions=True)
     await sessions.shutdown()
     await snapshots.close()
+    await run_in_threadpool(observability.shutdown)
 
 
 # --- Public Endpoints ---

@@ -187,7 +187,14 @@ def test_backend_events_require_consent_and_strip_request_contents(tmp_path, mon
     monkeypatch.setenv('POSTHOG_PROJECT_KEY', 'phc_fakepublic')
     monkeypatch.setenv('POSTHOG_HOST', 'https://t.lanis.arg-server.de')
     sent = []
-    monkeypatch.setattr(requests, 'post', lambda url, **kwargs: sent.append((url, kwargs)))
+    def deliver(url, **kwargs):
+        sent.append((url, kwargs))
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b'{"status":1}'
+        return response
+
+    monkeypatch.setattr(requests, 'post', deliver)
     app = FastAPI()
     register_request_diagnostics(app)
 

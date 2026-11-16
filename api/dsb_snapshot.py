@@ -7,6 +7,8 @@ with raw HTML and parsed tables) and stores it as a single JSON snapshot in SQLi
 Simple and robust: one table, one blob per day, errors are caught and logged.
 """
 
+from api.observability import observe
+
 import asyncio
 import json
 import logging
@@ -88,6 +90,7 @@ class DsbSnapshotDB:
 dsb_snapshot_db = DsbSnapshotDB()
 
 
+@observe("api.dsb_snapshot._fetch_and_store_dsb_snapshot")
 async def _fetch_and_store_dsb_snapshot() -> None:
     dsb_username = os.getenv("DSB_USERNAME", "")
     dsb_password = os.getenv("DSB_PASSWORD", "")

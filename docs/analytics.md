@@ -52,3 +52,22 @@ The request ledger stores only live-session, consented traffic using static rout
 Feedback accepts an optional `support_context` with release, safe page and at most ten request UUIDs. Ownership is checked against the submitting user's recent request ledger. The context is stored with feedback and shown to operators; it contains no automatic message/body capture. Existing feedback retention/deletion rules continue to apply.
 
 `GET /admin/analytics/users/{school_id:username}` performs the same audited investigation by LANIS account identity, without creating an analytics reference for a nonconsenting account. Missing data returns 404 rather than implying the account is healthy.
+
+
+## Operational Logs and tracing
+
+Install the updated `requirements.txt` when deploying this revision. With the existing `POSTHOG_PROJECT_KEY`, operational export starts automatically; no new token is needed. `POSTHOG_OBSERVABILITY=0` disables it. `LANIS_ENVIRONMENT` and optional Git SHA `LANIS_RELEASE` label the resource. Missing configuration does not stop the API. Existing account-linked request events keep their consent and deletion barrier.
+
+`lanis_api` exports OTLP HTTP/protobuf directly to EU PostHog at `/i/v1/logs` and `/i/v1/traces`. The separate analytics proxy does not need to support OTLP. Both SDK batch queues hold at most 2,048 records, export batches of 128, and use three-second exporter timeouts. Shutdown drains product delivery tasks and flushes operational providers. These are best-effort telemetry queues, not a durable audit log; overload/crash can lose buffered records. Do not sum browser attempts, backend summary events and request spans as independent requests.
+
+The ASGI span covers the response body, not just response headers. Request logs distinguish TTFB, full duration, emitted bytes, HTTP status, cache category, cancellation and incomplete/failed streams. Response `X-LANIS-Trace-ID` connects browser events/Logs to the backend trace; CORS exposes it. Consent-gated, UUID-validated `X-LANIS-Client-Request-ID` and `X-LANIS-Session-ID` provide attempt/session correlation. Incoming trace baggage is not accepted, and trace/identity headers are not injected into Schulportal or provider requests.
+
+Public module operations, Schulportal/DSB and provider HTTP calls, SQLite operations, queue attempts, daily cache, uptime checks, notifications/push, file cleanup, account export/deletion, MCP tools, hosted-agent turns, Signal/WhatsApp/Discord, and AI/embedding calls now have safe spans and operation logs. Background work is measured without attaching account names, grants, phones, prompts or payloads. The standalone `sph-client` package uses optional standard-library hooks and never imports the API or OpenTelemetry.
+
+Existing Python application logs are exported as severity plus a fixed message and repository source/line. Their original message, arguments, exception details and extra fields stay local. Structured request/operation logs retain only approved technical fields. At the trace exporter, spans are rebuilt with allowlisted attributes; raw URLs, SQL, exception events/locals, status descriptions and library metadata are omitted. The resource does not include host/process details. No IP, username, school identifier, credential, form, message, filename, prompt, completion or tool result is exported.
+
+`GET /admin/analytics/quality` now includes `telemetry`: enabled/configured booleans, product-event sent/failed/dropped counters, OTLP sent/failed batch counters and last successful delivery timestamps. Product ingestion checks HTTP errors and closes the response; failures no longer look like accepted delivery. These counters are process-local and reset on restart. SDK overload can drop OTLP records before a batch is exported; delivery counters cover exported batches, not all attempted records.
+
+After deployment, verify real traffic appears under service `lanis_api` in Logs and Tracing and inspect the quality endpoint. Backend account events still require live consented sessions; login, expired sessions, bearer MCP and scheduled jobs are covered by operational signals instead. Operational signals omit account identity; only consenting browser sessions carry session correlation. This does not enable session replay, arbitrary console/stdout forwarding, LLM prompt capture or native Android crash collection.
+
+References: [Python Logs](https://posthog.com/docs/logs/installation/python), [Python tracing](https://posthog.com/docs/distributed-tracing/installation/python).

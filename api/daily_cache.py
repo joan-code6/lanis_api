@@ -1,5 +1,7 @@
 """Daily, sequential read-only cache warm-up in the school's local timezone."""
 
+from api.observability import observe
+
 import asyncio
 import logging
 import os
@@ -187,6 +189,7 @@ def discover_files(path, data):
     return targets
 
 
+@observe("api.daily_cache.warm_users")
 async def warm_users():
     """Refresh authenticated read views without discarding successful snapshots."""
     from .api import _school_dsb_credentials, app, sessions

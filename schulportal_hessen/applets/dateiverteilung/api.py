@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from schulportal_hessen.tools.telemetry import observe
+
 import re
 from collections.abc import Iterator
 from copy import deepcopy
@@ -194,6 +196,7 @@ def _parse_distribution(
     }
 
 
+@observe("schulportal_hessen.applets.dateiverteilung.api.parse_dateiverteilung_html")
 def parse_dateiverteilung_html(html: str, base_url: str) -> list[dict[str, Any]]:
     """Parse recipient distributions across current and legacy portal markup."""
     soup = BeautifulSoup(html, "html.parser")
@@ -251,6 +254,7 @@ def _looks_like_login(response: Any) -> bool:
     )
 
 
+@observe("schulportal_hessen.applets.dateiverteilung.api.dateiverteilung_get_overview")
 def dateiverteilung_get_overview(self) -> dict[str, Any]:
     if not self.logged_in:
         return {
@@ -343,6 +347,7 @@ def _filename(disposition: str, download_url: str) -> str:
     )
 
 
+@observe("schulportal_hessen.applets.dateiverteilung.api.dateiverteilung_download_file")
 def dateiverteilung_download_file(self, url: str) -> dict[str, Any]:
     if not self.logged_in:
         return {

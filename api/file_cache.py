@@ -6,6 +6,8 @@ Hash-based deduplication ensures two students in the same class don't store
 the same file twice.
 """
 
+from api.observability import observe
+
 import asyncio
 import hashlib
 import json
@@ -97,6 +99,7 @@ def delete_staged_files(staged_paths: list[Path]) -> int:
     return deleted
 
 
+@observe("api.file_cache.purge_staged_files")
 def purge_staged_files() -> int:
     """Remove staged attachment files left by an interrupted deletion."""
     if not FILE_CACHE_DIR.exists():
@@ -179,6 +182,7 @@ def write_pending_meta(file_hash: str, download_url: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+@observe("api.file_cache.save_file")
 def save_file(file_hash: str, content: bytes, content_type: str, filename: str) -> None:
     """Atomically replace shared bytes so in-flight readers retain a complete copy."""
     _ensure_cache_dir()
@@ -218,6 +222,7 @@ def get_content_path(file_hash: str) -> Path:
     return _content_path(file_hash)
 
 
+@observe("api.file_cache.purge_expired_files")
 def purge_expired_files(protected_hashes: set[str] | None = None) -> int:
     """Delete shared cache entries older than the documented retention period."""
     if not FILE_CACHE_DIR.exists():

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from schulportal_hessen.tools.telemetry import observe
+
 from datetime import datetime
 import json
 import re
@@ -223,6 +225,7 @@ def _fetch_ajax_day(self, date_str: str) -> Dict[str, Any]:
     return {"date": date_str, "substitutions": substitutions}
 
 
+@observe("schulportal_hessen.applets.vertretungsplan.api.vertretungsplan_get_plan")
 def vertretungsplan_get_plan(self, include_raw: bool = False) -> Dict[str, Any]:
     """Fetch the substitution plan (vertretungsplan.php) for the logged-in user.
 

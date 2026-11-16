@@ -6,6 +6,7 @@ from datetime import datetime
 from urllib.parse import urljoin, urlsplit
 
 import requests
+from schulportal_hessen.tools.telemetry import observed_http
 
 
 @dataclass
@@ -74,7 +75,7 @@ class ObservedSession(requests.Session):
         # send() also sees redirect hops, unlike the initial request() call.
         if self.module_guard is not None:
             self.module_guard(request.url, method=request.method)
-        return super().send(request, **kwargs)
+        return observed_http(lambda url, **options: super(ObservedSession, self).send(request, **options), request.url, **kwargs)
 
     def request(self, method, url, **kwargs):
         current = observation.get()

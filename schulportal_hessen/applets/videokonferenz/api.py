@@ -7,6 +7,8 @@ with class names used only as a fallback.
 
 from __future__ import annotations
 
+from schulportal_hessen.tools.telemetry import observe
+
 import hashlib
 import json
 import re
@@ -225,6 +227,7 @@ def _is_login_page(soup: BeautifulSoup, source_url: str) -> bool:
     )
 
 
+@observe("schulportal_hessen.applets.videokonferenz.api.parse_videokonferenz_overview")
 def parse_videokonferenz_overview(
     html: str,
     source_url: str = "https://start.schulportal.hessen.de/videokonferenz.php",
@@ -270,6 +273,7 @@ def parse_videokonferenz_overview(
     }
 
 
+@observe("schulportal_hessen.applets.videokonferenz.api.videokonferenz_get_rooms")
 def videokonferenz_get_rooms(self: Any) -> dict[str, Any]:
     """Fetch the authenticated student's current video-conference rooms."""
     if not self.logged_in:
