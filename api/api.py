@@ -1492,6 +1492,32 @@ def _validate_class_link_url(url: str) -> str:
     return clean_url
 
 
+@app.middleware("http")
+async def detect_required_password_change(request: Request, call_next):
+    from schulportal_hessen.tools.transport import (
+        PasswordChangeObservation, password_change_observation,
+    )
+    from fastapi.responses import JSONResponse
+
+    signal = PasswordChangeObservation()
+    reset = password_change_observation.set(signal)
+    try:
+        try:
+            response = await call_next(request)
+        except Exception:
+            if not signal.required:
+                raise
+        if signal.required:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": {"code": "password_change_required"}},
+                headers={"Cache-Control": "no-store"},
+            )
+        return response
+    finally:
+        password_change_observation.reset(reset)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -2000,6 +2026,15 @@ async def _schedule_account_revalidation(auth: AuthSession, endpoint: str) -> No
     except asyncio.QueueFull:
         # Cached responses remain available when background capacity is full.
         logger.debug('Skipped background cache refresh because the queue is full')
+
+
+@app.get("/auth/check-password-change")
+async def check_password_change(auth: AuthSession = Depends(client_dependency)):
+    """Probe Schulportal directly so Retry cannot succeed from a cached response."""
+    result = await run_in_threadpool(auth.client.get_apps)
+    if not result.get("success"):
+        raise HTTPException(status_code=503, detail="Schulportal check failed")
+    return {"success": True}
 
 
 @app.get("/apps")

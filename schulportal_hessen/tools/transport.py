@@ -3,7 +3,7 @@
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
 
@@ -23,6 +23,30 @@ class TransportObservation:
 observation: ContextVar[TransportObservation | None] = ContextVar(
     "schulportal_transport_observation", default=None
 )
+
+
+@dataclass
+class PasswordChangeObservation:
+    required: bool = False
+
+
+password_change_observation: ContextVar[PasswordChangeObservation | None] = ContextVar(
+    "schulportal_password_change_observation", default=None
+)
+
+
+class PasswordChangeRequired(requests.RequestException):
+    """Schulportal requires the user to choose a new password."""
+
+
+def is_password_change_url(url):
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "start.schulportal.hessen.de"
+        and parsed.path == "/benutzerverwaltung.php"
+        and "userChangePassword" in parse_qs(parsed.query).get("a", [])
+    )
 
 
 class UpstreamSessionExpired(requests.RequestException):
@@ -69,6 +93,29 @@ def is_login_gate(response, requested_url, *, stream=False):
 
 class ObservedSession(requests.Session):
     module_guard = None
+
+    def __init__(self):
+        super().__init__()
+        # Response hooks run before requests follows redirects, including hops.
+        self.hooks["response"].append(self._check_password_change)
+
+    def _check_password_change(self, response, **kwargs):
+        location = response.headers.get("Location")
+        redirected = (
+            300 <= response.status_code < 400
+            and location
+            and is_password_change_url(urljoin(response.url, location))
+        )
+        if redirected or is_password_change_url(response.url):
+            signal = password_change_observation.get()
+            if signal is not None:
+                signal.required = True
+            current = observation.get()
+            if current is not None:
+                current.security_failure = True
+            response.close()
+            raise PasswordChangeRequired("Schulportal password change required")
+        return response
 
     def send(self, request, **kwargs):
         # send() also sees redirect hops, unlike the initial request() call.
