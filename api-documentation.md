@@ -1476,16 +1476,24 @@ during an incident, less when a current result is about to become stale).
   During an incident, the freshness window also accounts for the last probe's
   measured duration and time needed for the next retry cycle.
 
-Failed synthetic probes are retried once immediately. If the retry succeeds,
-the successful result is stored as a healthy observation and the initial failed
-attempt is discarded. While an incident is active, the scheduler waits 15 seconds between checks;
-otherwise it waits the configured normal interval. New observations store the
-effective interval, including probe execution time. Legacy rows infer cadence
-from adjacent timestamps so prior five-minute failures keep their historical
-weight. A result represents at most two such intervals. Missing
-or stale spans are excluded from availability and reduce coverage. Partial
-coverage does not mean all
-unobserved time was healthy; show coverage alongside the availability percentage.
+The monitor checks two registered accounts sequentially, preferring different
+schools. Each checks maintenance, authentication and module discovery, without
+opening individual applets. Functional failures are confirmed once after 60
+seconds with the same pair. Service impairments require repeated failures of
+both accounts; a single failing account with a healthy peer remains account-scoped.
+HTTP 429 and HTTP 503 with `Retry-After` stop all remaining probes and produce an
+unknown observation. Unknown results do not open or resolve incidents and are
+excluded from availability while reducing coverage. HTTP 401/403 and exhausted
+request budgets also remain unknown.
+
+Cooldowns respect `Retry-After` (seconds or HTTP date), use exponential backoff,
+and persist across restarts. Manual checks cannot bypass a cooldown or the normal
+cadence. Healthy and incident cycles use the normal configured interval, without
+accelerated polling. New observations store the effective interval, including
+execution time; unknown cooldown time is not extrapolated as known availability.
+Legacy rows infer cadence from adjacent timestamps. A known result represents at
+most two such intervals. Missing or stale spans reduce coverage; always show
+coverage alongside availability. Two healthy scheduled cycles confirm recovery.
 
 Admin uptime responses include `summary_windows`, grouped incident records, the
 current alert-webhook configuration state, and the 20 latest alert delivery
@@ -1493,13 +1501,12 @@ outcomes (`delivered` or `failed`). Failed webhook attempts are recorded with a
 safe error code and retried no more often than once every five minutes while
 the corresponding incident or recovery transition remains current.
 
-The existing monitor authenticates with one configured account and opens that
-account's available modules. Its result does not establish availability for all
-schools, users, or module operations. No credentials, account/module names, raw
-errors, target URLs, or private diagnostics are published. Monitor credentials
-and cadence retain their existing `LANIS_UPTIME_*` configuration; no additional
-production setup is performed by this endpoint. `/health` reports only current
-LANIS API reachability. LANIS's historical availability is not measured here.
+The registered-user sample and single server network vantage point do not
+establish availability for all schools, users, or individual module operations.
+No credentials, real account/module names, raw errors, target URLs, or private
+diagnostics are published. Existing `LANIS_UPTIME_*` cadence and timeout settings
+remain supported. `/health` reports current LANIS API reachability; historical
+LANIS availability is not measured here.
 
 ## Android closed beta recruitment preferences
 

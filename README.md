@@ -347,67 +347,62 @@ surface and method documentation.
 
 This project is released under the [MIT License](LICENSE).
 
-### Parallel authenticated uptime monitoring
+### Rate-aware authenticated uptime monitoring
 
-The uptime monitor samples **registered users**, not a separate monitor-account
-list. An eligible user must have `onboarding.status = completed`, a real user
-activity timestamp within the past 30 days, and a usable, unexpired stored SPH
-credential/session. Skipped or incomplete onboarding, stale activity, account
-deletion markers, and revoked/expired credentials exclude the account. Multiple
-browser sessions do not increase a user's sampling probability.
+The monitor samples two distinct registered users, preferring different schools.
+Eligible users must have completed onboarding, real activity within 30 days, and
+usable, unexpired stored SPH credentials. Revoked/deleted accounts are excluded,
+eligibility is rechecked before each probe, and only selected passwords are
+decrypted under the account lifecycle lease. Monitoring never refreshes activity.
 
-Every cycle randomly chooses two distinct users, preferring different schools.
-If either probe fails, it waits 15 seconds and tests the original pair plus up
-to two new distinct eligible users in parallel. Eligibility is checked again
-before every probe, including confirmation. Only selected credentials are
-decrypted, under the existing account lifecycle lease; probes use fresh isolated
-SDK sessions and never refresh the user's activity timestamp. Thus monitoring
-cannot keep an inactive account eligible forever.
+Accounts are probed **sequentially**, because they share the server's egress IP.
+Each isolated SDK flow checks maintenance, login, and one authenticated module
+list request. It does not resolve module links or open applets; a healthy module
+list does not guarantee individual module operations. A hard budget of 12 wire
+requests per account includes redirects, and exhausted budgets remain unknown.
+The existing total deadline (90 seconds by default) and request timeout still
+apply. Empty module lists and HTTP 401/403 are unknown evidence rather than a
+service-wide outage.
 
-No additional accounts file or credential configuration is required. Four
-eligible users enable the full confirmation round; two or three show reduced
-coverage, and fewer than two produce an unknown insufficient-coverage result.
-Each probe has a 90-second total deadline. Normal and incident cycles use the
-configured `LANIS_UPTIME_INTERVAL_SECONDS` (default 300); retries never recurse.
+HTTP 429, or HTTP 503 with `Retry-After`, immediately stops further requests,
+including SDK fallback requests, the second account, and confirmation probes.
+The aggregate observation is **unknown**, excluded from available/failed time,
+and reduces coverage. It neither opens an incident nor confirms recovery.
+`Retry-After` accepts seconds and HTTP dates. Cooldowns start at twice the normal
+interval, double on repeated throttling to a one-hour backoff, and always wait at
+least the server's `Retry-After` (bounded to one year). The retry timestamp and
+streak are persisted, so manual requests and process restarts cannot bypass them.
+This cooldown governs monitor traffic; normal user requests still share the IP.
 
-Any functional failure in confirmation indicates partially impaired service
-(`degraded`), including a single failing account. All sampled accounts failing
-login indicate `down`. **Availability and confidence are independent:** a
-single-account failure has limited confidence and account scope, but it still
-counts as impairment in uptime calculations and opens a scoped incident. Two or
-more failures with complete expected coverage have confirmed confidence; missing
-or reduced confirmation coverage limits confidence. No functional failures plus
-incomplete evidence remains `unknown`, and does not open or resolve incidents.
+Functional failures trigger one confirmation of the same two accounts after a
+60-second quiet interval. There is no expansion to four accounts. Only failures
+repeated across both accounts establish a service impairment. An isolated
+account failure with another healthy account remains account-scoped and does
+not count as general downtime. Missing or ambiguous evidence stays unknown.
+Two healthy scheduled cycles confirm recovery; manual checks cannot advance it.
+Unknown observations retain any pending incident without resolving it.
 
-The stored evidence includes observed status, confidence, scope (account, one
-sampled school, multiple sampled schools, or sampled accounts), completed versus
-expected probes, and the number of accounts failing in both rounds. Public
-status allowlists only aggregate confidence/scope/status values; Discord includes
-human-readable confidence and scope without identifiers. An isolated generic
-login failure may still be an account credential problem: limited confidence
-makes that uncertainty explicit instead of deleting it from the measurement.
+Each cycle persists one aggregate observation and private, cycle-local account
+labels, numbered school groups, request counts, and safe diagnostics. It never
+stores credentials in monitor history. Public responses allowlist status, safe
+error codes, confidence, and scope, and describe these measurement limits.
+Availability remains time-weighted; unknown and stale spans reduce coverage.
+Historical generic errors without recorded HTTP evidence cannot reliably be
+reclassified as rate limits and are left intact.
 
-All-pass confirmation records a transient failure without opening an incident. Recovery
-from an existing incident requires two consecutive healthy scheduled cycles;
-manual checks cannot advance recovery. One aggregate observation per cycle feeds
-existing time-weighted uptime and incidents. Private admin history retains both
-rounds with cycle-local account labels and numbered school groups, never usernames, passwords, or school IDs.
-The public status endpoint and Discord continue to expose only aggregate data.
-Discord retains its existing incident/recovery transition deduplication.
+`LANIS_UPTIME_INTERVAL_SECONDS` (default 300) governs healthy and incident cycles;
+there is no accelerated incident polling. `LANIS_UPTIME_TIMEOUT_SECONDS` bounds
+every request, including explicit SDK timeouts. The total per-account deadline is
+`LANIS_UPTIME_PROBE_DEADLINE_SECONDS` (default 90, clamped to 5–180).
+Manual checks join a running cycle or return the stored observation until the
+next probe is due, without adding samples or notifications. The admin endpoint
+waits up to five seconds, then exposes `active_cycle.phase` while work continues.
 
-`LANIS_UPTIME_PROBE_DEADLINE_SECONDS` configures the total per-account deadline
-(default 90; clamped to 5–180). Request timeouts still use
-`LANIS_UPTIME_TIMEOUT_SECONDS`. A manual check joins any currently running cycle
-instead of starting another one. The admin endpoint waits up to five seconds and
-then returns current status plus `active_cycle.phase`; the shared cycle continues
-in the background, and the portal refreshes every ten seconds while on Uptime. Isolation/coalescing applies within one backend
-process: run the scheduler in a single worker, as in the current deployment.
-Server shutdown explicitly stops the shared cycle and reaps its probe processes
-before draining Discord deliveries. HTTP waiter cancellation still leaves the
-shared cycle running; shutdown prevents new cycles until scheduler startup.
-Ambiguous credential failures remain operator-reviewed because the SDK's generic login
-failure cannot reliably distinguish bad credentials from upstream failure;
-accounts are not automatically disabled on that ambiguous signal.
+Coalescing and scheduling assume a single backend worker, as in the current
+deployment. Shutdown stops shared work, reaps child processes, and drains Discord
+deliveries. Discord retains incident/recovery deduplication. Generic SDK login
+failures remain ambiguous; accounts are not automatically disabled. All probes
+share one network vantage point and do not establish global SPH availability.
 
 ## External agents
 

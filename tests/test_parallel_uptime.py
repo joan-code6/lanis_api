@@ -1,7 +1,6 @@
 import asyncio
 import json
 import multiprocessing
-import threading
 import time
 from datetime import datetime
 
@@ -51,28 +50,23 @@ def test_classification(states, expected):
     assert uptime._classify_round([result(state) for state in states]) == expected
 
 
-def test_round_really_runs_concurrently(monkeypatch):
-    barrier = threading.Barrier(2, timeout=3)
-
+def test_round_runs_sequentially_and_stops_on_ip_rate_limit(monkeypatch):
+    calls = []
     def fake_probe(account, stopped=None):
-        barrier.wait()
-        return result("up")
-
+        calls.append(account)
+        return {"status": "unknown", "error": "rate_limited", "features": []}
     async def credentials(account):
         return account
-
     monkeypatch.setattr(uptime, "_registered_credentials", credentials)
     monkeypatch.setattr(uptime, "_isolated_probe", fake_probe)
     pool = accounts(2)
-    results = asyncio.run(
-        uptime._probe_round(pool, {a[:2]: str(i) for i, a in enumerate(pool)})
-    )
-    assert len(results) == 2
-    assert len({r["account"] for r in results}) == 2
+    results = asyncio.run(uptime._probe_round(pool, {a[:2]: str(i) for i, a in enumerate(pool)}))
+    assert len(calls) == len(results) == 1
+    assert results[0]["error"] == "rate_limited"
 
 
 @pytest.mark.parametrize("pool_size", [0, 1, 2, 3, 6])
-def test_cycle_expands_only_once_and_persists_one_sample(
+def test_cycle_confirms_same_pair_once_and_persists_one_sample(
     monkeypatch, tmp_path, pool_size
 ):
     async def scenario():
@@ -89,7 +83,7 @@ def test_cycle_expands_only_once_and_persists_one_sample(
             return [{"account": labels[a[:2]], **result("down")} for a in selected]
 
         async def no_wait(seconds):
-            assert seconds == 15
+            assert seconds == uptime.UPTIME_CONFIRMATION_SECONDS
 
         monkeypatch.setattr(uptime, "_probe_round", fake_round)
         monkeypatch.setattr(uptime.asyncio, "sleep", no_wait)
@@ -109,7 +103,7 @@ def test_cycle_expands_only_once_and_persists_one_sample(
         else:
             assert len(rounds) == 2
             assert len(rounds[0]) == 2
-            assert len(rounds[1]) == min(pool_size, 4)
+            assert rounds[1] == rounds[0]
             assert set(rounds[0]).issubset(rounds[1])
             assert len(rounds[1]) == len(set(rounds[1]))
 
@@ -129,7 +123,7 @@ def test_shared_cycle_survives_cancelled_waiter(monkeypatch):
             return {"status": "up"}
 
         monkeypatch.setattr(uptime, "_uptime_cycle_task", None)
-        monkeypatch.setattr(uptime, "_run_uptime_cycle", cycle)
+        monkeypatch.setattr(uptime, "_run_uptime_when_due", cycle)
         first = asyncio.create_task(uptime.run_uptime_check(scheduled=True))
         await entered.wait()
         second = asyncio.create_task(uptime.run_uptime_check())
@@ -595,12 +589,12 @@ def test_shutdown_stops_shared_cycle_and_reaps_active_workers(monkeypatch):
             await uptime._probe_round(pool, {a[:2]: str(i) for i, a in enumerate(pool)})
             after_probe.append("late notification")
 
-        monkeypatch.setattr(uptime, "_run_uptime_cycle", cycle)
+        monkeypatch.setattr(uptime, "_run_uptime_when_due", cycle)
         waiter = asyncio.create_task(uptime.run_uptime_check())
 
         async def wait_for_children():
             while (
-                len({p.pid for p in multiprocessing.active_children()} - baseline) < 2
+                len({p.pid for p in multiprocessing.active_children()} - baseline) < 1
             ):
                 await asyncio.sleep(0.01)
 
