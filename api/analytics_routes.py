@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from . import analytics_store
+from . import analytics_store, observability
 from .account_data import account_lifecycle_lock
 
 router = APIRouter(prefix='/analytics', tags=['analytics'])
@@ -77,6 +77,17 @@ def register_request_diagnostics(app):
 
     logger = logging.getLogger('lanis.diagnostics')
     pending = set()
+    app.state.analytics_pending = pending
+
+    @app.on_event('shutdown')
+    async def drain_analytics():
+        if pending:
+            _, unfinished = await asyncio.wait(list(pending), timeout=4)
+            for task in unfinished:
+                task.cancel()
+            if unfinished:
+                await asyncio.gather(*unfinished, return_exceptions=True)
+
 
     async def backend_event(request, route, status, duration, request_id):
         key = os.getenv('POSTHOG_PROJECT_KEY', '')
@@ -94,16 +105,30 @@ def register_request_diagnostics(app):
             async with (await account_lifecycle_lock(identity.user_id)).shared():
                 await local_auth_dependency(token)
                 reference = await analytics_store.account_reference(identity.user_id)
+                correlation = observability.safe_attributes({
+                    'client_request_id': request.headers.get('X-LANIS-Client-Request-ID'),
+                    'sessionId': request.headers.get('X-LANIS-Session-ID'),
+                    'trace_id': request.state.analytics_trace_id,
+                })
+                if 'sessionId' in correlation:
+                    correlation['$session_id'] = correlation.pop('sessionId')
                 payload = {'api_key': key, 'event': 'backend_request_completed', 'properties': {
-                    'distinct_id': reference, 'app': 'lanis_api', 'schema_version': 3, 'account_ref': reference,
+                    'distinct_id': reference, 'app': 'lanis_api', 'schema_version': 4, 'account_ref': reference,
                     'endpoint': route, 'method': request.method, 'status': status,
                     'duration_ms': duration, 'request_id': request_id,
                     '$process_person_profile': True, '$geoip_disable': True, '$ip': None,
+                    **correlation, **observability.release_labels(),
                 }}
                 # Keep the deletion lease through the send: no post-deletion event writes.
-                await run_in_threadpool(requests.post, host + '/capture/', json=payload, timeout=3)
+                result = await run_in_threadpool(requests.post, host + '/capture/', json=payload, timeout=3)
+                try:
+                    result.raise_for_status()
+                    observability.count('events.sent')
+                finally:
+                    result.close()
         except Exception:
             # Telemetry is best effort; never log credentials or request contents.
+            observability.count('events.failed')
             logger.debug('Backend analytics delivery unavailable')
 
     @app.middleware('http')
@@ -114,6 +139,7 @@ def register_request_diagnostics(app):
             return await call_next(request)
         request_id = str(uuid.uuid4())
         request.state.analytics_request_id = request_id
+        request.state.analytics_trace_id = observability.trace_id()
         started = time.monotonic()
         try:
             response = await call_next(request)
@@ -151,10 +177,13 @@ def register_request_diagnostics(app):
         if response.status_code >= 400:
             logger.warning('request_id=%s method=%s route=%s status=%s duration_ms=%s',
                            request_id, request.method, route, response.status_code, duration)
-        if (len(pending) < 64 and not route.startswith(('/analytics', '/admin'))
+        if (not route.startswith(('/analytics', '/admin'))
                 and os.getenv('POSTHOG_PROJECT_KEY', '').startswith('phc_')
                 and request.headers.get('X-LANIS-Analytics-Consent') == 'account-v2'
                 and request.headers.get('X-Session-Token')):
+            if len(pending) >= 64:
+                observability.count('events.dropped')
+                return response
             task = asyncio.create_task(backend_event(request, route, response.status_code, duration, request_id))
             pending.add(task)
             task.add_done_callback(pending.discard)

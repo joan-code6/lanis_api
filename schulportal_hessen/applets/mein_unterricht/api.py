@@ -1,3 +1,5 @@
+
+from schulportal_hessen.tools.telemetry import observe
 from typing import Any, Dict, List, Optional
 import json
 import os
@@ -82,6 +84,7 @@ def _extract_course_folders(soup: Any) -> List[Dict[str, Any]]:
     return list(folders.values())
 
 
+@observe("schulportal_hessen.applets.mein_unterricht.api.meinunterricht_get_overview")
 def meinunterricht_get_overview(self) -> Dict[str, Any]:
     """
     Fetch "mein Unterricht" overview page with current entries
@@ -216,6 +219,7 @@ def meinunterricht_get_overview(self) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to fetch mein Unterricht: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.mein_unterricht.api.meinunterricht_get_course")
 def meinunterricht_get_course(
     self, course_id: str, decrypt_attendance: bool = True
 ) -> Dict[str, Any]:
@@ -516,6 +520,7 @@ def _parse_attendance_count(value: Any) -> Optional[float]:
     return int(number) if number.is_integer() else number
 
 
+@observe("schulportal_hessen.applets.mein_unterricht.api.meinunterricht_get_attendance_overview")
 def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
     """Combine native attendance summaries for all Mein Unterricht courses."""
     if not self.logged_in:
@@ -632,6 +637,7 @@ def meinunterricht_get_attendance_overview(self) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to fetch attendance overview: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.mein_unterricht.api.meinunterricht_get_entry_details")
 def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:
     """
     Fetch details for a specific entry/link from mein Unterricht
@@ -683,6 +689,7 @@ def meinunterricht_get_entry_details(self, url: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to fetch entry details: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.mein_unterricht.api.meinunterricht_get_weekly_view")
 def meinunterricht_get_weekly_view(self) -> Dict[str, Any]:
     """
     Fetch weekly view of class entries
@@ -705,11 +712,13 @@ def meinunterricht_get_weekly_view(self) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to fetch weekly view: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.mein_unterricht.api.meinunterricht_get_submissions")
 def meinunterricht_get_submissions(self) -> Dict[str, Any]:
     """Backward-compatible entry point for the typed submissions parser."""
     return _get_submissions(self)
 
 
+@observe("schulportal_hessen.applets.mein_unterricht.api.meinunterricht_set_homework_done")
 def meinunterricht_set_homework_done(
     self, course_id: str, entry_id: str, done: bool = True
 ) -> Dict[str, Any]:
@@ -761,6 +770,7 @@ def meinunterricht_set_homework_done(
         }
 
 
+@observe("schulportal_hessen.applets.mein_unterricht.api.meinunterricht_download_file")
 def meinunterricht_download_file(self, url: str) -> Dict[str, Any]:
     """Download an attached file using the authenticated session.
 

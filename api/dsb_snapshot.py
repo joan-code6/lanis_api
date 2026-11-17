@@ -7,6 +7,8 @@ with raw HTML and parsed tables) and stores it as a single JSON snapshot in SQLi
 Simple and robust: one table, one blob per day, errors are caught and logged.
 """
 
+from api.observability import observe, mark_outcome
+
 import asyncio
 import json
 import logging
@@ -88,12 +90,14 @@ class DsbSnapshotDB:
 dsb_snapshot_db = DsbSnapshotDB()
 
 
+@observe("api.dsb_snapshot._fetch_and_store_dsb_snapshot")
 async def _fetch_and_store_dsb_snapshot() -> None:
     dsb_username = os.getenv("DSB_USERNAME", "")
     dsb_password = os.getenv("DSB_PASSWORD", "")
     school_id = os.getenv("DSB_SCHOOL_ID", "")
 
     if not all([dsb_username, dsb_password, school_id]):
+        mark_outcome("business_failure")
         logger.warning("DSB daily snapshot: missing DSB_USERNAME, DSB_PASSWORD, or DSB_SCHOOL_ID env vars")
         return
 
@@ -113,6 +117,8 @@ async def _fetch_and_store_dsb_snapshot() -> None:
             True,
         )
 
+        if any(result.get("success") is False for result in (login_result, plan_urls_result, plan_result)):
+            mark_outcome("business_failure")
         tables = plan_result.get("tables", []) if plan_result.get("success") else []
         entry_count = sum(len(t.get("rows", [])) for t in tables)
 
@@ -124,6 +130,7 @@ async def _fetch_and_store_dsb_snapshot() -> None:
 
         await dsb_snapshot_db.store_snapshot(school_id, snapshot, entry_count)
     except Exception as e:
+        mark_outcome("failed")
         logger.error("DSB daily snapshot failed: %s", e)
 
 

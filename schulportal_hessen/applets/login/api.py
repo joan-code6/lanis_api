@@ -1,9 +1,12 @@
+
+from schulportal_hessen.tools.telemetry import observe
 from typing import Dict, Any, Optional
 import requests
 from pathlib import Path
 from schulportal_hessen.tools.cryptor import Cryptor
 
 
+@observe("schulportal_hessen.applets.login.api.login_using_env")
 def login_using_env(self, env_path: Optional[str] = None) -> Dict[str, Any]:
     """Login using credentials stored in a .env file.
 
@@ -57,6 +60,7 @@ def login_using_env(self, env_path: Optional[str] = None) -> Dict[str, Any]:
     return login(self, school_id, username, password)
 
 
+@observe("schulportal_hessen.applets.login.api.login")
 def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
     """
     Login to Schulportal Hessen
@@ -156,6 +160,7 @@ def login(self, school_id: str, username: str, password: str) -> Dict[str, Any]:
         return {"success": False, "message": f"Login request failed: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.login.api.logout")
 def logout(self) -> Dict[str, Any]:
     """
     Logout from Schulportal Hessen
@@ -180,6 +185,7 @@ def logout(self) -> Dict[str, Any]:
         return {"success": False, "error": f"Logout request failed: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.login.api.sid_validator", failed=lambda result: result.get("valid") is False)
 def sid_validator(self) -> Dict[str, Any]:
     """
     Validate the current session by checking if the apps endpoint is accessible

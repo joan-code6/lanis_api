@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from api.observability import observe, observed_http
+
 import logging
 import os
 from urllib.parse import urlparse
@@ -114,7 +116,7 @@ def _send_feedback(
     )
     safe_details = _truncate_escaped(_escape_discord_markdown(details), details_budget)
     content = f"{heading}{safe_title}**\n{safe_details}{footer}"
-    response = requests.post(
+    response = observed_http(requests.post,
         webhook_url,
         json={"content": content, "allowed_mentions": {"parse": []}},
         timeout=WEBHOOK_TIMEOUT_SECONDS,
@@ -122,6 +124,7 @@ def _send_feedback(
     response.raise_for_status()
 
 
+@observe("api.discord.notify_feedback")
 async def notify_feedback(report: dict[str, object]) -> None:
     """Send a notification without making Discord failure a submission failure."""
     webhook_url = _feedback_webhook_url()
@@ -144,7 +147,7 @@ async def notify_feedback(report: dict[str, object]) -> None:
 
 
 def _send_new_user(webhook_url: str, school_id: str, username: str) -> None:
-    response = requests.post(
+    response = observed_http(requests.post,
         webhook_url,
         json={
             "content": f"New LANIS user: `{username}` (school `{school_id}`)",
@@ -155,6 +158,7 @@ def _send_new_user(webhook_url: str, school_id: str, username: str) -> None:
     response.raise_for_status()
 
 
+@observe("api.discord.notify_new_user")
 async def notify_new_user(school_id: str, username: str) -> None:
     """Send a new-user notification without blocking or breaking login work."""
     webhook_url = _webhook_url()

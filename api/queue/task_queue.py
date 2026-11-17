@@ -27,6 +27,8 @@ Usage:
         pass
 """
 
+from api.observability import operation
+
 import asyncio
 import logging
 from dataclasses import dataclass, field
@@ -334,7 +336,11 @@ class TaskQueue:
             try:
                 async with self._semaphore:
                     logger.info(f"Worker {worker_id} executing: {task.name}")
-                    task.result = await task.func(*task.args, **task.kwargs)
+                    with operation('queue.attempt', attempt=task.retry_count + 1,
+                            queue_wait_ms=max(0, (task.started_at - task.created_at).total_seconds() * 1000)) as telemetry:
+                        task.result = await task.func(*task.args, **task.kwargs)
+                        if isinstance(task.result, dict) and task.result.get('success') is False:
+                            telemetry['outcome'] = 'business_failure'
                 
                 task.status = TaskStatus.COMPLETED
                 task.completed_at = datetime.utcnow()

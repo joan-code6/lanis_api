@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from schulportal_hessen.tools.telemetry import observe
+
 import base64
 import re
 from typing import Any
@@ -119,6 +121,7 @@ def _parse_teacher_group(group: Any) -> dict[str, Any]:
     }
 
 
+@observe("schulportal_hessen.applets.lerngruppen.api.parse_lerngruppen_html")
 def parse_lerngruppen_html(html: str) -> dict[str, Any]:
     """Parse study groups and exams from a ``lerngruppen.php`` response."""
     soup = BeautifulSoup(html, "html.parser")
@@ -267,6 +270,7 @@ def parse_lerngruppen_html(html: str) -> dict[str, Any]:
     }
 
 
+@observe("schulportal_hessen.applets.lerngruppen.api.lerngruppen_get_overview")
 def lerngruppen_get_overview(self) -> dict[str, Any]:
     """Fetch study groups (lerngruppen.php) and exam data for the logged-in user.
 

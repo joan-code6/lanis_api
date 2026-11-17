@@ -9,7 +9,17 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 import requests
+from schulportal_hessen.tools.transport import ObservedSession, observation
 from bs4 import BeautifulSoup
+
+
+class DsbSession(ObservedSession):
+    def request(self, method, url, **kwargs):
+        token = observation.set(None)
+        try:
+            return super().request(method, url, **kwargs)
+        finally:
+            observation.reset(token)
 
 
 BASE_DSB_URL = "https://www.dsbmobile.de/"
@@ -52,7 +62,7 @@ def _make_dsb_session(
     dsbmobile_cookie: Optional[str] = None,
     asp_session_id: Optional[str] = None,
 ) -> requests.Session:
-    session = requests.Session()
+    session = DsbSession()
     session.headers.update(DSB_HEADERS)
     if dsbmobile_cookie:
         session.cookies.set("DSBmobile", dsbmobile_cookie, domain=".dsbmobile.de")
