@@ -20,3 +20,9 @@ croniter>=6.2,<7
 websockets>=14,<16
 
 Pillow>=11.0.0
+
+# PostHog operational Logs and distributed traces (HTTP/protobuf, EU ingestion)
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-sqlite3==0.66b2

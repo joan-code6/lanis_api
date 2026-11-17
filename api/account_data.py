@@ -1,5 +1,7 @@
 """Self-service account export and deletion orchestration."""
 
+from api.observability import observe
+
 import asyncio
 import time
 import weakref
@@ -136,6 +138,7 @@ async def account_lifecycle_lock(user_id: str) -> AccountLifecycleLock:
         return _lifecycle_locks.setdefault(user_id, AccountLifecycleLock())
 
 
+@observe("api.account_data.build_account_export")
 async def build_account_export(user_id: str) -> dict:
     """Build a JSON-safe export without returning authentication secrets."""
     user_id = canonicalize_user_id(user_id)
@@ -196,6 +199,7 @@ async def build_account_export(user_id: str) -> dict:
     }
 
 
+@observe("api.account_data.delete_account_data")
 async def delete_account_data(
     user_id: str,
     school_id: str | None = None,

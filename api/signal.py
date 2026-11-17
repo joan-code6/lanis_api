@@ -1,5 +1,7 @@
 """Signal transport through an operator-owned signal-cli-rest-api bridge."""
 
+from api.observability import observe, observed_http
+
 import json
 import os
 import re
@@ -33,6 +35,7 @@ def headers():
     return {"Authorization": "Bearer " + token} if token else {}
 
 
+@observe("api.signal.send_text")
 async def send_text(recipient, body, *, continuation_check=None):
     url, number = config()
     if not configured():
@@ -42,7 +45,7 @@ async def send_text(recipient, body, *, continuation_check=None):
             return
 
         def send(start=start):
-            response = requests.post(
+            response = observed_http(requests.post,
                 url + "/v2/send",
                 headers=headers(),
                 json={

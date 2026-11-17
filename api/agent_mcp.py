@@ -1,5 +1,7 @@
 """Provider-neutral MCP tools: small schemas, progressive discovery, explicit recovery."""
 
+from api.observability import observe
+
 import logging
 import time
 from contextvars import ContextVar
@@ -221,6 +223,7 @@ def tool(scope=None, *, write=False, destructive=False, **kwargs):
         requirement = TOOL_MODULES[fn.__name__]  # Missing policy fails at startup.
         TOOL_SCOPES[fn.__name__] = scope
 
+        @observe("mcp." + fn.__name__)
         @wraps(fn)
         async def guarded(*args, **kw):
             from .demo.agents import call_tool, is_demo_user

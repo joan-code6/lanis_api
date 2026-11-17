@@ -5,6 +5,8 @@ Provides vector-based search across messages, courses, calendar events,
 and modules using cosine similarity on text embeddings.
 """
 
+from api.observability import observe, observed_http
+
 import asyncio
 import logging
 import math
@@ -31,12 +33,13 @@ class EmbeddingClient:
         self.api_key = api_key
         self.model = model
 
+    @observe("api.semantic_search.embed")
     def embed(self, texts: List[str]) -> List[List[float]]:
         """Embed a batch of texts. Returns list of embedding vectors."""
         if not texts:
             return []
 
-        response = requests.post(
+        response = observed_http(requests.post,
             f"{self.api_url}/embeddings",
             headers={
                 "Authorization": f"Bearer {self.api_key}",
@@ -338,6 +341,7 @@ class SemanticSearchEngine:
             if score > 0.25
         ]
 
+    @observe("api.semantic_search._build_index")
     async def _build_index(
         self,
         user_id: str,
@@ -408,6 +412,7 @@ class SemanticSearchEngine:
             return
         texts = [doc[1] for doc in all_docs]
 
+        @observe("api.semantic_search.embed_documents")
         def embed_documents() -> List[List[float]]:
             if (
                 include_messages

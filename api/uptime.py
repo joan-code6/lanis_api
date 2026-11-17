@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from api.observability import observe, observed_http
+
 import asyncio
 import contextlib
 import io
@@ -298,7 +300,7 @@ def _send_discord_alert(webhook_url: str, check: dict[str, Any], recovered: bool
     scope = {"account": "einzelnes Testkonto", "school": "eine getestete Schule", "multiple_schools": "mehrere getestete Schulen", "sampled_accounts": "getestete Konten", "unknown": "unbekannt"}.get(evidence.get("scope"))
     context = f"\n{confidence} · {scope}" if confidence and scope and not recovered else ""
     content = f"**{title}**{context}\n[Details ansehen]({url})"
-    response = requests.post(
+    response = observed_http(requests.post,
         webhook_url,
         json={"content": content, "allowed_mentions": {"parse": []}, "flags": 4},
         timeout=get_uptime_timeout_seconds(),
@@ -424,6 +426,7 @@ def _is_maintenance_page(html: str) -> bool:
     )
 
 
+@observe("api.uptime._probe_portal")
 def _probe_portal(credentials: tuple[str, str, str] | None = None) -> dict[str, Any]:
     client = SchulportalHessenAPI()
     _install_probe_transport(client)
@@ -1318,6 +1321,7 @@ async def _run_uptime_when_due(scheduled: bool) -> dict[str, Any]:
     return await _run_uptime_cycle(scheduled)
 
 
+@observe("api.uptime.run_uptime_check")
 async def run_uptime_check(*, scheduled: bool = False) -> dict[str, Any]:
     """Join the current cycle; cancellation of one HTTP waiter cannot cancel it."""
     global _uptime_cycle_task

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from api.observability import observe
+
 import asyncio
 import base64
 import binascii
@@ -453,6 +455,7 @@ def is_trusted_push_endpoint(endpoint: str) -> bool:
     )
 
 
+@observe("api.message_notifications._send_push_sync")
 def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> None:
     try:
         from pywebpush import webpush
@@ -479,6 +482,7 @@ def _send_push_sync(subscription: Dict[str, Any], payload: Dict[str, Any]) -> No
     )
 
 
+@observe("api.message_notifications._send_push_payloads")
 async def _send_push_payloads(
     user_id: str,
     deliveries: Dict[str, Tuple[Dict[str, Any], Dict[str, Any]]],
@@ -578,6 +582,7 @@ async def send_test_push_notification(user_id: str) -> bool:
     return any(status == "delivered" for status in statuses.values())
 
 
+@observe("api.message_notifications.check_user_messages")
 async def check_user_messages(
     user: Dict[str, Any],
     get_client: Callable[[str], Awaitable[Any]],
@@ -747,6 +752,7 @@ async def _record_failed_vertretungsplan_poll(
         )
 
 
+@observe("api.message_notifications.check_user_vertretungsplan")
 async def check_user_vertretungsplan(
     user: Dict[str, Any],
     get_client: Callable[[str], Awaitable[Any]],
@@ -913,6 +919,7 @@ async def check_user_vertretungsplan(
     return bool(new_ids)
 
 
+@observe("api.message_notifications.run_message_notification_cycle")
 async def run_message_notification_cycle(
     get_client: Callable[[str], Awaitable[Any]],
     invalidate_cache: Callable[[str, str], Awaitable[None]] | None = None,

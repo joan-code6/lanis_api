@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from schulportal_hessen.tools.telemetry import observe, observe_stream
+
 import json
 import re
 import unicodedata
@@ -95,6 +97,7 @@ def _parse_folders(soup: BeautifulSoup) -> List[Dict[str, Any]]:
     return folders
 
 
+@observe("schulportal_hessen.applets.dateispeicher.api.dateispeicher_get_node")
 def dateispeicher_get_node(self, folder_id: int = 0) -> Dict[str, Any]:
     """Fetch files and subfolders for a dateispeicher folder.
 
@@ -133,6 +136,7 @@ def dateispeicher_get_node(self, folder_id: int = 0) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to parse dateispeicher: {exc}"}
 
 
+@observe("schulportal_hessen.applets.dateispeicher.api.dateispeicher_get_root")
 def dateispeicher_get_root(self) -> Dict[str, Any]:
     """Fetch files and subfolders for the root dateispeicher folder."""
     return dateispeicher_get_node(self, folder_id=0)
@@ -144,6 +148,7 @@ def _close_response(response: Any) -> None:
         close()
 
 
+@observe_stream("schulportal_hessen.applets.dateispeicher.api.dateispeicher_download_file")
 def _iter_download_response(
     response: Any, first_chunk: bytes, chunks: Iterator[bytes]
 ) -> Iterator[bytes]:
@@ -157,6 +162,7 @@ def _iter_download_response(
         _close_response(response)
 
 
+@observe("schulportal_hessen.applets.dateispeicher.api.dateispeicher_download_file.prepare")
 def dateispeicher_download_file(self, file_id: int) -> Dict[str, Any]:
     """Download a file from the native dateispeicher using the portal session."""
     if not self.logged_in:
@@ -307,6 +313,7 @@ def _local_dateispeicher_search(self, query: str, max_folders: int = 250) -> Dic
     }
 
 
+@observe("schulportal_hessen.applets.dateispeicher.api.dateispeicher_search_files")
 def dateispeicher_search_files(self, query: str) -> Dict[str, Any]:
     """Search files by name in the dateispeicher.
 

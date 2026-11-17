@@ -6,6 +6,8 @@ LANIS so the model never receives credentials or arbitrary backend access.
 
 from __future__ import annotations
 
+from api.observability import observe, observed_http
+
 import asyncio
 import json
 import logging
@@ -84,6 +86,7 @@ class OpenRouterClient:
             raise AIProviderError("AI is not configured")
         self.config = config
 
+    @observe("api.ai_agent.complete")
     async def complete(
         self, messages: List[Dict[str, Any]], tools: List[AgentTool]
     ) -> Dict[str, Any]:
@@ -104,7 +107,7 @@ class OpenRouterClient:
 
         def _request() -> Dict[str, Any]:
             try:
-                response = requests.post(
+                response = observed_http(requests.post,
                     self.config.endpoint,
                     headers={
                         "Authorization": f"Bearer {self.config.api_key}",
@@ -215,6 +218,7 @@ def _tool_result(value: Any) -> str:
     return result
 
 
+@observe("api.ai_agent.run_agent")
 async def run_agent(
     *,
     config: AIConfig,

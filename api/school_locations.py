@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from api.observability import observed_http
+
 import asyncio
 import logging
 import sqlite3
@@ -416,7 +418,7 @@ def geocode_school(
                     "countrycodes": "de",
                 }
             )
-            response = requests.get(
+            response = observed_http(requests.get,
                 f"{_NOMINATIM_URL}?{query_parameters}",
                 headers={"User-Agent": _NOMINATIM_USER_AGENT},
                 timeout=8,

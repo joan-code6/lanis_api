@@ -1,8 +1,11 @@
+
+from schulportal_hessen.tools.telemetry import observe
 from typing import Dict, Any
 import json
 from bs4 import BeautifulSoup
 
 
+@observe("schulportal_hessen.applets.benutzer.api.benutzer_get_data")
 def benutzer_get_data(self) -> Dict[str, Any]:
     """Fetch user profile data from benutzerverwaltung.php.
 

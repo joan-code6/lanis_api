@@ -532,6 +532,19 @@ Retrieve all available modules for the current user.
 
 ---
 
+#### Required Schulportal password change
+
+If Schulportal redirects a request to `benutzerverwaltung.php?a=userChangePassword`,
+LANIS returns HTTP 403 with `{"detail":{"code":"password_change_required"}}`.
+This can also occur during login. Clients should show a password-change page linking
+to `https://start.schulportal.hessen.de/benutzerverwaltung.php?a=userChangePassword`.
+Keep an existing LANIS session so the user can retry after changing their password.
+
+`GET /auth/check-password-change` requires `X-Session-Token` and probes Schulportal
+without using cached app data. It returns `{"success":true}` when access is available,
+the same 403 while a password change is required, or 503 if the check fails.
+Without a LANIS session, retry by signing in with the new password.
+
 #### GET `/apps`
 
 Retrieve all available apps for the current user.

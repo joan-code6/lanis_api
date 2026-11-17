@@ -1041,7 +1041,8 @@ async def analytics_quality(principal: AdminPrincipal = Depends(admin_dependency
     from . import analytics_store
     from fastapi.responses import JSONResponse
     await _record_admin_action(principal.user_id, 'analytics.quality.read')
-    return JSONResponse(await analytics_store.quality_summary(), headers={'Cache-Control': 'no-store'})
+    from .observability import health
+    return JSONResponse({**await analytics_store.quality_summary(), 'telemetry': health()}, headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/analytics/users/{user_id:path}')

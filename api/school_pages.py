@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from api.observability import observed_http
+
 import asyncio
 from collections import OrderedDict
 from copy import deepcopy
@@ -70,7 +72,7 @@ def _color(value: Any) -> str | None:
 def _fetch_school_profile(school_id: str) -> dict[str, Any]:
     """Read SPH's public school exporter; no account or authentication needed."""
     try:
-        with requests.get(
+        with observed_http(requests.get,
             _EXPORT_URL,
             params={"a": "school", "i": school_id},
             timeout=(5, 15),
@@ -232,7 +234,7 @@ def _fetch_image(url: str) -> tuple[bytes, str]:
         for _ in range(6):
             if _asset_url(url) is None:
                 raise HTTPException(status_code=502, detail="Invalid SPH image URL")
-            with requests.get(url, timeout=(5, 15), stream=True, allow_redirects=False) as response:
+            with observed_http(requests.get, url, timeout=(5, 15), stream=True, allow_redirects=False) as response:
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("Location")
                     if not location:
