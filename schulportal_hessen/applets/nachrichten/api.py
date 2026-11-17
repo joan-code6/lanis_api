@@ -1,3 +1,5 @@
+
+from schulportal_hessen.tools.telemetry import observe
 from typing import Any, Dict, List
 import json
 
@@ -60,6 +62,7 @@ def _structured_recipients(conversation, limit=None):
         conversation[key] = values if limit is None else values[:limit]
 
 
+@observe("schulportal_hessen.applets.nachrichten.api.nachrichten_get_headers")
 def nachrichten_get_headers(
     self, get_type: str = "All", last: int = 0
 ) -> Dict[str, Any]:
@@ -189,6 +192,7 @@ def nachrichten_get_headers(
         }
 
 
+@observe("schulportal_hessen.applets.nachrichten.api.nachrichten_get_conversation")
 def nachrichten_get_conversation(
     self, conversation_id: str, last: int = 0
 ) -> Dict[str, Any]:
@@ -288,6 +292,7 @@ def nachrichten_get_conversation(
         return {"success": False, "error": f"Failed to fetch conversation: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.nachrichten.api.nachrichten_search_recipients")
 def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
     """
     Search for message recipients (users)
@@ -383,6 +388,7 @@ def nachrichten_search_recipients(self, query: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to search recipients: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.nachrichten.api.nachrichten_send_message")
 def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Send a new message
@@ -464,6 +470,7 @@ def nachrichten_send_message(self, message_data: Dict[str, Any]) -> Dict[str, An
         return {"success": False, "error": f"Failed to send message: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.nachrichten.api.nachrichten_reply_message")
 def nachrichten_reply_message(
     self, conversation_id: str, body: str, to: str = "all"
 ) -> Dict[str, Any]:
@@ -522,6 +529,7 @@ def nachrichten_reply_message(
         return {"success": False, "error": f"Failed to send reply: {str(e)}"}
 
 
+@observe("schulportal_hessen.applets.nachrichten.api.nachrichten_mark_read")
 def nachrichten_mark_read(self, conversation_id: str) -> Dict[str, Any]:
     """Mark a conversation as read by calling the same 'read' action used by the UI.
 

@@ -155,3 +155,47 @@ def test_document_guard_rejects_unavailable_module_before_dns(monkeypatch):
             safe_fetch.fetch_document(
                 session, "https://start.schulportal.hessen.de/meinunterricht.php"
             )
+
+
+@pytest.mark.parametrize("redirect", [True, False])
+def test_pinned_document_transport_preserves_password_change_hook(monkeypatch, redirect):
+    from schulportal_hessen.tools.transport import (
+        ObservedSession,
+        PasswordChangeObservation,
+        PasswordChangeRequired,
+        password_change_observation,
+    )
+
+    password_url = "https://start.schulportal.hessen.de/benutzerverwaltung.php?a=userChangePassword"
+    request_url = "https://start.schulportal.hessen.de/meinunterricht.php" if redirect else password_url
+    visited = []
+
+    def send(adapter, request, **kwargs):
+        visited.append(request.url)
+        response = requests.Response()
+        response.request = request
+        response.url = request.url
+        response.status_code = 302 if redirect else 200
+        response._content = b""
+        response._content_consumed = True
+        if redirect:
+            response.headers["Location"] = "/benutzerverwaltung.php?a=userChangePassword"
+        return response
+
+    monkeypatch.setattr(safe_fetch, "_resolve", lambda host: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+    ])
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    signal, facts = PasswordChangeObservation(), TransportObservation()
+    signal_token = password_change_observation.set(signal)
+    facts_token = observation.set(facts)
+    try:
+        with ObservedSession() as session:
+            with pytest.raises(PasswordChangeRequired):
+                safe_fetch.fetch_document(session, request_url)
+        assert signal.required and facts.security_failure
+        assert not facts.unavailable
+        assert visited == [request_url]
+    finally:
+        observation.reset(facts_token)
+        password_change_observation.reset(signal_token)

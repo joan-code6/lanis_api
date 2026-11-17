@@ -27,6 +27,7 @@ class FakeSession:
         return FakeResponse(200)
 
     def get(self, url, **kwargs):
+        # The public preflight is not a module-open attempt.
         if url == uptime.PORTAL_START_URL:
             return FakeResponse(200)
         if isinstance(self.module_status, list):

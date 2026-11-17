@@ -42,3 +42,6 @@ dist/
 
 # Local ChatGPT submission build artifacts
 artifacts/chatgpt/
+
+# Local isolated development environments
+.venv/

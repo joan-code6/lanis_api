@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from schulportal_hessen.tools.telemetry import observe
+
 import hashlib
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -221,6 +223,7 @@ def _day_labels(tbody: Any) -> List[str]:
     return [cell.get_text(" ", strip=True) for cell in cells]
 
 
+@observe("schulportal_hessen.applets.stundenplan.api.parse_timetable_html")
 def parse_timetable_html(html: str) -> Dict[str, Any]:
     """Parse a ``stundenplan.php`` response without making a request."""
     if len(html.encode("utf-8")) > 2 * 1024 * 1024:
@@ -242,6 +245,7 @@ def parse_timetable_html(html: str) -> Dict[str, Any]:
     }
 
 
+@observe("schulportal_hessen.applets.stundenplan.api.stundenplan_get_plan")
 def stundenplan_get_plan(self) -> Dict[str, Any]:
     """Fetch and parse the authenticated user's School Portal timetable."""
     if not self.logged_in:

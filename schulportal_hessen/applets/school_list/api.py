@@ -29,6 +29,8 @@ Example
 {'success': True, 'query': '{school_name}', 'count': 5, 'results': [...]}
 """
 
+from schulportal_hessen.tools.telemetry import observe
+
 from typing import Any, Dict
 
 import json
@@ -37,6 +39,7 @@ import requests
 from schulportal_hessen.tools.search import text_matches_query
 
 
+@observe("schulportal_hessen.applets.school_list.api.school_list_get_all")
 def school_list_get_all(self) -> Dict[str, Any]:
     """
     Fetch and parse the school list from Schulportal Hessen
@@ -137,6 +140,7 @@ def school_list_get_all(self) -> Dict[str, Any]:
         }
 
 
+@observe("schulportal_hessen.applets.school_list.api.school_list_get_by_district")
 def school_list_get_by_district(self, district_id: str) -> Dict[str, Any]:
     """
     Fetch and parse schools for a specific district
@@ -215,6 +219,7 @@ def school_list_get_by_district(self, district_id: str) -> Dict[str, Any]:
         }
 
 
+@observe("schulportal_hessen.applets.school_list.api.school_list_search_by_name")
 def school_list_search_by_name(self, school_name: str) -> Dict[str, Any]:
     """
     Search for schools by name across all districts

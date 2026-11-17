@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from api.observability import observed_http
+
 import hashlib
 import hmac
 import os
@@ -229,7 +231,7 @@ class WhatsAppCloudClient:
         )
 
         def _request() -> None:
-            response = requests.post(
+            response = observed_http(requests.post,
                 url,
                 headers={
                     "Authorization": f"Bearer {self.config.access_token}",

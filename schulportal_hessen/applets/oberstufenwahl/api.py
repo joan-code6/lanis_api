@@ -8,6 +8,8 @@ in one place.
 
 from __future__ import annotations
 
+from schulportal_hessen.tools.telemetry import observe
+
 import json
 import re
 from datetime import datetime
@@ -67,6 +69,7 @@ def _participation_metadata(text: str) -> Dict[str, Optional[str]]:
     }
 
 
+@observe("schulportal_hessen.applets.oberstufenwahl.api.parse_oberstufenwahl_overview")
 def parse_oberstufenwahl_overview(
     html: str, base_url: str = "https://start.schulportal.hessen.de/"
 ) -> Dict[str, Any]:
@@ -226,6 +229,7 @@ def _parse_control(
     }
 
 
+@observe("schulportal_hessen.applets.oberstufenwahl.api.parse_oberstufenwahl_form")
 def parse_oberstufenwahl_form(
     html: str,
     election_id: str = "",
@@ -304,6 +308,7 @@ def _selection_value(selections: Dict[str, Any], control_id: str) -> Any:
     return selections.get(control_id)
 
 
+@observe("schulportal_hessen.applets.oberstufenwahl.api.validate_oberstufenwahl_submission")
 def validate_oberstufenwahl_submission(
     form: Dict[str, Any], submission: Dict[str, Any]
 ) -> List[str]:
@@ -423,6 +428,7 @@ def validate_oberstufenwahl_submission(
     return errors
 
 
+@observe("schulportal_hessen.applets.oberstufenwahl.api.serialize_oberstufenwahl_submission")
 def serialize_oberstufenwahl_submission(
     form: Dict[str, Any], submission: Dict[str, Any]
 ) -> List[Any]:
@@ -483,6 +489,7 @@ def serialize_oberstufenwahl_submission(
     return kurse
 
 
+@observe("schulportal_hessen.applets.oberstufenwahl.api.wahlen_get_overview")
 def wahlen_get_overview(self) -> Dict[str, Any]:
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
@@ -494,6 +501,7 @@ def wahlen_get_overview(self) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to fetch elections: {exc}"}
 
 
+@observe("schulportal_hessen.applets.oberstufenwahl.api.wahlen_get_form")
 def wahlen_get_form(self, election_id: str) -> Dict[str, Any]:
     if not self.logged_in:
         return {"success": False, "error": "Not logged in"}
@@ -515,6 +523,7 @@ def wahlen_get_form(self, election_id: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to fetch election form: {exc}"}
 
 
+@observe("schulportal_hessen.applets.oberstufenwahl.api.wahlen_submit")
 def wahlen_submit(
     self,
     election_id: str,

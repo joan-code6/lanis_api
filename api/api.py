@@ -67,6 +67,7 @@ load_dotenv()
 
 from schulportal_hessen.base import SchulportalHessenAPI
 
+from . import observability
 from .analytics_routes import router as analytics_router, register_request_diagnostics
 from .agents import router as agents_router
 from .hosted_agents import router as hosted_agents_router
@@ -1492,6 +1493,32 @@ def _validate_class_link_url(url: str) -> str:
     return clean_url
 
 
+@app.middleware("http")
+async def detect_required_password_change(request: Request, call_next):
+    from schulportal_hessen.tools.transport import (
+        PasswordChangeObservation, password_change_observation,
+    )
+    from fastapi.responses import JSONResponse
+
+    signal = PasswordChangeObservation()
+    reset = password_change_observation.set(signal)
+    try:
+        try:
+            response = await call_next(request)
+        except Exception:
+            if not signal.required:
+                raise
+        if signal.required:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": {"code": "password_change_required"}},
+                headers={"Cache-Control": "no-store"},
+            )
+        return response
+    finally:
+        password_change_observation.reset(reset)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -1513,8 +1540,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At", "X-LANIS-Request-ID"],
+    expose_headers=["Content-Disposition", "X-LANIS-Cache", "X-LANIS-Fetched-At", "X-LANIS-Request-ID", "X-LANIS-Trace-ID"],
 )
+
+app.add_middleware(observability.ObservabilityMiddleware)
 
 # The MCP SDK owns its task group for the complete ASGI lifespan.
 _existing_lifespan = app.router.lifespan_context
@@ -1553,6 +1582,7 @@ app.include_router(school_pages_router)
 async def _startup() -> None:
     """Initialize stores and start the API's background schedulers."""
     global _daily_cache_task, _dsb_scheduler_task, _message_notification_task, _uptime_scheduler_task, _whatsapp_history_cleanup_task, _file_cache_cleanup_task
+    observability.configure()
     await auth_db_initialize()
     await run_in_threadpool(purge_staged_files)
     from .auth_db import DB_PATH
@@ -1614,6 +1644,7 @@ async def _cleanup_sessions() -> None:
             await asyncio.gather(*pending_confirmations, return_exceptions=True)
     await sessions.shutdown()
     await snapshots.close()
+    await run_in_threadpool(observability.shutdown)
 
 
 # --- Public Endpoints ---
@@ -2000,6 +2031,15 @@ async def _schedule_account_revalidation(auth: AuthSession, endpoint: str) -> No
     except asyncio.QueueFull:
         # Cached responses remain available when background capacity is full.
         logger.debug('Skipped background cache refresh because the queue is full')
+
+
+@app.get("/auth/check-password-change")
+async def check_password_change(auth: AuthSession = Depends(client_dependency)):
+    """Probe Schulportal directly so Retry cannot succeed from a cached response."""
+    result = await run_in_threadpool(auth.client.get_apps)
+    if not result.get("success"):
+        raise HTTPException(status_code=503, detail="Schulportal check failed")
+    return {"success": True}
 
 
 @app.get("/apps")
