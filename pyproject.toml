@@ -39,9 +39,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/joan-code6/lanis_api"
-Repository = "https://github.com/joan-code6/lanis_api"
-Issues = "https://github.com/joan-code6/lanis_api/issues"
+Homepage = "https://github.com/Lanis-dev/lanis_api"
+Repository = "https://github.com/Lanis-dev/lanis_api"
+Issues = "https://github.com/Lanis-dev/lanis_api/issues"
 
 [tool.setuptools.packages.find]
 include = ["sph_client", "schulportal_hessen", "schulportal_hessen.*"]

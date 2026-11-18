@@ -24,7 +24,7 @@
         "logo": "./assets/icon.png",
         "composerIcon": "./assets/icon.png",
         "websiteURL": "https://lanis.arg-server.de/",
-        "supportURL": "https://github.com/joan-code6/lanis_api/issues",
+        "supportURL": "https://github.com/Lanis-dev/lanis_api/issues",
         "developerName": "Joan Code",
         "privacyPolicyURL": "https://lanis.arg-server.de/privacy-policy",
         "termsOfServiceURL": "https://lanis.arg-server.de/terms-of-service"
@@ -105,5 +105,5 @@
     "url": "https://joancode.dev"
   },
   "homepage": "https://lanis.arg-server.de/",
-  "repository": "https://github.com/joan-code6/lanis_api"
+  "repository": "https://github.com/Lanis-dev/lanis_api"
 }
