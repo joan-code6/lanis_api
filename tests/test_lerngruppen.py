@@ -89,3 +89,34 @@ def test_parse_headerless_table_from_semantic_cell_markup() -> None:
     assert group["semester"] == "2. Halbjahr"
     assert group["teachers"][0]["krz"] == "WEB"
     assert group["teachers"][0]["last_name"] == "Weber"
+
+
+def test_parse_teacher_name_without_email() -> None:
+    html = LIVE_STYLE_HTML.replace(
+        '<a href="mailto:max.mustermann@example.org"><i class="fa"></i>Mustermann, Max</a>',
+        '<span><i class="fa fa-user"></i>Mustermann, Max</span>',
+    )
+
+    teacher = parse_lerngruppen_html(html)["groups"][0]["teachers"][0]
+
+    assert teacher == {
+        "krz": "MST",
+        "first_name": "Max",
+        "last_name": "Mustermann",
+        "email": None,
+        "recipient_id": "l-128656",
+    }
+
+
+def test_message_action_is_not_used_as_teacher_name() -> None:
+    html = LIVE_STYLE_HTML.replace(
+        '<li><a href="mailto:max.mustermann@example.org"><i class="fa"></i>Mustermann, Max</a></li>',
+        "",
+    )
+
+    teacher = parse_lerngruppen_html(html)["groups"][0]["teachers"][0]
+
+    assert teacher["first_name"] == ""
+    assert teacher["last_name"] == ""
+    assert teacher["krz"] == "MST"
+    assert teacher["recipient_id"] == "l-128656"

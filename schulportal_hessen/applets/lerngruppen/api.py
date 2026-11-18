@@ -66,9 +66,13 @@ def _parse_exam_date(text: str) -> str | None:
 def _parse_teacher_group(group: Any) -> dict[str, Any]:
     button = group.select_one("button.btn.btn-primary, button.dropdown-toggle, button")
     krz = button.get_text(" ", strip=True) if button else ""
-    anchor = group.select_one(
-        "ul.dropdown-menu li a, .dropdown-menu a, a[href^='mailto:']"
-    )
+    # Without an email address SPH renders the name in a plain span and the
+    # only link is "Nachricht schreiben". Action labels are not teacher names.
+    anchor = group.select_one("a[href^='mailto:']")
+    if anchor is None:
+        anchor = group.select_one(
+            ".dropdown-menu li > span, .dropdown-menu a:not([href])"
+        )
     text = anchor.get_text(" ", strip=True) if anchor else ""
     href = anchor.get("href", "") if anchor else ""
     email_match = _EMAIL_RE.search(f"{text} {href}")
