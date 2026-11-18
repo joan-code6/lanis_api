@@ -51,7 +51,7 @@ The portal modules are referred to as applets because SPH is built on top of Moo
 
 ```bash
 # Install from source
-git clone https://github.com/joan-code6/lanis_api.git
+git clone https://github.com/Lanis-dev/lanis_api.git
 pip install -r requirements.txt
 ```
 
