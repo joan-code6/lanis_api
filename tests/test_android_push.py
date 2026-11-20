@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -185,7 +186,7 @@ def test_failed_refresh_is_backed_off(monkeypatch):
 
 def test_failed_registration_preserves_previous_token(monkeypatch):
     deleted = []
-    async def save(*args):
+    async def save(*args, **kwargs):
         return False
     async def delete(*args):
         deleted.append(args)
@@ -198,3 +199,69 @@ def test_failed_registration_preserves_previous_token(monkeypatch):
             SimpleNamespace(user_id='user', session_id='revoked')))
     assert error.value.status_code == 401
     assert deleted == []
+
+
+def test_android_migration_and_rotation_share_browser_device_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(auth_db, 'DB_PATH', str(tmp_path / 'mixed.db'))
+    monkeypatch.setattr(auth_db, '_lock', asyncio.Lock())
+    monkeypatch.setattr(routes, 'android_push_configured', lambda: True)
+
+    async def scenario():
+        await auth_db.initialize()
+        token = await auth_db.store_refresh_token('user', '5201', 'Student', 'test-password')
+        session_id = (await auth_db.get_refresh_token(token))['session_id']
+        auth = SimpleNamespace(user_id='user', session_id=session_id)
+        await routes.register_android_push(routes.AndroidPushRequest(token=TOKEN, binding=BINDING), auth)
+        for index in range(notifications.MAX_PUSH_SUBSCRIPTIONS - 1):
+            assert await auth_db.save_push_subscription('user', {
+                'endpoint': f'https://fcm.googleapis.com/device-{index}',
+                'keys': {'p256dh': 'web-key', 'auth': 'web-auth'},
+            }, session_id)
+        # Startup and browser renewal must preserve native registrations.
+        await auth_db.initialize()
+        assert android.android_subscription(TOKEN, BINDING) in await auth_db.get_push_subscriptions('user')
+        with pytest.raises(HTTPException) as error:
+            await routes.register_android_push(routes.AndroidPushRequest(token=TOKEN+'-extra', binding=BINDING), auth)
+        assert error.value.status_code == 422
+        await routes.register_android_push(routes.AndroidPushRequest(
+            token=TOKEN+'-rotated', previous_token=TOKEN, binding=BINDING), auth)
+        subscriptions = await auth_db.get_push_subscriptions('user')
+        assert len(subscriptions) == notifications.MAX_PUSH_SUBSCRIPTIONS
+        assert android.android_subscription(TOKEN+'-rotated', BINDING) in subscriptions
+        assert android.android_subscription(TOKEN, BINDING) not in subscriptions
+        # Revocation cannot delete or restore registrations during token rotation.
+        await auth_db.delete_user_tokens('user')
+        with pytest.raises(HTTPException) as error:
+            await routes.register_android_push(routes.AndroidPushRequest(
+                token=TOKEN+'-new', previous_token=TOKEN+'-rotated', binding=BINDING), auth)
+        assert error.value.status_code == 401
+        assert await auth_db.get_push_subscriptions('user') == []
+
+    asyncio.run(scenario())
+
+
+def test_mixed_delivery_keeps_independent_provider_configuration(monkeypatch):
+    native = android.android_subscription(TOKEN, BINDING)
+    web = {'endpoint': 'https://fcm.googleapis.com/web', 'keys': {}}
+    sent = []
+    monkeypatch.setattr(notifications, 'push_configured', lambda: False)
+    monkeypatch.setattr(notifications, 'android_push_configured', lambda: True)
+    monkeypatch.setattr(notifications, 'send_android_push', lambda sub, payload: sent.append(sub))
+    result = asyncio.run(notifications._send_push_to_subscriptions('user', [native, web], {}))
+    assert result == {native['endpoint']: 'delivered', web['endpoint']: 'retry'}
+    assert sent == [native]
+
+
+def test_android_delivery_uses_shared_admission_limit(monkeypatch):
+    subscription = android.android_subscription(TOKEN, BINDING)
+    sent = []
+    monkeypatch.setattr(notifications, '_PUSH_SLOTS', threading.BoundedSemaphore(1))
+    monkeypatch.setattr(notifications, '_PUSH_USERS', set())
+    monkeypatch.setattr(notifications, 'send_android_push', lambda *args: sent.append(True))
+    assert notifications._PUSH_SLOTS.acquire(blocking=False)
+    try:
+        with pytest.raises(RuntimeError, match='capacity'):
+            asyncio.run(notifications._dispatch_push(subscription, {}, user_id='user'))
+    finally:
+        notifications._PUSH_SLOTS.release()
+    assert sent == []

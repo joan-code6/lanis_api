@@ -301,3 +301,107 @@ def test_next_request_discards_client_after_consumed_write_expiry(monkeypatch):
         assert closed == [True]
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", [200, 500])
+@pytest.mark.parametrize("expired", [False, True])
+def test_pinned_entry_probes_expiry_without_losing_source_session(
+    monkeypatch, status, expired
+):
+    from schulportal_hessen.tools import safe_fetch
+
+    probes = []
+    monkeypatch.setattr(
+        safe_fetch,
+        "public_https_url",
+        lambda _: ("start.schulportal.hessen.de", ("93.184.216.34",)),
+    )
+
+    def send(_transport, prepared, **kwargs):
+        assert kwargs["allow_redirects"] is False
+        response = requests.Response()
+        response.status_code = status
+        response.url = prepared.url
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
+        response.encoding = "utf-8"
+        response._content = "Datenbankauswahl nicht möglich".encode()
+        response._content_consumed = True
+        return response
+
+    def request(_session, _method, url, **_kwargs):
+        probes.append(url)
+        response = requests.Response()
+        response.status_code = 200
+        response.url = (
+            "https://start.schulportal.hessen.de/index.php" if expired else url
+        )
+        response.history = [requests.Response()] if expired else []
+        response._content, response._content_consumed = b"{}", True
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    monkeypatch.setattr(requests.Session, "request", request)
+    source = ObservedSession()
+    current = TransportObservation(fail_fast=True)
+    reset = observation.set(current)
+    try:
+        if expired:
+            with pytest.raises(UpstreamSessionExpired):
+                safe_fetch.fetch_document(
+                    source, "https://start.schulportal.hessen.de/meinunterricht.php"
+                )
+            assert current.expired_sessions == [source]
+            assert source.upstream_expired
+            assert current.security_failure and not current.unavailable
+        elif status == 500:
+            with pytest.raises(requests.HTTPError):
+                safe_fetch.fetch_document(
+                    source, "https://start.schulportal.hessen.de/meinunterricht.php"
+                )
+            assert current.unavailable and not current.security_failure
+        else:
+            assert (
+                safe_fetch.fetch_document(
+                    source, "https://start.schulportal.hessen.de/meinunterricht.php"
+                ).status_code
+                == 200
+            )
+            assert not current.expired_sessions
+        assert len(probes) == 1
+    finally:
+        observation.reset(reset)
+
+
+def test_pinned_entry_login_redirect_is_expiry_without_following_it(monkeypatch):
+    from schulportal_hessen.tools import safe_fetch
+
+    calls = []
+    monkeypatch.setattr(
+        safe_fetch,
+        "public_https_url",
+        lambda _: ("start.schulportal.hessen.de", ("93.184.216.34",)),
+    )
+
+    def send(_transport, prepared, **kwargs):
+        calls.append(prepared.url)
+        assert kwargs["allow_redirects"] is False
+        response = requests.Response()
+        response.status_code, response.url = 302, prepared.url
+        response.headers["Location"] = "https://login.schulportal.hessen.de/"
+        response._content, response._content_consumed = b"", True
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    source = ObservedSession()
+    current = TransportObservation()
+    reset = observation.set(current)
+    try:
+        with pytest.raises(UpstreamSessionExpired):
+            safe_fetch.fetch_document(
+                source, "https://start.schulportal.hessen.de/meinunterricht.php"
+            )
+        assert current.expired_sessions == [source]
+        assert current.security_failure
+        assert calls == ["https://start.schulportal.hessen.de/meinunterricht.php"]
+    finally:
+        observation.reset(reset)

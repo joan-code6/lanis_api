@@ -107,6 +107,25 @@ else
     echo ""
     echo "# No systemd — starting directly"
 
+    # Set up private log storage before stopping a running server. PROJECT_DIR
+    # is the trusted deployment checkout, rather than a shared TMPDIR.
+    DIRECT_LOG_DIR="${PROJECT_DIR}/.lanis-logs"
+    if [ -L "${DIRECT_LOG_DIR}" ]; then
+        echo "ERROR: log directory must not be a symlink" >&2
+        exit 1
+    fi
+    if [ ! -e "${DIRECT_LOG_DIR}" ]; then
+        mkdir -m 0700 -- "${DIRECT_LOG_DIR}"
+    fi
+    if [ ! -d "${DIRECT_LOG_DIR}" ] || [ -z "$(find "${DIRECT_LOG_DIR}" -maxdepth 0 -user "$(id -u)" -print)" ]; then
+        echo "ERROR: log directory must be owned by the deployment user" >&2
+        exit 1
+    fi
+    chmod 0700 -- "${DIRECT_LOG_DIR}"
+    DIRECT_LOG="$(mktemp "${DIRECT_LOG_DIR}/run.XXXXXXXX.log")"
+    find "${DIRECT_LOG_DIR}" -maxdepth 1 -type f -name 'run.*.log' -mmin +10080 -delete
+    echo "  Log: ${DIRECT_LOG}"
+
     EXISTING_PID=$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)
     if [ -n "${EXISTING_PID}" ]; then
         echo ">>> Killing existing process on port ${PORT} (pid ${EXISTING_PID})"
@@ -119,13 +138,13 @@ else
         --host "${HOST}" \
         --port "${PORT}" \
         --no-access-log \
-        > /tmp/lanis-api.log 2>&1 &
+        > "${DIRECT_LOG}" 2>&1 &
 
     sleep 1
     if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then
         echo "=== Server running on ${HOST}:${PORT} ==="
     else
-        echo "!!! Server may have failed to start — check /tmp/lanis-api.log"
+        echo "!!! Server may have failed to start — check ${DIRECT_LOG}"
     fi
 fi
 

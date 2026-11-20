@@ -32,17 +32,9 @@ return the original samples, and reviewers cannot change one another's data.
 Uploaded content, message bodies, push subscriptions, feedback, diagnostics, and
 passwords are discarded.
 
-To refresh the fixtures, install the frontend dependencies, then run from the
-lanis_api checkout:
-
-```sh
-node scripts/export_frontend_demo.cjs /path/to/lanis_ui
-```
-
-This uses the frontend's existing esbuild dependency once to export JSON. The API
-has no Node.js or frontend runtime dependency. Commit the refreshed JSON with any
-corresponding API changes.
-
+The frontend demo exporter has been discontinued. Maintain `responses.json`
+alongside corresponding API changes using fictional data only. The API has no
+Node.js or frontend runtime dependency.
 
 ## Reviewer agent connections
 

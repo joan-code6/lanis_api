@@ -60,12 +60,16 @@ def test_existing_case_variant_auth_rows_are_rekeyed(tmp_path, monkeypatch):
                     VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        "https://push.example/subscription",
+                        "https://FCM.GOOGLEAPIS.COM/subscription",
                         "5201:Bennet.wegener",
                         "browser-a",
                         "public-key",
                     "auth-key",
                 ),
+            )
+            await db.execute(
+                "INSERT INTO push_subscriptions (endpoint, user_id, session_id, p256dh, auth) VALUES (?, ?, ?, ?, ?)",
+                ("https://push.example/subscription", "5201:Bennet.wegener", "browser-a", "public-key", "auth-key"),
             )
             await db.execute(
                 """
@@ -100,7 +104,8 @@ def test_existing_case_variant_auth_rows_are_rekeyed(tmp_path, monkeypatch):
         assert (await auth_db.get_custom_lessons("5201:Bennet.Wegener"))[0][
             "subject"
         ] == "Mathematik"
-        assert await auth_db.get_push_subscriptions("5201:Bennet.Wegener")
+        subscriptions = await auth_db.get_push_subscriptions("5201:Bennet.Wegener")
+        assert [row["endpoint"] for row in subscriptions] == ["https://fcm.googleapis.com/subscription"]
         assert await auth_db.get_message_notification_state("5201:Bennet.Wegener")
 
         token = await auth_db.store_refresh_token(
