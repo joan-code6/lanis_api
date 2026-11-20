@@ -102,6 +102,44 @@ def test_native_replacement_uses_original_identifiers():
         "B2",
     )
     assert lesson["original_lesson"]["subject"] == "D"
+    assert "homework" not in lesson
+
+
+def test_dsb_special_lesson_does_not_inherit_homework_from_double_period():
+    changes = dsb_substitutions(
+        [
+            {
+                "date": DAY,
+                "headers": ["Klasse", "Stunde", "Fach", "Art", "Vertreter"],
+                "rows": [["10B", "4", "D → Klassenstunde", "Sondereins.", "Hr. Rink"]],
+            }
+        ]
+    )
+    original, replacement = apply(changes)["lessons"]
+
+    assert original["period"] == 3
+    assert original["homework"] == LESSON["homework"]
+    assert replacement["period"] == 4
+    assert replacement["subject"] == "Klassenstunde"
+    assert "homework" not in replacement
+
+
+@pytest.mark.parametrize("subject", ["Deutsch", "?"])
+def test_teacher_and_room_changes_keep_homework_for_same_subject(subject):
+    lesson = apply(
+        native(
+            stunde="3–4",
+            fach_alt="Deutsch",
+            fach=subject,
+            vertreterkuerzel="CD",
+            raum="B2",
+            art="Vertretung",
+        )
+    )["lessons"][0]
+
+    assert lesson["teacher"] == "CD"
+    assert lesson["room"] == "B2"
+    assert lesson["homework"] == LESSON["homework"]
 
 
 def test_ambiguity_conflicts_and_duplicate_print_pages():

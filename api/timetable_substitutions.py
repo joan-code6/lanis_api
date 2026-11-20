@@ -391,6 +391,8 @@ def apply_substitutions(
                     for key in ("subject", "teacher", "room"):
                         if not item["cancelled"] and meaningful(item[key]):
                             split[key] = item[key]
+                    if subject_key(split["subject"]) != subject_key(lesson["subject"]):
+                        split.pop("homework", None)
                     split.update(
                         cancelled=item["cancelled"],
                         substitution=copy.deepcopy(item),
