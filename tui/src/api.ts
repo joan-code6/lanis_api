@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { LoginCredentials, SessionState, AppModule, Message, CalendarEvent, CourseInfo } from './types';
 
-const BASE_URL = process.env.API_URL || 'https://lanis-backend.arg-server.de:8000';
+const BASE_URL = process.env.API_URL || 'https://api.lanis.arg-server.de';
 
 class LanisAPI {
   private sessionToken: string | null = null;

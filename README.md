@@ -13,8 +13,10 @@ changes can occasionally require a new package release.
 
 ## Live Server
 The hosted API is available at
-[lanis-backend.joancode.dev](https://lanis-backend.joancode.dev/), with interactive
-documentation at [/documentation](https://lanis-backend.joancode.dev/documentation).
+[lanis-backend.joancode.dev](https://api.lanis.arg-server.de/), with interactive
+documentation at [/documentation](https://api.lanis.arg-server.de/documentation).
+The legacy hostname remains supported. See the [hostname rollout plan](docs/api-domain-migration.md)
+for deployment prerequisites and OAuth/MCP compatibility.
 <img width="1249" height="937" alt="image" src="https://github.com/user-attachments/assets/8fef241f-3cd5-432b-bc01-5f85b8d6efab" />
 
 
